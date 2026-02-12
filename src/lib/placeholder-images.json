@@ -1,3 +1,52 @@
 {
-  "placeholderImages": []
+  "placeholderImages": [
+    {
+      "id": "hero-image",
+      "description": "Hero image for the landing page, showing an industrial factory setting.",
+      "imageUrl": "https://images.unsplash.com/photo-1644409287870-0eb0d03e33fa?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw4fHxpbmR1c3RyaWFsJTIwZmFjdG9yeXxlbnwwfHx8fDE3NzA3OTA1MTN8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "industrial factory"
+    },
+    {
+      "id": "model-preview",
+      "description": "A placeholder image for a 3D model preview, showing a wireframe.",
+      "imageUrl": "https://images.unsplash.com/photo-1658134202928-39ba2938c8a7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw1fHx3aXJlZnJhbWUlMjBhYnN0cmFjdHxlbnwwfHx8fDE3NzA4Mjk1MzR8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "wireframe abstract"
+    },
+    {
+      "id": "material-abs",
+      "description": "Image of ABS material.",
+      "imageUrl": "https://images.unsplash.com/photo-1585314062340-f1a5a7c9328d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw3fHxwbGFzdGljJTIwdGV4dHVyZXxlbnwwfHx8fDE3NzA4Njk5NTN8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "plastic texture"
+    },
+    {
+      "id": "material-pla",
+      "description": "Image of PLA material.",
+      "imageUrl": "https://images.unsplash.com/photo-1710828530560-2920125ad032?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw0fHxwbGFzdGljJTIwZmlsYW1lbnR8ZW58MHx8fHwxNzcwODY5OTUzfDA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "plastic filament"
+    },
+    {
+      "id": "material-petg",
+      "description": "Image of PETG material.",
+      "imageUrl": "https://images.unsplash.com/photo-1702776102021-d517810b989d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw4fHxjbGVhciUyMHBsYXN0aWN8ZW58MHx8fHwxNzcwODY5OTUzfDA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "clear plastic"
+    },
+    {
+      "id": "material-nylon",
+      "description": "Image of Nylon material.",
+      "imageUrl": "https://images.unsplash.com/photo-1644670053838-439b15d9c250?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwxMHx8d2hpdGUlMjBwbGFzdGljfGVufDB8fHx8MTc3MDg2OTk1M3ww&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "white plastic"
+    },
+    {
+      "id": "material-tpu",
+      "description": "Image of TPU material.",
+      "imageUrl": "https://images.unsplash.com/photo-1741192223245-46cbbe8ae332?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwxMHx8ZmxleGlibGUlMjBydWJiZXJ8ZW58MHx8fHwxNzcwODY5OTUzfDA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "flexible rubber"
+    },
+    {
+      "id": "material-resin",
+      "description": "Image of Resin material.",
+      "imageUrl": "https://picsum.photos/seed/resin/400/300",
+      "imageHint": "liquid resin"
+    }
+  ]
 }
