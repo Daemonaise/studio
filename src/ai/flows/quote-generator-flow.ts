@@ -1,3 +1,4 @@
+
 'use server';
 /**
  * @fileOverview An AI-powered 3D print quote generator.
@@ -11,7 +12,7 @@ import {z} from 'genkit';
 import pricingMatrix from '@/app/data/pricing-matrix.json';
 
 // Schema for the input required by the main function
-export const QuoteGeneratorInputSchema = z.object({
+const QuoteGeneratorInputSchema = z.object({
   fileDataUri: z
     .string()
     .describe(
@@ -29,7 +30,7 @@ const EstimationOutputSchema = z.object({
 });
 
 // Schema for the final, calculated quote returned to the client
-export const QuoteOutputSchema = z.object({
+const QuoteOutputSchema = z.object({
   materialCost: z.number(),
   machineTimeCost: z.number(),
   totalCost: z.number(),
