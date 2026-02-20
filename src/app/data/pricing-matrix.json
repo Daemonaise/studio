@@ -1,0 +1,118 @@
+{
+  "meta": {
+    "businessMarkup": 0.60,
+    "shippingEmbeddedPerHour": 2.50,
+    "shippingBasis": {
+      "freightCostTypical": 600,
+      "freightSellPrice": 1200,
+      "hoursBasis": 480
+    }
+  },
+
+  "nozzleMultipliers": {
+    "0.2": 1.80,
+    "0.4": 1.00,
+    "0.6": 0.85,
+    "0.8": 0.75
+  },
+
+  "printers": {
+    "kobra_2_max": {
+      "baseRatePerHour": 4.00,
+      "rateAfter60PercentMarkup": 6.40,
+      "finalHourlyRates": {
+        "0.2": 14.02,
+        "0.4": 8.90,
+        "0.6": 7.94,
+        "0.8": 7.30
+      },
+      "supportedFilaments": [
+        "PLA",
+        "PETG",
+        "ABS",
+        "TPU"
+      ]
+    },
+
+    "kobra_3_max": {
+      "baseRatePerHour": 5.00,
+      "rateAfter60PercentMarkup": 8.00,
+      "finalHourlyRates": {
+        "0.2": 16.90,
+        "0.4": 10.50,
+        "0.6": 9.30,
+        "0.8": 8.50
+      },
+      "supportedFilaments": [
+        "PLA",
+        "PETG",
+        "ABS",
+        "TPU"
+      ]
+    },
+
+    "bambu_h2s": {
+      "baseRatePerHour": 7.00,
+      "rateAfter60PercentMarkup": 11.20,
+      "finalHourlyRates": {
+        "0.2": 22.66,
+        "0.4": 13.70,
+        "0.6": 12.02,
+        "0.8": 10.90
+      },
+      "supportedFilaments": [
+        "PLA",
+        "PETG",
+        "ABS",
+        "TPU",
+        "ASA",
+        "NYLON",
+        "PLA_CF",
+        "NYLON_CF"
+      ]
+    }
+  },
+
+  "filaments": {
+    "PLA": {
+      "typicalCostPerKg": 11.49,
+      "sellPricePerKg": 34.47,
+      "sellPricePerGram": 0.034
+    },
+    "PETG": {
+      "typicalCostPerKg": 11.99,
+      "sellPricePerKg": 35.97,
+      "sellPricePerGram": 0.036
+    },
+    "ABS": {
+      "typicalCostPerKg": 11.99,
+      "sellPricePerKg": 35.97,
+      "sellPricePerGram": 0.036
+    },
+    "TPU": {
+      "typicalCostPerKg": 25.98,
+      "sellPricePerKg": 77.94,
+      "sellPricePerGram": 0.078
+    },
+    "ASA": {
+      "typicalCostPerKg": 26.99,
+      "sellPricePerKg": 80.97,
+      "sellPricePerGram": 0.081
+    },
+    "NYLON": {
+      "typicalCostPerKg": 45.99,
+      "sellPricePerKg": 137.97,
+      "sellPricePerGram": 0.138
+    },
+    "PLA_CF": {
+      "typicalCostPerKg": 34.99,
+      "sellPricePerKg": 104.97,
+      "sellPricePerGram": 0.105
+    },
+    "NYLON_CF": {
+      "typicalCostPerKg": 44.99,
+      "sellPricePerKg": 134.97,
+      "sellPricePerGram": 0.135
+    }
+  }
+}
