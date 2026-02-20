@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -39,6 +38,35 @@ const formatCurrency = (amount: number) => {
     currency: "USD",
   }).format(amount);
 };
+
+function ConsensusBreakdown({ quote }: { quote: QuoteOutput }) {
+  if (!quote.consensusDetails || quote.consensusDetails.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="border-t pt-4">
+      <h4 className="text-sm font-sans font-semibold text-foreground mb-2">AI Consensus Breakdown</h4>
+      <div className="space-y-2 text-sm font-mono">
+        {quote.consensusDetails.map((detail) => (
+          <div key={detail.model} className="p-2 rounded-md bg-muted/50">
+             <div className="flex justify-between items-center font-medium capitalize">
+                <span>{detail.model.replace(/-/g, ' ')}</span>
+             </div>
+             <div className="flex justify-between text-muted-foreground text-xs">
+                <span>Print Time:</span>
+                <span>{detail.printTimeHours.toFixed(1)} hrs</span>
+             </div>
+             <div className="flex justify-between text-muted-foreground text-xs">
+                <span>Material:</span>
+                <span>{detail.materialGrams.toFixed(0)} g</span>
+             </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 
 export function AutomotiveQuoteWizard() {
@@ -171,7 +199,7 @@ export function AutomotiveQuoteWizard() {
             {isLoading ? (
               <>
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                Analyzing Model...
+                Running AI Consensus...
               </>
             ) : (
               <>
@@ -192,7 +220,7 @@ export function AutomotiveQuoteWizard() {
           {isLoading && (
              <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-64">
                 <Loader2 className="h-10 w-10 animate-spin text-primary" />
-                <p className="font-medium">AI is analyzing your 3D model...</p>
+                <p className="font-medium">AI consensus is analyzing your model...</p>
                 <p className="text-sm">This may take a moment depending on model complexity.</p>
               </div>
           )}
@@ -232,6 +260,8 @@ export function AutomotiveQuoteWizard() {
                   <span>{formatCurrency(quote.shippingCost)}</span>
                 </div>
               </div>
+
+              <ConsensusBreakdown quote={quote} />
 
               {quote.warnings.length > 0 && (
                 <div className="border-t pt-4">
