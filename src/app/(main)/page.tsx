@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { PlaceHolderImages } from '@/lib/placeholder-images';
+import { ChatInterface } from '@/components/assistant/chat-interface';
 
 const packages = [
   {
@@ -69,8 +70,6 @@ const packages = [
 ];
 
 export default function HomePage() {
-  const heroImage = PlaceHolderImages.find((img) => img.id === 'hero-image');
-
   return (
     <div className="flex flex-col">
       <section className="relative w-full bg-secondary/50">
@@ -80,8 +79,8 @@ export default function HomePage() {
               Build Hardware Faster
             </h1>
             <p className="max-w-2xl mx-auto lg:mx-0 text-lg text-foreground/80 md:text-xl">
-              Reinforced prints and precision prototypes engineered for
-              real-world loads.
+              Use our AI Assistant for instant material advice, or get a full
+              quote for your project.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
               <Button
@@ -99,17 +98,8 @@ export default function HomePage() {
               </Button>
             </div>
           </div>
-          <div className="relative rounded-lg overflow-hidden aspect-video">
-            {heroImage && (
-              <Image
-                src={heroImage.imageUrl}
-                alt={heroImage.description}
-                fill
-                className="object-cover"
-                data-ai-hint={heroImage.imageHint}
-                priority
-              />
-            )}
+          <div>
+            <ChatInterface />
           </div>
         </div>
       </section>
