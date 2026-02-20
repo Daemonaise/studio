@@ -2,15 +2,33 @@
   "placeholderImages": [
     {
       "id": "hero-image",
-      "description": "Hero image for the landing page, showing an industrial factory setting.",
-      "imageUrl": "https://images.unsplash.com/photo-1644409287870-0eb0d03e33fa?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw4fHxpbmR1c3RyaWFsJTIwZmFjdG9yeXxlbnwwfHx8fDE3NzA3OTA1MTN8MA&ixlib=rb-4.1.0&q=80&w=1080",
-      "imageHint": "industrial factory"
+      "description": "Hero image for the landing page, showing a futuristic car body.",
+      "imageUrl": "https://images.unsplash.com/photo-1617573458955-3f353655ed51?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw1fHxmdXR1cmlzdGljJTIwY2FyJTIwYm9keXxlbnwwfHx8fDE3NzA5NTI4ODR8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "futuristic car"
     },
     {
       "id": "model-preview",
       "description": "A placeholder image for a 3D model preview, showing a wireframe.",
       "imageUrl": "https://images.unsplash.com/photo-1658134202928-39ba2938c8a7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw1fHx3aXJlZnJhbWUlMjBhYnN0cmFjdHxlbnwwfHx8fDE3NzA4Mjk1MzR8MA&ixlib=rb-4.1.0&q=80&w=1080",
       "imageHint": "wireframe abstract"
+    },
+    {
+      "id": "digital-file-package",
+      "description": "Image for the digital file package.",
+      "imageUrl": "https://images.unsplash.com/photo-1593349480503-615f1d486952?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwyfHxkaWdpdGFsJTIwYmx1ZXByaW50fGVufDB8fHx8MTc3MDk1Mjg4NHww&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "digital blueprint"
+    },
+    {
+      "id": "disassembled-kit-package",
+      "description": "Image for the disassembled kit package.",
+      "imageUrl": "https://images.unsplash.com/photo-1560969184-10fe8719e047?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw0fHxjYXIlMjBwYXJ0cyUyMGtpdHxlbnwwfHx8fDE3NzA5NTI4ODR8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "car parts"
+    },
+    {
+      "id": "assembled-package",
+      "description": "Image for the assembled package.",
+      "imageUrl": "https://images.unsplash.com/photo-1605516280452-911571212c4b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwxfHxjYXIlMjBib2R5JTIwc2hlbGx8ZW58MHx8fHwxNzA5NTI4ODR8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "car body"
     },
     {
       "id": "material-abs",
@@ -27,7 +45,7 @@
     {
       "id": "material-petg",
       "description": "Image of PETG material.",
-      "imageUrl": "https://images.unsplash.com/photo-1702776102021-d517810b989d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw4fHxjbGVhciUyMHBsYXN0aWN8ZW58MHx8fHwxNzcwODY5OTUzfDA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageUrl": "https://images.unsplash.com/photo-1702776102021-d517810b989d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw4fHxjGVhciUyMHBsYXN0aWN8ZW58MHx8fHwxNzcwODY5OTUzfDA&ixlib=rb-4.1.0&q=80&w=1080",
       "imageHint": "clear plastic"
     },
     {

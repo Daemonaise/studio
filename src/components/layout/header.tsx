@@ -1,3 +1,4 @@
+
 "use client";
 
 import Link from "next/link";
@@ -10,8 +11,11 @@ import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const navItems = [
+  { href: "/#packages", label: "Automotive" },
   { href: "/materials", label: "Materials" },
-  { href: "/assistant", label: "AI Assistant" },
+  { href: "/gallery", label: "Gallery" },
+  { href: "/faq", label: "FAQ" },
+  { href: "/contact", label: "Contact" },
   { href: "/orders", label: "Orders" },
 ];
 
@@ -35,7 +39,7 @@ export function Header() {
                 href={item.href}
                 className={cn(
                   "transition-colors hover:text-foreground/80",
-                  pathname === item.href
+                  (pathname === item.href || (item.href.startsWith("/#") && pathname === "/"))
                     ? "text-foreground"
                     : "text-foreground/60"
                 )}
@@ -70,7 +74,7 @@ export function Header() {
                     href={item.href}
                     className={cn(
                       "transition-colors hover:text-foreground/80",
-                      pathname === item.href
+                      (pathname === item.href || (item.href.startsWith("/#") && pathname === "/"))
                         ? "text-foreground"
                         : "text-foreground/60"
                     )}

@@ -1,3 +1,4 @@
+
 import Image from "next/image";
 import { materials, type Material } from "@/app/data/materials";
 import {
@@ -45,7 +46,7 @@ function MaterialCard({ material }: { material: Material }) {
             ))}
           </ul>
           <Separator className="my-4" />
-          <h4 className="font-semibold mb-2 text-sm">Common Use Cases:</h4>
+          <h4 className="font-semibold mb-2 text-sm">Common Automotive Use Cases:</h4>
           <div className="flex flex-wrap gap-2">
             {material.useCases.map((useCase) => (
               <Badge key={useCase} variant="secondary">
@@ -65,11 +66,10 @@ export default function MaterialsPage() {
       <div className="container py-12 md:py-20">
         <div className="text-center space-y-4 mb-12">
           <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
-            Materials & Specifications
+            Automotive Grade Materials
           </h1>
           <p className="max-w-3xl mx-auto text-lg text-foreground/70">
-            Explore our wide range of high-performance materials to find the
-            perfect fit for your project.
+            Explore our range of high-performance materials suitable for demanding automotive applications.
           </p>
         </div>
 

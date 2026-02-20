@@ -1,3 +1,4 @@
+
 export type MaterialProperty = {
   name: string;
   value: string;
@@ -15,81 +16,99 @@ export type Material = {
 
 export const materials: Material[] = [
   {
-    id: "abs",
-    name: "ABS (Acrylonitrile Butadiene Styrene)",
-    description: "A tough, impact-resistant thermoplastic ideal for functional prototypes and end-use parts.",
-    imageId: "material-abs",
-    properties: [
-      { name: "Tensile Strength", value: "40", unit: "MPa" },
-      { name: "Stiffness (Young's Modulus)", value: "2.0", unit: "GPa" },
-      { name: "Max Temperature", value: "100", unit: "°C" },
-      { name: "Durability", value: "High", unit: "" },
-    ],
-    useCases: ["Automotive components", "Electronic housings", "Toys", "Protective cases"],
-  },
-  {
     id: "pla",
-    name: "PLA (Polylactic Acid)",
-    description: "A biodegradable and easy-to-print material, perfect for rapid prototyping and detailed models.",
+    name: "PLA",
+    description: "Good for detailed mockups and non-structural interior trim. Easy to print but has a low heat deflection temperature.",
     imageId: "material-pla",
     properties: [
       { name: "Tensile Strength", value: "50", unit: "MPa" },
-      { name: "Stiffness (Young's Modulus)", value: "3.5", unit: "GPa" },
       { name: "Max Temperature", value: "60", unit: "°C" },
       { name: "Durability", value: "Medium", unit: "" },
     ],
-    useCases: ["Visual prototypes", "Architectural models", "Low-stress applications", "Educational models"],
+    useCases: ["Interior trim mockups", "Dash knobs", "Display models"],
   },
   {
     id: "petg",
-    name: "PETG (Polyethylene Terephthalate Glycol)",
-    description: "Combines the ease of printing of PLA with the strength and durability of ABS.",
+    name: "PETG",
+    description: "A good all-rounder with better temperature and chemical resistance than PLA. Suitable for functional prototypes and some end-use parts.",
     imageId: "material-petg",
     properties: [
       { name: "Tensile Strength", value: "50", unit: "MPa" },
-      { name: "Stiffness (Young's Modulus)", value: "2.1", unit: "GPa" },
       { name: "Max Temperature", value: "80", unit: "°C" },
       { name: "Durability", value: "High", unit: "" },
     ],
-    useCases: ["Mechanical parts", "Food-safe containers", "Water bottles", "Signage"],
+    useCases: ["Brackets", "Engine bay covers (non-critical)", "Functional prototypes"],
+  },
+  {
+    id: "asa",
+    name: "ASA",
+    description: "Excellent UV and weather resistance, making it ideal for exterior parts. Similar properties to ABS but with better outdoor durability.",
+    imageId: "material-abs", // Reusing for now
+    properties: [
+      { name: "Tensile Strength", value: "45", unit: "MPa" },
+      { name: "Max Temperature", value: "95", unit: "°C" },
+      { name: "Durability", value: "High", unit: "" },
+    ],
+    useCases: ["Grilles", "Mirror housings", "Bumper trim", "Exterior panels"],
   },
   {
     id: "nylon",
-    name: "Nylon (Polyamide)",
-    description: "Known for its exceptional strength, flexibility, and durability. Excellent for living hinges and high-wear parts.",
+    name: "Nylon (PA)",
+    description: "Exceptional strength, toughness, and chemical resistance, especially oils and fuels. Great for high-wear mechanical parts.",
     imageId: "material-nylon",
     properties: [
       { name: "Tensile Strength", value: "70", unit: "MPa" },
-      { name: "Stiffness (Young's Modulus)", value: "1.4", unit: "GPa" },
       { name: "Max Temperature", value: "150", unit: "°C" },
       { name: "Durability", value: "Very High", unit: "" },
     ],
-    useCases: ["Gears and bearings", "Living hinges", "Tools and fixtures", "Drone parts"],
+    useCases: ["Gears", "Bushings", "Intake components", "Fuel line clips"],
   },
   {
-    id: "tpu",
-    name: "TPU (Thermoplastic Polyurethane)",
-    description: "A flexible, rubber-like material that is highly resistant to abrasion, oil, and grease.",
-    imageId: "material-tpu",
+    id: "pla-cf",
+    name: "PLA-CF",
+    description: "Carbon fiber reinforced PLA. Offers increased stiffness and a matte finish, but still has low temperature resistance.",
+    imageId: "material-pla",
     properties: [
-      { name: "Tensile Strength", value: "30", unit: "MPa" },
-      { name: "Stiffness (Young's Modulus)", value: "0.05", unit: "GPa" },
-      { name: "Max Temperature", value: "80", unit: "°C" },
+      { name: "Tensile Strength", value: "65", unit: "MPa" },
+      { name: "Max Temperature", value: "65", unit: "°C" },
+      { name: "Durability", value: "Medium", unit: "" },
+    ],
+    useCases: ["Stiff structural mockups", "Aesthetic interior parts"],
+  },
+  {
+    id: "petg-cf",
+    name: "PETG-CF",
+    description: "Carbon fiber reinforcement adds significant stiffness and strength to PETG, making it suitable for more demanding applications.",
+    imageId: "material-petg",
+    properties: [
+      { name: "Tensile Strength", value: "80", unit: "MPa" },
+      { name: "Max Temperature", value: "85", unit: "°C" },
+      { name: "Durability", value: "High", unit: "" },
+    ],
+    useCases: ["Chassis brackets", "Fan shrouds", "Durable jigs and fixtures"],
+  },
+  {
+    id: "nylon-cf",
+    name: "Nylon-CF",
+    description: "A top-tier material combining the toughness of Nylon with the stiffness of carbon fiber. Excellent for high-performance, end-use parts.",
+    imageId: "material-nylon",
+    properties: [
+      { name: "Tensile Strength", value: "110", unit: "MPa" },
+      { name: "Max Temperature", value: "160", unit: "°C" },
       { name: "Durability", value: "Very High", unit: "" },
     ],
-    useCases: ["Phone cases", "Flexible prototypes", "Seals and gaskets", "Wearables"],
+    useCases: ["Suspension components", "Engine brackets", "Aero parts", "Structural monocoque segments"],
   },
-  {
-    id: "standard-resin",
-    name: "Standard Resin",
-    description: "Delivers highly detailed and smooth surface finishes, ideal for intricate models and visual prototypes.",
-    imageId: "material-resin",
+   {
+    id: "asa-cf",
+    name: "ASA-CF",
+    description: "Combines the UV resistance of ASA with the stiffness of carbon fiber. Perfect for lightweight, strong, and durable exterior components.",
+    imageId: "material-abs",
     properties: [
-      { name: "Tensile Strength", value: "60", unit: "MPa" },
-      { name: "Stiffness (Young's Modulus)", value: "2.8", unit: "GPa" },
-      { name: "Max Temperature", value: "70", unit: "°C" },
-      { name: "Durability", value: "Low", unit: "" },
+      { name: "Tensile Strength", value: "75", unit: "MPa" },
+      { name: "Max Temperature", value: "100", unit: "°C" },
+      { name: "Durability": "Very High", unit: "" },
     ],
-    useCases: ["Miniatures and figurines", "Jewelry prototyping", "Dental models", "High-detail visual models"],
+    useCases: ["Spoilers", "Splitters", "Side skirts", "Custom body panels"],
   },
 ];
