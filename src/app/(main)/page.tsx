@@ -2,7 +2,7 @@
 'use client';
 import Image from 'next/image';
 import Link from 'next/link';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, PlayCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -13,7 +13,6 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { PlaceHolderImages } from '@/lib/placeholder-images';
-import { ChatInterface } from '@/components/assistant/chat-interface';
 
 const packages = [
   {
@@ -98,8 +97,11 @@ export default function HomePage() {
               </Button>
             </div>
           </div>
-          <div>
-            <ChatInterface />
+          <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted flex items-center justify-center">
+            <div className="text-center text-muted-foreground">
+                <PlayCircle className="h-20 w-20 mx-auto" />
+                <p className="mt-4 font-medium">Video coming soon</p>
+            </div>
           </div>
         </div>
       </section>

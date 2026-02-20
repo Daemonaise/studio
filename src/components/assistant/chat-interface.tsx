@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState } from "react";
@@ -5,7 +6,6 @@ import { Bot, Loader2, Send, User } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { aiEngineeringAssistant, AiEngineeringAssistantOutput } from "@/ai/flows/ai-engineering-assistant-flow";
 import { cn } from "@/lib/utils";
 
@@ -47,14 +47,8 @@ export function ChatInterface() {
   };
 
   return (
-    <Card className="w-full max-w-3xl mx-auto">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Bot /> AI Engineering Assistant
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4 h-[50vh] overflow-y-auto pr-4 border-b mb-4">
+    <div className="flex flex-col h-full">
+      <div className="flex-grow space-y-4 h-[400px] overflow-y-auto pr-4 mb-4">
           {messages.map((message, index) => (
             <div
               key={index}
@@ -106,11 +100,11 @@ export function ChatInterface() {
             </div>
           )}
         </div>
-        <form onSubmit={handleSendMessage} className="flex items-center gap-2">
+        <form onSubmit={handleSendMessage} className="flex items-center gap-2 border-t pt-4">
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="e.g., 'What's the best material for a durable drone frame?'"
+            placeholder="e.g., 'What's the best material...?'"
             disabled={isLoading}
           />
           <Button type="submit" disabled={isLoading || !input.trim()}>
@@ -118,7 +112,6 @@ export function ChatInterface() {
             <span className="sr-only">Send</span>
           </Button>
         </form>
-      </CardContent>
-    </Card>
+    </div>
   );
 }

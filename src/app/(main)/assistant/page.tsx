@@ -1,4 +1,7 @@
+
 import { ChatInterface } from "@/components/assistant/chat-interface";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Bot } from "lucide-react";
 
 export default function AssistantPage() {
   return (
@@ -13,7 +16,16 @@ export default function AssistantPage() {
             Ask about trade-offs between strength, print time, and cost.
           </p>
         </div>
-        <ChatInterface />
+        <Card className="w-full max-w-3xl mx-auto">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Bot /> AI Engineering Assistant
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ChatInterface />
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
