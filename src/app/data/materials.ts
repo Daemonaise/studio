@@ -107,7 +107,7 @@ export const materials: Material[] = [
     properties: [
       { name: "Tensile Strength", value: "75", unit: "MPa" },
       { name: "Max Temperature", value: "100", unit: "°C" },
-      { name: "Durability": "Very High", unit: "" },
+      { name: "Durability", value: "Very High", unit: "" },
     ],
     useCases: ["Spoilers", "Splitters", "Side skirts", "Custom body panels"],
   },
