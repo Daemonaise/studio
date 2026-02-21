@@ -63,7 +63,7 @@ export default function HomePage() {
             <div className="relative rounded-lg overflow-hidden bg-muted shadow-2xl shadow-primary/20">
               <video
                 className="w-full h-auto block"
-                src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2F71c422cb7d944455bbbc042a5ff0872b.MOV?alt=media&token=97cf4dae-ee37-420b-8e3c-d3ac96855b06"
+                src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2F20fd23dec958480baafbcb5e2e7dc22b.mov?alt=media&token=bd957dbc-d6f1-45da-a912-db18186bed35"
                 autoPlay
                 loop
                 muted
