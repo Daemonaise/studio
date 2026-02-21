@@ -91,7 +91,7 @@ export const materials: Material[] = [
     id: "PLA_CF",
     name: "PLA-CF",
     description: "Carbon fiber reinforced PLA. Offers increased stiffness and a matte finish, but still has low temperature resistance.",
-    imageId: "material-pla",
+    imageId: "material-pla-cf",
     properties: [
       { name: "Tensile Strength", value: "65", unit: "MPa" },
       { name: "Max Temperature", value: "65", unit: "°C" },
@@ -112,3 +112,5 @@ export const materials: Material[] = [
     useCases: ["Suspension components", "Engine brackets", "Aero parts", "Structural monocoque segments"],
   }
 ];
+
+    

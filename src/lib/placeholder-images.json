@@ -77,6 +77,12 @@
       "description": "Image of carbon fiber reinforced Nylon parts.",
       "imageUrl": "https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FNylon-cf%20parts.jpg?alt=media&token=c1937a57-82e5-4af1-b4fe-c07bd0b6e8ea",
       "imageHint": "carbon fiber parts"
+    },
+    {
+      "id": "material-pla-cf",
+      "description": "Image of Carbon Fiber PLA material.",
+      "imageUrl": "https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FPLA%20CF%20cart%20part.jpg?alt=media&token=ec119a46-988c-4ffa-96e8-b9b308e16e5a",
+      "imageHint": "carbon fiber part"
     }
   ]
 }
