@@ -58,11 +58,11 @@ export default function HomePage() {
 
       <section className="w-full bg-background py-20 md:py-32">
         <div className="container grid lg:grid-cols-2 gap-12 xl:gap-20 items-center">
-          <div className="relative mx-auto w-full max-w-sm">
+          <div className="relative">
             <div className="absolute -inset-1 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-60 blur-xl"></div>
-            <div className="relative rounded-lg overflow-hidden bg-muted shadow-2xl shadow-primary/20">
+            <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted shadow-2xl shadow-primary/20">
               <video
-                className="w-full h-auto block"
+                className="absolute top-0 left-0 w-full h-full object-cover"
                 src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2F20fd23dec958480baafbcb5e2e7dc22b.mov?alt=media&token=bd957dbc-d6f1-45da-a912-db18186bed35"
                 autoPlay
                 loop
