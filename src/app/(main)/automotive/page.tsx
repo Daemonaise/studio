@@ -1,3 +1,4 @@
+
 'use client';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -33,7 +34,7 @@ const packages = [
   {
     id: 'disassembled-kit',
     name: '3D Printed Car Body – Disassembled Kit',
-    price: '$5,000 - $15,000',
+    price: '$5,000 - $7,500',
     includes: [
       'Printed body panels/monocoque segments',
       'Labeled parts list',
