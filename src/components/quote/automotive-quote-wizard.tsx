@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useRef } from "react";
@@ -132,7 +133,7 @@ export function AutomotiveQuoteWizard() {
   const availableMaterials = materials.map(m => m.id);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
       <div className="group relative transform-gpu rounded-lg transition-transform duration-300 ease-in-out will-change-transform hover:scale-105">
         <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-100"></div>
         <Card className="relative h-full flex flex-col">
@@ -327,3 +328,5 @@ export function AutomotiveQuoteWizard() {
     </div>
   );
 }
+
+    
