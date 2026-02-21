@@ -14,11 +14,9 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useToast } from "@/hooks/use-toast";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { toast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -28,19 +26,10 @@ export default function LoginPage() {
     setError("");
 
     if (email === "test@test.com" && password === "password") {
-      toast({
-        title: "Login Successful",
-        description: "Welcome back! Redirecting you to the homepage.",
-      });
       router.push("/");
     } else {
       const newError = "Invalid email or password. Please try again.";
       setError(newError);
-      toast({
-        variant: "destructive",
-        title: "Login Failed",
-        description: newError,
-      });
     }
   };
 
