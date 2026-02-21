@@ -170,7 +170,7 @@ const estimationFlow = ai.defineFlow(
   async input => {
     // Define the models for consensus
     const models = [
-      'googleai/gemini-2.5-flash',
+      'googleai/gemini-2.5-pro',
     ];
 
     const estimationPromises = models.map(async modelId => {
