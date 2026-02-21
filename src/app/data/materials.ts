@@ -67,7 +67,7 @@ export const materials: Material[] = [
     id: "ASA",
     name: "ASA",
     description: "Excellent UV and weather resistance, making it ideal for exterior parts. Similar properties to ABS but with better outdoor durability.",
-    imageId: "material-abs",
+    imageId: "material-asa",
     properties: [
       { name: "Tensile Strength", value: "45", unit: "MPa" },
       { name: "Max Temperature", value: "95", unit: "°C" },

@@ -37,6 +37,12 @@
       "imageHint": "black plastic"
     },
     {
+      "id": "material-asa",
+      "description": "Image for ASA material showing car trim.",
+      "imageUrl": "https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FCar%20trim%20ASA.jpg?alt=media&token=9dcfdd87-1972-4df1-b98a-e0ee52b07e4c",
+      "imageHint": "car trim"
+    },
+    {
       "id": "material-pla",
       "description": "Image of PLA material.",
       "imageUrl": "https://images.unsplash.com/photo-1710828530560-2920125ad032?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw0fHxwbGFzdGljJTIwZmlsYW1lbnR8ZW58MHx8fHwxNzcwODY5OTUzfDA&ixlib=rb-4.1.0&q=80&w=1080",
