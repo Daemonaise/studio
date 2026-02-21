@@ -10,10 +10,11 @@ import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
 import pricingMatrix from '@/app/data/pricing-matrix.json';
 import { MeshMetrics } from '@/lib/mesh-analyzer';
+import { EstimationOutput } from '@/ai/flows/quote-generator-flow';
 
 // Schema for the STL metrics
 const MeshMetricsSchema = z.object({
-  format: z.enum(['stl', 'obj', '3mf']),
+  format: z.enum(['stl', 'obj', '3mf', 'amf']),
   units: z.string(),
   triangles: z.number(),
   bbox_mm: z.object({ x: z.number(), y: z.number(), z: z.number() }),
@@ -38,6 +39,8 @@ const EstimationOutputSchema = z.object({
   printTimeHours: z.number().describe('The estimated time to print the object in hours.'),
   materialGrams: z.number().describe('The estimated material needed in grams.'),
 });
+export type EstimationOutput = z.infer<typeof EstimationOutputSchema>;
+
 
 // Schema for the final, calculated quote returned to the client
 const QuoteOutputSchema = z.object({
@@ -170,12 +173,41 @@ const estimationFlow = ai.defineFlow(
     inputSchema: QuoteGeneratorInputSchema,
     outputSchema: EstimationOutputSchema,
   },
-  async input => {
-    // Keeping it simple with one reliable model as the new architecture is the main fix.
-    const {output} = await estimationPrompt(input);
-    if (!output) {
-      throw new Error('The AI model failed to provide an estimation. Please try again later.');
+  async (input) => {
+    const models = [
+      ai.model('googleai/gemini-2.5-pro'),
+      ai.model('googleai/gemini-1.5-pro'),
+      ai.model('googleai/gemini-1.5-flash'),
+    ];
+
+    const promises = models.map(model => 
+        estimationPrompt(input, { model })
+    );
+
+    const results = await Promise.allSettled(promises);
+
+    const validResults: EstimationOutput[] = [];
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled' && result.value.output) {
+        validResults.push(result.value.output);
+      } else {
+        // Don't log the model object, just its name.
+        const modelName = (models[index] as any)?.name || `Model ${index}`;
+        console.error(`Model ${modelName} failed:`, result.status === 'rejected' ? result.reason : 'No output');
+      }
+    });
+
+    if (validResults.length === 0) {
+      throw new Error('All AI models failed to provide an estimation. Please try again later.');
     }
-    return output;
+
+    // Calculate the average
+    const totalPrintTime = validResults.reduce((acc, r) => acc + r.printTimeHours, 0);
+    const totalMaterial = validResults.reduce((acc, r) => acc + r.materialGrams, 0);
+    
+    return {
+      printTimeHours: totalPrintTime / validResults.length,
+      materialGrams: totalMaterial / validResults.length,
+    };
   }
 );
