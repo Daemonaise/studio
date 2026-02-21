@@ -62,9 +62,9 @@
     },
     {
       "id": "material-tpu",
-      "description": "Image of TPU material.",
-      "imageUrl": "https://images.unsplash.com/photo-1741192223245-46cbbe8ae332?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwxMHx8ZmxleGlibGUlMjBydWJiZXJ8ZW58MHx8fHwxNzcwODY5OTUzfDA&ixlib=rb-4.1.0&q=80&w=1080",
-      "imageHint": "flexible rubber"
+      "description": "Image of a TPU bushing.",
+      "imageUrl": "https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FTPU%20Bushing.jpg?alt=media&token=caac1c43-fa5f-41fe-8d85-a3deb9cf5aac",
+      "imageHint": "TPU bushing"
     },
     {
       "id": "material-resin",
