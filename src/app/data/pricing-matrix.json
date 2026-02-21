@@ -2,17 +2,17 @@
   "meta": {
     "version": "2026-02-21b",
     "currency": "USD",
-    "businessMarkupOnMachineRate": 0.60,
-    "materialMarkupTypicalCostMultiplier": 3.0,
+    "businessMarkupOnMachineRate": 0.6,
+    "materialMarkupTypicalCostMultiplier": 3,
     "shippingEmbedded": {
       "method": "embedded_per_hour",
       "assumptions": {
         "typicalFreightCost": 600,
-        "shippingMarkupMultiplier": 2.0,
+        "shippingMarkupMultiplier": 2,
         "hoursBasis": 480
       },
       "sellShipping": 1200,
-      "embeddedPerHour": 2.50
+      "embeddedPerHour": 2.5
     }
   },
   "printer_fleet": {
@@ -49,6 +49,14 @@
         "y": 420,
         "z": 500
       },
+      "capabilities": {
+        "maxNozzleC": 260,
+        "maxBedC": 90,
+        "hasEnclosure": false,
+        "hasHeatedChamber": false,
+        "heatedChamberC": 0,
+        "hasHardenedNozzle": false
+      },
       "baseRatePerHour": 4,
       "rateAfterBusinessMarkup": 6.4,
       "bedCycleHours": 24,
@@ -84,6 +92,14 @@
         "y": 420,
         "z": 500
       },
+      "capabilities": {
+        "maxNozzleC": 300,
+        "maxBedC": 90,
+        "hasEnclosure": false,
+        "hasHeatedChamber": false,
+        "heatedChamberC": 0,
+        "hasHardenedNozzle": false
+      },
       "baseRatePerHour": 5,
       "rateAfterBusinessMarkup": 8,
       "bedCycleHours": 24,
@@ -115,9 +131,17 @@
       "label": "Bambu Lab H2S",
       "qualityTier": 3,
       "buildVolume_mm": {
-        "x": 256,
-        "y": 256,
-        "z": 256
+        "x": 340,
+        "y": 320,
+        "z": 340
+      },
+      "capabilities": {
+        "maxNozzleC": 350,
+        "maxBedC": 120,
+        "hasEnclosure": true,
+        "hasHeatedChamber": true,
+        "heatedChamberC": 65,
+        "hasHardenedNozzle": true
       },
       "baseRatePerHour": 7,
       "rateAfterBusinessMarkup": 11.2,
@@ -154,41 +178,105 @@
   },
   "filaments": {
     "PLA": {
+      "requirements": {
+        "minNozzleC": 200,
+        "minBedC": 0,
+        "requiresEnclosure": false,
+        "requiresHeatedChamber": false,
+        "requiresChamberTempC": 0,
+        "requiresHardenedNozzle": false
+      },
       "sellPricePerKg": 34.47,
       "sellPricePerGram": 0.034,
       "defaultGPerHour_0_4": 40
     },
     "PETG": {
+      "requirements": {
+        "minNozzleC": 230,
+        "minBedC": 60,
+        "requiresEnclosure": false,
+        "requiresHeatedChamber": false,
+        "requiresChamberTempC": 0,
+        "requiresHardenedNozzle": false
+      },
       "sellPricePerKg": 35.97,
       "sellPricePerGram": 0.036,
       "defaultGPerHour_0_4": 40
     },
     "ABS": {
+      "requirements": {
+        "minNozzleC": 240,
+        "minBedC": 90,
+        "requiresEnclosure": true,
+        "requiresHeatedChamber": false,
+        "requiresChamberTempC": 0,
+        "requiresHardenedNozzle": false
+      },
       "sellPricePerKg": 35.97,
       "sellPricePerGram": 0.036,
       "defaultGPerHour_0_4": 38
     },
     "TPU": {
+      "requirements": {
+        "minNozzleC": 220,
+        "minBedC": 0,
+        "requiresEnclosure": false,
+        "requiresHeatedChamber": false,
+        "requiresChamberTempC": 0,
+        "requiresHardenedNozzle": false
+      },
       "sellPricePerKg": 77.94,
       "sellPricePerGram": 0.078,
       "defaultGPerHour_0_4": 28
     },
     "ASA": {
+      "requirements": {
+        "minNozzleC": 250,
+        "minBedC": 90,
+        "requiresEnclosure": true,
+        "requiresHeatedChamber": true,
+        "requiresChamberTempC": 50,
+        "requiresHardenedNozzle": false
+      },
       "sellPricePerKg": 80.97,
       "sellPricePerGram": 0.081,
       "defaultGPerHour_0_4": 35
     },
     "NYLON": {
+      "requirements": {
+        "minNozzleC": 270,
+        "minBedC": 80,
+        "requiresEnclosure": true,
+        "requiresHeatedChamber": true,
+        "requiresChamberTempC": 50,
+        "requiresHardenedNozzle": false
+      },
       "sellPricePerKg": 137.97,
       "sellPricePerGram": 0.138,
       "defaultGPerHour_0_4": 30
     },
     "PLA_CF": {
+      "requirements": {
+        "minNozzleC": 220,
+        "minBedC": 0,
+        "requiresEnclosure": false,
+        "requiresHeatedChamber": false,
+        "requiresChamberTempC": 0,
+        "requiresHardenedNozzle": true
+      },
       "sellPricePerKg": 104.97,
       "sellPricePerGram": 0.105,
       "defaultGPerHour_0_4": 28
     },
     "NYLON_CF": {
+      "requirements": {
+        "minNozzleC": 290,
+        "minBedC": 80,
+        "requiresEnclosure": true,
+        "requiresHeatedChamber": true,
+        "requiresChamberTempC": 55,
+        "requiresHardenedNozzle": true
+      },
       "sellPricePerKg": 134.97,
       "sellPricePerGram": 0.135,
       "defaultGPerHour_0_4": 25

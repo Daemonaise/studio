@@ -102,40 +102,57 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   const maxDimAfterScaling = Math.max(bboxAfterScaling.x, bboxAfterScaling.y, bboxAfterScaling.z);
 
 
-  // 3. Determine Printer Eligibility & Selection
+  // 3. Determine Printer Compatibility & Selection
   let autoPrinterSelection = initialAutoSelection;
   let selectedPrinterKey: string | undefined = undefined;
 
-  const printersSupportingFilament = Object.entries(pricingMatrix.printers).filter(([_, printer]) => 
-    (printer.supportedFilaments as string[]).includes(material)
-  );
+  // NEW: Determine compatible printers based on material requirements
+  const filamentReqs = pricingMatrix.filaments[material as keyof typeof pricingMatrix.filaments]?.requirements;
+  if (!filamentReqs) {
+      throw new Error(`Filament requirements not found for ${material}. The selected material may not be configured for this system.`);
+  }
 
-  if (printersSupportingFilament.length === 0) {
-    throw new Error(`No available printer supports the selected material: ${material}.`);
+  const compatiblePrinters = Object.entries(pricingMatrix.printers).filter(([key, printer]) => {
+      const caps = (printer as any).capabilities;
+      if (!caps) { 
+          warnings.push(`Printer ${(printer as any).label} is missing capabilities data and was excluded.`);
+          return false;
+      }
+      if (caps.maxNozzleC < filamentReqs.minNozzleC) return false;
+      if (caps.maxBedC < filamentReqs.minBedC) return false;
+      if (filamentReqs.requiresEnclosure && !caps.hasEnclosure) return false;
+      if (filamentReqs.requiresHeatedChamber && !caps.hasHeatedChamber) return false;
+      if (filamentReqs.requiresChamberTempC > 0 && caps.heatedChamberC < filamentReqs.requiresChamberTempC) return false;
+      if (filamentReqs.requiresHardenedNozzle && !caps.hasHardenedNozzle) return false;
+      return true;
+  });
+
+  if (compatiblePrinters.length === 0) {
+      throw new Error(`No available printer is compatible with the requirements for ${material}.`);
   }
 
   // Honor user's choice if possible
   if (!autoPrinterSelection && userSelectedPrinter) {
-    if (printersSupportingFilament.some(([key]) => key === userSelectedPrinter)) {
+    if (compatiblePrinters.some(([key]) => key === userSelectedPrinter)) {
       selectedPrinterKey = userSelectedPrinter;
     } else {
-      warnings.push(`Your selected printer doesn't support ${material}. Auto-selecting a suitable printer.`);
+      warnings.push(`Your selected printer doesn't support ${material} or its requirements. Auto-selecting a suitable printer.`);
       autoPrinterSelection = true;
     }
   }
 
   // Auto-select printer if no valid user choice
   if (autoPrinterSelection) {
-    const eligiblePrintersUnsegmented = printersSupportingFilament.filter(([_, printer]) => 
-      printer.buildVolume_mm.x >= bboxAfterScaling.x &&
-      printer.buildVolume_mm.y >= bboxAfterScaling.y &&
-      printer.buildVolume_mm.z >= bboxAfterScaling.z
+    const eligiblePrintersUnsegmented = compatiblePrinters.filter(([_, printer]) => 
+      (printer as any).buildVolume_mm.x >= bboxAfterScaling.x &&
+      (printer as any).buildVolume_mm.y >= bboxAfterScaling.y &&
+      (printer as any).buildVolume_mm.z >= bboxAfterScaling.z
     );
 
     if (eligiblePrintersUnsegmented.length > 0) {
       eligiblePrintersUnsegmented.sort((a, b) => {
-        const printerA = a[1];
-        const printerB = b[1];
+        const printerA = a[1] as any;
+        const printerB = b[1] as any;
         const rateA = printerA.hourlyRates_withShippingEmbedded[nozzleSize as keyof typeof printerA.hourlyRates_withShippingEmbedded] || Infinity;
         const rateB = printerB.hourlyRates_withShippingEmbedded[nozzleSize as keyof typeof printerB.hourlyRates_withShippingEmbedded] || Infinity;
         return rateA - rateB;
@@ -143,12 +160,12 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       selectedPrinterKey = eligiblePrintersUnsegmented[0][0];
     } else {
       // If all require segmentation, pick the one with the largest build volume
-      printersSupportingFilament.sort((a, b) => {
-        const volA = a[1].buildVolume_mm.x * a[1].buildVolume_mm.y;
-        const volB = b[1].buildVolume_mm.x * b[1].buildVolume_mm.y;
+      compatiblePrinters.sort((a, b) => {
+        const volA = (a[1] as any).buildVolume_mm.x * (a[1] as any).buildVolume_mm.y;
+        const volB = (b[1] as any).buildVolume_mm.x * (b[1] as any).buildVolume_mm.y;
         return volB - volA;
       });
-      selectedPrinterKey = printersSupportingFilament[0][0];
+      selectedPrinterKey = compatiblePrinters[0][0];
     }
   }
   
@@ -156,7 +173,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
     throw new Error('Could not determine a suitable printer for the job.');
   }
 
-  const selectedPrinter = pricingMatrix.printers[selectedPrinterKey as keyof typeof pricingMatrix.printers];
+  const selectedPrinter = pricingMatrix.printers[selectedPrinterKey as keyof typeof pricingMatrix.printers] as any;
   
   // 4. Determine if segmentation is required for the *selected* printer
   const segmentationRequired = !(
@@ -226,7 +243,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
     // Capped Risk Model
     const baseCostForRisk = machineCost + segmentationCost;
     const { baseRiskPercent, tierBump, capPercentOfBase, minRisk } = pricingMatrix.riskModel;
-    const riskPercent = baseRiskPercent + tierBump[segmentationTier as keyof typeof tierBump];
+    const riskPercent = baseRiskPercent + (tierBump as any)[segmentationTier];
     const maxRisk = baseCostForRisk * capPercentOfBase;
     const rawRisk = baseCostForRisk * riskPercent;
     riskCost = Math.max(minRisk, Math.min(rawRisk, maxRisk));
@@ -241,13 +258,13 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   }
 
   // 7. Calculate Material Cost (common for both modes)
-  const materialCost = estimation.materialGrams * pricingMatrix.filaments[material as keyof typeof pricingMatrix.filaments].sellPricePerGram;
+  const materialCost = estimation.materialGrams * (pricingMatrix.filaments[material as keyof typeof pricingMatrix.filaments] as any).sellPricePerGram;
 
   // 8. Apply Multipliers
   let subtotalForMultipliers = machineCost + segmentationCost + riskCost;
   
   // Apply segmentation tier multiplier
-  const segTierMultiplier = pricingMatrix.segmentation.segmentationModeMultipliers[segmentationTier as keyof typeof pricingMatrix.segmentation.segmentationModeMultipliers];
+  const segTierMultiplier = (pricingMatrix.segmentation.segmentationModeMultipliers as any)[segmentationTier];
   subtotalForMultipliers *= segTierMultiplier;
 
   // Apply complexity multiplier
@@ -272,11 +289,11 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   let eligibleFleetCount = 0;
   if (mode === "Bed-Cycle Mode") {
       if (!autoPrinterSelection) {
-          eligibleFleetCount = pricingMatrix.printer_fleet[selectedPrinterKey as keyof typeof pricingMatrix.printer_fleet]?.count || 1;
+          eligibleFleetCount = (pricingMatrix.printer_fleet[selectedPrinterKey as keyof typeof pricingMatrix.printer_fleet] as any)?.count || 1;
       } else {
-          // Sum counts of all printers supporting the filament (simplified logic)
-          printersSupportingFilament.forEach(([key, _]) => {
-              eligibleFleetCount += pricingMatrix.printer_fleet[key as keyof typeof pricingMatrix.printer_fleet]?.count || 0;
+          // Sum counts of all compatible printers
+          compatiblePrinters.forEach(([key, _]) => {
+              eligibleFleetCount += (pricingMatrix.printer_fleet[key as keyof typeof pricingMatrix.printer_fleet] as any)?.count || 0;
           });
       }
   }
@@ -285,7 +302,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       ? Math.ceil(bedCyclesEstimate / cyclesPerDay)
       : Math.ceil(finalEstimatedHours / 12); // Simple heuristic for hourly
 
-  const segmentationAddDays = pricingMatrix.leadTime.segmentationExtraDays[segmentationTier as keyof typeof pricingMatrix.leadTime.segmentationExtraDays] || 0;
+  const segmentationAddDays = (pricingMatrix.leadTime.segmentationExtraDays as any)[segmentationTier] || 0;
   
   const minLead = Math.max(pricingMatrix.leadTime.minDays, baseDays + segmentationAddDays);
   const maxLead = Math.ceil(minLead * 1.4);
@@ -337,7 +354,7 @@ const estimationPrompt = ai.definePrompt({
     nozzleSize: z.string()
   })},
   output: {schema: EstimationOutputSchema},
-  prompt: `You are an expert 3D printing technician. Your task is to analyze a 3D model's metrics and provide accurate estimations for print time and material consumption.
+  prompt: `You are an expert 3D printing technician providing initial estimates. The system will use your estimates to perform detailed cost calculations based on a set of strict business rules. Use the following rules to guide your estimation for print time and material usage.
 
 Analyze the provided metrics. Consider standard print settings for the given material '{{{material}}}' and nozzle size '{{{nozzleSize}}}'.
 
@@ -350,11 +367,34 @@ Model Metrics:
 - Watertight (Est): {{metrics.watertight_est}}
 - Parser Notes: {{#each metrics.notes}}{{{this}}}{{/each}}
 
-Based on your analysis of these metrics, estimate:
+GUARDRAIL CONTEXT: Before outputting a final price the system MUST compute and validate:
+
+1) Unit sanity:
+- If maxDim_mm > 6000, the system will assume unit ambiguity and apply an inferred scaling (mm/cm/m/in).
+- A warning will be added any time scaling inference is used.
+
+2) Geometry reliability:
+- If mesh is not watertight OR volume_cm3 is missing, the system will mark volume as unreliable and do NOT use volume for pricing.
+- It will use bbox-based proxies and may require a manual review.
+
+3) Segment count estimation per printer:
+The system will calculate segment counts for each eligible printer.
+
+4) Bed cycles and calendar time:
+- The system will calculate bed cycles and lead time in days.
+
+5) Risk/contingency must be bounded:
+- Risk is computed as a capped percent of base cost, not proportional to segment count.
+
+6) Single-price rule:
+- The final customer-facing output is a single Total Price and lead time.
+
+YOUR TASK:
+Based on your analysis of the metrics and being mindful of the system's guardrails, estimate:
 1.  The total print time in hours.
 2.  The total material required in grams.
 
-Before providing the final JSON output, fully review your numbers. Ensure your estimations for print time and material grams are reasonable and logical based on the model's volume, dimensions, and complexity.
+Before providing the final JSON output, fully review your numbers. Ensure your estimations for printTimeHours and materialGrams are reasonable and logical based on the model's volume, dimensions, and complexity.
 
 Respond with ONLY a valid JSON object containing 'printTimeHours' and 'materialGrams' keys.`,
 });
