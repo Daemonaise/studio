@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Upload, Loader2, Wand2, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,6 +41,16 @@ const formatCurrency = (amount: number) => {
   }).format(amount);
 };
 
+// Helper to format model names
+const formatModelName = (modelId: string) => {
+  return modelId
+    .split(/[-/]/)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+    .replace('Gemini', 'Gemini') // Keep Gemini as is
+    .replace('Flash', 'Flash');
+};
+
 function ConsensusBreakdown({ quote }: { quote: QuoteOutput }) {
   if (!quote.consensusDetails || quote.consensusDetails.length === 0) {
     return null;
@@ -53,7 +63,7 @@ function ConsensusBreakdown({ quote }: { quote: QuoteOutput }) {
         {quote.consensusDetails.map((detail) => (
           <div key={detail.model} className="p-2 rounded-md bg-muted/50">
              <div className="flex justify-between items-center font-medium capitalize">
-                <span>{detail.model.replace(/-/g, ' ')}</span>
+                <span>{formatModelName(detail.model)}</span>
              </div>
              <div className="flex justify-between text-muted-foreground text-xs">
                 <span>Print Time:</span>
@@ -80,9 +90,17 @@ export function AutomotiveQuoteWizard() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelected = (selectedFile: File | null) => {
     if (selectedFile) {
+      // Validate file type
+      const acceptedTypes = ['.stl', '.obj', '.3mf'];
+      const fileExtension = selectedFile.name.slice(selectedFile.name.lastIndexOf('.')).toLowerCase();
+      if (!acceptedTypes.includes(fileExtension)) {
+        setError(`Invalid file type. Please upload one of the following: ${acceptedTypes.join(', ')}`);
+        return;
+      }
       setFile(selectedFile);
       setQuote(null);
       setError(null);
@@ -111,6 +129,7 @@ export function AutomotiveQuoteWizard() {
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       handleFileSelected(e.dataTransfer.files[0]);
+      e.dataTransfer.clearData();
     }
   };
 
@@ -155,17 +174,18 @@ export function AutomotiveQuoteWizard() {
           </CardHeader>
           <CardContent className="space-y-6 flex-grow">
             <div className="space-y-2">
-              <Label htmlFor="file-upload">3D Model (STL, OBJ, 3MF)</Label>
-              <div
+              <Label>3D Model (STL, OBJ, 3MF)</Label>
+               <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
                 className={cn(
-                  "relative flex items-center justify-center w-full h-48 border-2 border-dashed rounded-lg transition-colors",
-                  isDragging && "border-primary bg-primary/10"
+                  "relative flex items-center justify-center w-full h-48 border-2 border-dashed rounded-lg transition-colors cursor-pointer",
+                  isDragging ? "border-primary bg-primary/10" : "border-input hover:border-primary/50"
                 )}
               >
-                <div className="text-center text-muted-foreground p-4">
+                <div className="text-center text-muted-foreground p-4 pointer-events-none">
                   <Upload className="h-10 w-10 mx-auto mb-2" />
                   {file ? (
                     <p className="font-medium text-foreground">{file.name}</p>
@@ -174,10 +194,11 @@ export function AutomotiveQuoteWizard() {
                   )}
                 </div>
                 <Input
+                  ref={fileInputRef}
                   id="file-upload"
                   type="file"
                   accept=".stl,.obj,.3mf"
-                  className="absolute inset-0 z-10 opacity-0 cursor-pointer"
+                  className="hidden"
                   onChange={handleFileChange}
                   disabled={isLoading}
                 />
@@ -252,7 +273,7 @@ export function AutomotiveQuoteWizard() {
       
       <div className="group relative transform-gpu rounded-lg transition-all duration-300 ease-in-out will-change-transform hover:scale-105">
         <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-100"></div>
-        <Card className="sticky top-24 relative h-full flex flex-col">
+        <Card className="relative h-full flex flex-col">
           <CardHeader>
             <CardTitle>2. Instant Quote</CardTitle>
             <CardDescription>Your estimated cost will appear here after analysis.</CardDescription>
@@ -328,4 +349,3 @@ export function AutomotiveQuoteWizard() {
     </div>
   );
 }
-
