@@ -226,7 +226,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
     // Capped Risk Model
     const baseCostForRisk = machineCost + segmentationCost;
     const { baseRiskPercent, tierBump, capPercentOfBase, minRisk } = pricingMatrix.riskModel;
-    const riskPercent = baseRiskPercent + tierBump[segmentationTier];
+    const riskPercent = baseRiskPercent + tierBump[segmentationTier as keyof typeof tierBump];
     const maxRisk = baseCostForRisk * capPercentOfBase;
     const rawRisk = baseCostForRisk * riskPercent;
     riskCost = Math.max(minRisk, Math.min(rawRisk, maxRisk));
@@ -247,7 +247,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   let subtotalForMultipliers = machineCost + segmentationCost + riskCost;
   
   // Apply segmentation tier multiplier
-  const segTierMultiplier = pricingMatrix.segmentation.segmentationModeMultipliers[segmentationTier];
+  const segTierMultiplier = pricingMatrix.segmentation.segmentationModeMultipliers[segmentationTier as keyof typeof pricingMatrix.segmentation.segmentationModeMultipliers];
   subtotalForMultipliers *= segTierMultiplier;
 
   // Apply complexity multiplier
@@ -353,6 +353,8 @@ Model Metrics:
 Based on your analysis of these metrics, estimate:
 1.  The total print time in hours.
 2.  The total material required in grams.
+
+Before providing the final JSON output, fully review your numbers. Ensure your estimations for print time and material grams are reasonable and logical based on the model's volume, dimensions, and complexity.
 
 Respond with ONLY a valid JSON object containing 'printTimeHours' and 'materialGrams' keys.`,
 });
