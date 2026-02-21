@@ -93,7 +93,7 @@ export function Header() {
               <Link href="/login">Login</Link>
             </Button>
             <Button asChild style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}>
-              <Link href="/quote">Get a Quote</Link>
+              <Link href="/quote">Start Quote</Link>
             </Button>
           </nav>
         </div>

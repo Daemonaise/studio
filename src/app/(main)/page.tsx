@@ -22,8 +22,7 @@ export default function HomePage() {
               Build Hardware Faster
             </h1>
             <p className="max-w-2xl mx-auto lg:mx-0 text-lg text-foreground/80 md:text-xl">
-              Use our AI Assistant for instant material advice, or get a full
-              quote for your project.
+              From rapid prototyping to full-scale production, we are your partner in building hardware faster. Use our AI Assistant for instant material advice, or get a full quote for your project.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
               <Button
@@ -35,7 +34,7 @@ export default function HomePage() {
                 }}
               >
                 <Link href="/quote">
-                  Start Automotive Quote{' '}
+                  Start Quote{' '}
                   <ArrowRight className="ml-2 h-5 w-5" />
                 </Link>
               </Button>
