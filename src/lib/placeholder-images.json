@@ -65,6 +65,12 @@
       "description": "Image of Resin material.",
       "imageUrl": "https://picsum.photos/seed/resin/400/300",
       "imageHint": "liquid resin"
+    },
+    {
+      "id": "material-nylon-cf",
+      "description": "Image of carbon fiber reinforced Nylon parts.",
+      "imageUrl": "https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FNylon-cf%20parts.jpg?alt=media&token=c1937a57-82e5-4af1-b4fe-c07bd0b6e8ea",
+      "imageHint": "carbon fiber parts"
     }
   ]
 }

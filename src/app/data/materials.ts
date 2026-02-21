@@ -103,7 +103,7 @@ export const materials: Material[] = [
     id: "NYLON_CF",
     name: "Nylon-CF",
     description: "A top-tier material combining the toughness of Nylon with the stiffness of carbon fiber. Excellent for high-performance, end-use parts.",
-    imageId: "material-nylon",
+    imageId: "material-nylon-cf",
     properties: [
       { name: "Tensile Strength", value: "110", unit: "MPa" },
       { name: "Max Temperature", value: "160", unit: "°C" },
