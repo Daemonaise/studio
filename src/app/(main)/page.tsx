@@ -96,15 +96,18 @@ export default function HomePage() {
               </Button>
             </div>
           </div>
-          <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted">
-            <video
-              className="absolute top-0 left-0 w-full h-full object-cover"
-              src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FHero%20video.mp4?alt=media&token=15f35f34-1dae-4197-9fec-895a186ce9e9"
-              autoPlay
-              loop
-              muted
-              playsInline
-            />
+          <div className="relative">
+            <div className="absolute -inset-1 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-60 blur-xl"></div>
+            <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted shadow-2xl shadow-primary/20">
+              <video
+                className="absolute top-0 left-0 w-full h-full object-cover"
+                src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FHero%20video.mp4?alt=media&token=15f35f34-1dae-4197-9fec-895a186ce9e9"
+                autoPlay
+                loop
+                muted
+                playsInline
+              />
+            </div>
           </div>
         </div>
       </section>
