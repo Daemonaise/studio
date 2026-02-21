@@ -1,6 +1,6 @@
 {
   "meta": {
-    "version": "2026-02-21",
+    "version": "2026-02-21b",
     "currency": "USD",
     "businessMarkupOnMachineRate": 0.60,
     "materialMarkupTypicalCostMultiplier": 3.0,
@@ -53,7 +53,7 @@
         "0.8": 175.20
       },
       "supportedFilaments": ["PLA", "PETG", "ABS", "TPU"],
-      "recommendedUse": ["large_panels", "large_parts", "cost_effective_big_builds"]
+      "recommendedUse": ["large_parts", "large_panels", "segmented_builds"]
     },
 
     "kobra_3_max": {
@@ -76,7 +76,7 @@
         "0.8": 204.00
       },
       "supportedFilaments": ["PLA", "PETG", "ABS", "TPU"],
-      "recommendedUse": ["large_panels", "large_parts", "better_surface_consistency"]
+      "recommendedUse": ["large_parts", "large_panels", "segmented_builds"]
     },
 
     "bambu_h2s": {
@@ -99,7 +99,7 @@
         "0.8": 130.80
       },
       "supportedFilaments": ["PLA", "PETG", "ABS", "TPU", "ASA", "NYLON", "PLA_CF", "NYLON_CF"],
-      "recommendedUse": ["precision_parts", "tight_tolerance_parts", "reinforced_components"]
+      "recommendedUse": ["precision_parts", "tight_tolerance_parts", "engineering_materials", "segmented_builds"]
     }
   },
 
@@ -117,14 +117,29 @@
   "segmentation": {
     "enabled": true,
     "efficiency": 0.70,
+
     "maxAutoSegments": {
-      "bambu_h2s": 6,
-      "kobra_2_max": 24,
-      "kobra_3_max": 24
+      "bambu_h2s": 40,
+      "kobra_2_max": 60,
+      "kobra_3_max": 60
     },
-    "bondingLaborPerSeam": 45,
+
     "seamsPerSegmentDefault": 1,
-    "riskMultiplierPerSegment": 0.04
+    "bondingLaborPerSeam": 45,
+
+    "riskMultiplierPerSegment": 0.04,
+
+    "segmentationModeMultipliers": {
+      "none": 1.00,
+      "moderate": 1.08,
+      "heavy": 1.18
+    },
+
+    "segmentationTiers": [
+      { "name": "none", "maxSegments": 1 },
+      { "name": "moderate", "maxSegments": 12 },
+      { "name": "heavy", "maxSegments": 999999 }
+    ]
   },
 
   "jobScaleRules": {
@@ -144,6 +159,10 @@
   "leadTime": {
     "utilizationFactor": 0.70,
     "minDays": 2,
-    "maxDaysCap": 21
+    "maxDaysCap": 21,
+    "segmentationExtraDays": {
+      "moderate": 1,
+      "heavy": 3
+    }
   }
 }

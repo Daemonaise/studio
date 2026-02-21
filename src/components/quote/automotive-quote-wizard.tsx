@@ -45,6 +45,12 @@ const formatCurrency = (amount: number) => {
   }).format(amount);
 };
 
+// Helper to format segmentation tier badge
+const formatSegmentationTier = (tier: string) => {
+    if (tier === 'none') return null;
+    return `${tier.charAt(0).toUpperCase() + tier.slice(1)} Segmentation`;
+}
+
 export function AutomotiveQuoteWizard() {
   const [file, setFile] = useState<File | null>(null);
   const [material, setMaterial] = useState<string>("PLA");
@@ -256,7 +262,10 @@ export function AutomotiveQuoteWizard() {
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-2 mb-4">
                   <Badge variant="outline" className="text-primary border-primary">{quote.jobScale}</Badge>
-                  <Badge variant="outline">{quote.mode} Mode</Badge>
+                  <Badge variant="outline">{quote.mode}</Badge>
+                  {formatSegmentationTier(quote.segmentationTier) && 
+                    <Badge variant="outline" className="border-amber-500 text-amber-500">{formatSegmentationTier(quote.segmentationTier)}</Badge>
+                  }
                 </div>
 
                 <div className="bg-secondary/50 rounded-lg p-4 text-center">
