@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const navItems = [
-  { href: "/#packages", label: "Automotive" },
+  { href: "/automotive", label: "Automotive" },
   { href: "/materials", label: "Materials" },
   { href: "/gallery", label: "Gallery" },
   { href: "/faq", label: "FAQ" },
