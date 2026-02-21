@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState } from "react";
@@ -144,15 +145,15 @@ export function AutomotiveQuoteWizard() {
   const availableMaterials = materials.map(m => m.id);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
       <div className="group relative transform-gpu rounded-lg transition-all duration-300 ease-in-out will-change-transform hover:scale-105">
         <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-100"></div>
-        <Card className="relative">
+        <Card className="relative h-full flex flex-col">
           <CardHeader>
             <CardTitle>1. Configure Your Print</CardTitle>
             <CardDescription>Upload your model and select your desired print settings.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
+          <CardContent className="space-y-6 flex-grow">
             <div className="space-y-2">
               <Label htmlFor="file-upload">3D Model (STL, OBJ, 3MF)</Label>
               <div
@@ -251,28 +252,28 @@ export function AutomotiveQuoteWizard() {
       
       <div className="group relative transform-gpu rounded-lg transition-all duration-300 ease-in-out will-change-transform hover:scale-105">
         <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-100"></div>
-        <Card className="sticky top-24 relative">
+        <Card className="sticky top-24 relative h-full flex flex-col">
           <CardHeader>
             <CardTitle>2. Instant Quote</CardTitle>
             <CardDescription>Your estimated cost will appear here after analysis.</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex-grow flex flex-col">
             {isLoading && (
-               <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-64">
+               <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-full">
                   <Loader2 className="h-10 w-10 animate-spin text-primary" />
                   <p className="font-medium">AI consensus is analyzing your model...</p>
                   <p className="text-sm">This may take a moment depending on model complexity.</p>
                 </div>
             )}
             {error && (
-              <div className="flex flex-col items-center justify-center text-center text-destructive space-y-4 h-64 bg-destructive/10 rounded-lg p-4">
+              <div className="flex flex-col items-center justify-center text-center text-destructive space-y-4 h-full bg-destructive/10 rounded-lg p-4">
                 <Info className="h-10 w-10" />
                 <p className="font-medium">Error Generating Quote</p>
                 <p className="text-sm">{error}</p>
               </div>
             )}
             {!isLoading && !quote && !error && (
-               <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 h-64">
+               <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 h-full">
                   <p>Your quote is just a click away.</p>
                 </div>
             )}
@@ -313,13 +314,18 @@ export function AutomotiveQuoteWizard() {
                       </ul>
                   </div>
                 )}
-                 <Button className="w-full" size="lg" disabled>Proceed to Checkout</Button>
-                 <p className="text-xs text-center text-muted-foreground">Checkout functionality is coming soon.</p>
               </div>
             )}
           </CardContent>
+          {quote && (
+            <CardFooter className="flex-col items-stretch space-y-2">
+              <Button className="w-full" size="lg" disabled>Proceed to Checkout</Button>
+              <p className="text-xs text-center text-muted-foreground">Checkout functionality is coming soon.</p>
+            </CardFooter>
+          )}
         </Card>
       </div>
     </div>
   );
 }
+
