@@ -175,7 +175,7 @@ const estimationFlow = ai.defineFlow(
   },
   async (input) => {
     // Using a single, fast and powerful model as requested to simplify logic.
-    const model = ai.model('googleai/gemini-1.5-flash');
+    const model = ai.model('googleai/gemini-2.5-flash-lite');
     const { output } = await estimationPrompt(input, { model });
     if (!output) {
       throw new Error('The AI model failed to provide an estimation. Please try again later.');
