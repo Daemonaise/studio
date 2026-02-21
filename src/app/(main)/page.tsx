@@ -2,7 +2,7 @@
 'use client';
 import Image from 'next/image';
 import Link from 'next/link';
-import { ArrowRight, PlayCircle } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -97,11 +97,15 @@ export default function HomePage() {
               </Button>
             </div>
           </div>
-          <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted flex items-center justify-center">
-            <div className="text-center text-muted-foreground">
-                <PlayCircle className="h-20 w-20 mx-auto" />
-                <p className="mt-4 font-medium">Video coming soon</p>
-            </div>
+          <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted">
+            <video
+              className="absolute top-0 left-0 w-full h-full object-cover"
+              src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FHero%20video.mp4?alt=media&token=15f35f34-1dae-4197-9fec-895a186ce9e9"
+              autoPlay
+              loop
+              muted
+              playsInline
+            />
           </div>
         </div>
       </section>
