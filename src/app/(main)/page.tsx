@@ -1,4 +1,3 @@
-
 'use client';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -120,53 +119,61 @@ export default function HomePage() {
               Select the package that best fits your project needs and budget.
             </p>
           </div>
-          <div className="grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-12 md:grid-cols-2 lg:grid-cols-3">
             {packages.map((pkg) => (
-              <Card key={pkg.id} className="flex flex-col">
-                <CardHeader>
-                  <div className="relative aspect-video w-full rounded-md overflow-hidden mb-4">
-                    <Image
-                      src={pkg.imageUrl}
-                      alt={pkg.name}
-                      fill
-                      className="object-cover"
-                      data-ai-hint={pkg.imageHint}
-                    />
-                  </div>
-                  <CardTitle>{pkg.name}</CardTitle>
-                  <p className="text-2xl font-bold">{pkg.price}</p>
-                  {pkg.disclaimer && (
-                    <CardDescription className="text-amber-600 dark:text-amber-500 text-xs py-2">
-                      {pkg.disclaimer}
-                    </CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent className="flex-grow space-y-4">
-                  <div>
-                    <h4 className="font-semibold mb-2 text-sm">What you get:</h4>
-                    <ul className="list-disc list-inside text-sm text-foreground/80 space-y-1">
-                      {pkg.includes.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <h4 className="font-semibold mb-2 text-sm">
-                      What you provide:
-                    </h4>
-                    <ul className="list-disc list-inside text-sm text-foreground/80 space-y-1">
-                      {pkg.provides.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </CardContent>
-                <CardFooter>
-                  <Button asChild className="w-full">
-                    <Link href={`/quote?package=${pkg.id}`}>Select</Link>
-                  </Button>
-                </CardFooter>
-              </Card>
+              <div
+                key={pkg.id}
+                className="group relative transform-gpu rounded-lg transition-all duration-300 ease-in-out will-change-transform hover:scale-105"
+              >
+                <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-100"></div>
+                <Card className="relative flex h-full flex-col overflow-hidden transition-shadow duration-300 group-hover:shadow-2xl group-hover:shadow-primary/20">
+                  <CardHeader>
+                    <div className="relative aspect-video w-full overflow-hidden rounded-md mb-4">
+                      <Image
+                        src={pkg.imageUrl}
+                        alt={pkg.name}
+                        fill
+                        className="object-cover transition-transform duration-300 group-hover:scale-105"
+                        data-ai-hint={pkg.imageHint}
+                      />
+                    </div>
+                    <CardTitle>{pkg.name}</CardTitle>
+                    <p className="text-2xl font-bold">{pkg.price}</p>
+                    {pkg.disclaimer && (
+                      <CardDescription className="text-amber-600 dark:text-amber-500 text-xs py-2">
+                        {pkg.disclaimer}
+                      </CardDescription>
+                    )}
+                  </CardHeader>
+                  <CardContent className="flex-grow space-y-4">
+                    <div>
+                      <h4 className="font-semibold mb-2 text-sm">
+                        What you get:
+                      </h4>
+                      <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80">
+                        {pkg.includes.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <h4 className="font-semibold mb-2 text-sm">
+                        What you provide:
+                      </h4>
+                      <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80">
+                        {pkg.provides.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </CardContent>
+                  <CardFooter>
+                    <Button asChild className="w-full">
+                      <Link href={`/quote?package=${pkg.id}`}>Select</Link>
+                    </Button>
+                  </CardFooter>
+                </Card>
+              </div>
             ))}
           </div>
         </div>
