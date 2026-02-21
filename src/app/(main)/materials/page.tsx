@@ -15,7 +15,7 @@ import { Separator } from "@/components/ui/separator";
 function MaterialCard({ material }: { material: Material }) {
   const image = PlaceHolderImages.find((img) => img.id === material.imageId);
   return (
-    <Card className="flex flex-col">
+    <Card className="relative flex h-full flex-col overflow-hidden transition-shadow duration-300 group-hover:shadow-2xl group-hover:shadow-primary/20">
       <CardHeader>
         <div className="relative aspect-[4/3] w-full rounded-md overflow-hidden mb-4">
           {image && (
@@ -23,7 +23,7 @@ function MaterialCard({ material }: { material: Material }) {
               src={image.imageUrl}
               alt={material.name}
               fill
-              className="object-cover"
+              className="object-cover transition-transform duration-300 group-hover:scale-105"
               sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
               data-ai-hint={image.imageHint}
             />
@@ -73,9 +73,15 @@ export default function MaterialsPage() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 lg:grid-cols-3">
           {materials.map((material) => (
-            <MaterialCard key={material.id} material={material} />
+             <div
+              key={material.id}
+              className="group relative transform-gpu rounded-lg transition-all duration-300 ease-in-out will-change-transform hover:scale-105"
+            >
+              <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-100"></div>
+              <MaterialCard material={material} />
+            </div>
           ))}
         </div>
       </div>
