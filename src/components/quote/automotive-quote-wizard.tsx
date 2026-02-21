@@ -236,7 +236,7 @@ export function AutomotiveQuoteWizard() {
         <Card className="relative h-full flex flex-col">
           <CardHeader>
             <CardTitle>2. Instant Quote</CardTitle>
-            <CardDescription>Your estimated cost will appear here. All quotes include free shipping.</CardDescription>
+            <CardDescription>Your estimated cost will appear here.</CardDescription>
           </CardHeader>
           <CardContent className="flex-grow flex flex-col">
             {isLoading && (
@@ -259,7 +259,7 @@ export function AutomotiveQuoteWizard() {
                 </div>
             )}
             {quote && (
-              <div className="space-y-4">
+              <div className="space-y-6">
                 <div className="flex flex-wrap gap-2 mb-4">
                   <Badge variant="outline" className="text-primary border-primary">{quote.jobScale}</Badge>
                   <Badge variant="outline">{quote.mode}</Badge>
@@ -268,49 +268,18 @@ export function AutomotiveQuoteWizard() {
                   }
                 </div>
 
-                <div className="bg-secondary/50 rounded-lg p-4 text-center">
+                <div className="bg-secondary/50 rounded-lg p-6 text-center">
                   <Label className="text-sm font-normal text-muted-foreground">Total Estimated Cost</Label>
                   <p className="text-4xl font-bold tracking-tight text-primary">
                     {formatCurrency(quote.costBreakdown.total)}
                   </p>
+                   <p className="text-xs text-muted-foreground mt-1">Includes shipping</p>
                 </div>
 
                 <div className="text-center">
                   <p className="text-sm text-muted-foreground">
                       Estimated Lead Time: <strong>{quote.leadTimeDays.min} - {quote.leadTimeDays.max} days</strong>
                   </p>
-                </div>
-                
-                <div className="space-y-2 text-sm font-mono border-t pt-4">
-                  <h4 className="text-sm font-sans font-semibold text-foreground mb-2">Cost Breakdown</h4>
-                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Machine Time:</span>
-                    <span>{formatCurrency(quote.costBreakdown.machine)}</span>
-                  </div>
-                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Material:</span>
-                    <span>{formatCurrency(quote.costBreakdown.material)}</span>
-                  </div>
-                  {quote.costBreakdown.segmentation > 0 && (
-                     <div className="flex justify-between">
-                        <span className="text-muted-foreground">Segmentation/Assembly:</span>
-                        <span>{formatCurrency(quote.costBreakdown.segmentation)}</span>
-                      </div>
-                  )}
-                  {quote.costBreakdown.risk > 0 && (
-                     <div className="flex justify-between">
-                        <span className="text-muted-foreground">Risk/Contingency:</span>
-                        <span>{formatCurrency(quote.costBreakdown.risk)}</span>
-                      </div>
-                  )}
-                   <div className="flex justify-between border-t mt-2 pt-2">
-                    <span className="font-sans font-semibold text-foreground">Subtotal</span>
-                    <span className="font-sans font-semibold text-foreground">{formatCurrency(quote.costBreakdown.total)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Shipping (Embedded)</span>
-                    <span className="text-muted-foreground">{formatCurrency(quote.costBreakdown.shippingEmbedded)}</span>
-                  </div>
                 </div>
 
                 {quote.warnings.length > 0 && (

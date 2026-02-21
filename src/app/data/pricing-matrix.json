@@ -15,154 +15,284 @@
       "embeddedPerHour": 2.50
     }
   },
-
   "printer_fleet": {
-    "kobra_2_max": { "count": 2 },
-    "kobra_3_max": { "count": 1 },
-    "bambu_h2s": { "count": 2 }
+    "kobra_2_max": {
+      "count": 2
+    },
+    "kobra_3_max": {
+      "count": 1
+    },
+    "bambu_h2s": {
+      "count": 2
+    }
   },
-
   "nozzles": {
-    "available_mm": ["0.2", "0.4", "0.6", "0.8"],
+    "available_mm": [
+      "0.2",
+      "0.4",
+      "0.6",
+      "0.8"
+    ],
     "multipliers": {
-      "0.2": 1.80,
-      "0.4": 1.00,
+      "0.2": 1.8,
+      "0.4": 1,
       "0.6": 0.85,
       "0.8": 0.75
     }
   },
-
   "printers": {
     "kobra_2_max": {
       "label": "Anycubic Kobra 2 Max",
       "qualityTier": 1,
-      "buildVolume_mm": { "x": 420, "y": 420, "z": 500 },
-      "baseRatePerHour": 4.00,
-      "rateAfterBusinessMarkup": 6.40,
+      "buildVolume_mm": {
+        "x": 420,
+        "y": 420,
+        "z": 500
+      },
+      "baseRatePerHour": 4,
+      "rateAfterBusinessMarkup": 6.4,
       "bedCycleHours": 24,
       "hourlyRates_withShippingEmbedded": {
         "0.2": 14.02,
-        "0.4": 8.90,
+        "0.4": 8.9,
         "0.6": 7.94,
-        "0.8": 7.30
+        "0.8": 7.3
       },
       "bedCycleRates_withShippingEmbedded": {
         "0.2": 336.48,
-        "0.4": 213.60,
+        "0.4": 213.6,
         "0.6": 190.56,
-        "0.8": 175.20
+        "0.8": 175.2
       },
-      "supportedFilaments": ["PLA", "PETG", "ABS", "TPU"],
-      "recommendedUse": ["large_parts", "large_panels", "segmented_builds"]
+      "supportedFilaments": [
+        "PLA",
+        "PETG",
+        "ABS",
+        "TPU"
+      ],
+      "recommendedUse": [
+        "large_parts",
+        "large_panels",
+        "segmented_builds"
+      ]
     },
-
     "kobra_3_max": {
       "label": "Anycubic Kobra 3 Max",
       "qualityTier": 2,
-      "buildVolume_mm": { "x": 420, "y": 420, "z": 500 },
-      "baseRatePerHour": 5.00,
-      "rateAfterBusinessMarkup": 8.00,
+      "buildVolume_mm": {
+        "x": 420,
+        "y": 420,
+        "z": 500
+      },
+      "baseRatePerHour": 5,
+      "rateAfterBusinessMarkup": 8,
       "bedCycleHours": 24,
       "hourlyRates_withShippingEmbedded": {
-        "0.2": 16.90,
-        "0.4": 10.50,
-        "0.6": 9.30,
-        "0.8": 8.50
+        "0.2": 16.9,
+        "0.4": 10.5,
+        "0.6": 9.3,
+        "0.8": 8.5
       },
       "bedCycleRates_withShippingEmbedded": {
-        "0.2": 405.60,
-        "0.4": 252.00,
-        "0.6": 223.20,
-        "0.8": 204.00
+        "0.2": 405.6,
+        "0.4": 252,
+        "0.6": 223.2,
+        "0.8": 204
       },
-      "supportedFilaments": ["PLA", "PETG", "ABS", "TPU"],
-      "recommendedUse": ["large_parts", "large_panels", "segmented_builds"]
+      "supportedFilaments": [
+        "PLA",
+        "PETG",
+        "ABS",
+        "TPU"
+      ],
+      "recommendedUse": [
+        "large_parts",
+        "large_panels",
+        "segmented_builds"
+      ]
     },
-
     "bambu_h2s": {
       "label": "Bambu Lab H2S",
       "qualityTier": 3,
-      "buildVolume_mm": { "x": 256, "y": 256, "z": 256 },
-      "baseRatePerHour": 7.00,
-      "rateAfterBusinessMarkup": 11.20,
+      "buildVolume_mm": {
+        "x": 256,
+        "y": 256,
+        "z": 256
+      },
+      "baseRatePerHour": 7,
+      "rateAfterBusinessMarkup": 11.2,
       "bedCycleHours": 12,
       "hourlyRates_withShippingEmbedded": {
         "0.2": 22.66,
-        "0.4": 13.70,
+        "0.4": 13.7,
         "0.6": 12.02,
-        "0.8": 10.90
+        "0.8": 10.9
       },
       "bedCycleRates_withShippingEmbedded": {
         "0.2": 271.92,
-        "0.4": 164.40,
+        "0.4": 164.4,
         "0.6": 144.24,
-        "0.8": 130.80
+        "0.8": 130.8
       },
-      "supportedFilaments": ["PLA", "PETG", "ABS", "TPU", "ASA", "NYLON", "PLA_CF", "NYLON_CF"],
-      "recommendedUse": ["precision_parts", "tight_tolerance_parts", "engineering_materials", "segmented_builds"]
+      "supportedFilaments": [
+        "PLA",
+        "PETG",
+        "ABS",
+        "TPU",
+        "ASA",
+        "NYLON",
+        "PLA_CF",
+        "NYLON_CF"
+      ],
+      "recommendedUse": [
+        "precision_parts",
+        "tight_tolerance_parts",
+        "engineering_materials",
+        "segmented_builds"
+      ]
     }
   },
-
   "filaments": {
-    "PLA": { "sellPricePerKg": 34.47, "sellPricePerGram": 0.034, "defaultGPerHour_0_4": 40 },
-    "PETG": { "sellPricePerKg": 35.97, "sellPricePerGram": 0.036, "defaultGPerHour_0_4": 40 },
-    "ABS": { "sellPricePerKg": 35.97, "sellPricePerGram": 0.036, "defaultGPerHour_0_4": 38 },
-    "TPU": { "sellPricePerKg": 77.94, "sellPricePerGram": 0.078, "defaultGPerHour_0_4": 28 },
-    "ASA": { "sellPricePerKg": 80.97, "sellPricePerGram": 0.081, "defaultGPerHour_0_4": 35 },
-    "NYLON": { "sellPricePerKg": 137.97, "sellPricePerGram": 0.138, "defaultGPerHour_0_4": 30 },
-    "PLA_CF": { "sellPricePerKg": 104.97, "sellPricePerGram": 0.105, "defaultGPerHour_0_4": 28 },
-    "NYLON_CF": { "sellPricePerKg": 134.97, "sellPricePerGram": 0.135, "defaultGPerHour_0_4": 25 }
+    "PLA": {
+      "sellPricePerKg": 34.47,
+      "sellPricePerGram": 0.034,
+      "defaultGPerHour_0_4": 40
+    },
+    "PETG": {
+      "sellPricePerKg": 35.97,
+      "sellPricePerGram": 0.036,
+      "defaultGPerHour_0_4": 40
+    },
+    "ABS": {
+      "sellPricePerKg": 35.97,
+      "sellPricePerGram": 0.036,
+      "defaultGPerHour_0_4": 38
+    },
+    "TPU": {
+      "sellPricePerKg": 77.94,
+      "sellPricePerGram": 0.078,
+      "defaultGPerHour_0_4": 28
+    },
+    "ASA": {
+      "sellPricePerKg": 80.97,
+      "sellPricePerGram": 0.081,
+      "defaultGPerHour_0_4": 35
+    },
+    "NYLON": {
+      "sellPricePerKg": 137.97,
+      "sellPricePerGram": 0.138,
+      "defaultGPerHour_0_4": 30
+    },
+    "PLA_CF": {
+      "sellPricePerKg": 104.97,
+      "sellPricePerGram": 0.105,
+      "defaultGPerHour_0_4": 28
+    },
+    "NYLON_CF": {
+      "sellPricePerKg": 134.97,
+      "sellPricePerGram": 0.135,
+      "defaultGPerHour_0_4": 25
+    }
   },
-
   "segmentation": {
     "enabled": true,
-    "efficiency": 0.70,
-
+    "efficiency": 0.7,
     "maxAutoSegments": {
       "bambu_h2s": 40,
       "kobra_2_max": 60,
       "kobra_3_max": 60
     },
-
     "seamsPerSegmentDefault": 1,
     "bondingLaborPerSeam": 45,
-
     "riskMultiplierPerSegment": 0.04,
-
     "segmentationModeMultipliers": {
-      "none": 1.00,
+      "none": 1,
       "moderate": 1.08,
       "heavy": 1.18
     },
-
     "segmentationTiers": [
-      { "name": "none", "maxSegments": 1 },
-      { "name": "moderate", "maxSegments": 12 },
-      { "name": "heavy", "maxSegments": 999999 }
+      {
+        "name": "none",
+        "maxSegments": 1
+      },
+      {
+        "name": "moderate",
+        "maxSegments": 12
+      },
+      {
+        "name": "heavy",
+        "maxSegments": 999999
+      }
     ]
   },
-
   "jobScaleRules": {
-    "smallPart": { "maxDim_mm": 200, "maxHours": 8 },
-    "mediumPart": { "maxDim_mm": 380, "maxHours": 48 },
-    "largeAssembly": { "minHours": 48, "requiresSegmentation": true }
-  },
-
-  "multipliers": {
-    "longJob": { "thresholdHours": 72, "multiplier": 1.12 },
-    "complexity": {
-      "triangleCountThresholds": { "medium": 500000, "high": 2000000 },
-      "multipliers": { "low": 1.00, "medium": 1.05, "high": 1.12 }
+    "smallPart": {
+      "maxDim_mm": 200,
+      "maxHours": 8
+    },
+    "mediumPart": {
+      "maxDim_mm": 380,
+      "maxHours": 48
+    },
+    "largeAssembly": {
+      "minHours": 48,
+      "requiresSegmentation": true
     }
   },
-
+  "multipliers": {
+    "longJob": {
+      "thresholdHours": 72,
+      "multiplier": 1.12
+    },
+    "complexity": {
+      "triangleCountThresholds": {
+        "medium": 500000,
+        "high": 2000000
+      },
+      "multipliers": {
+        "low": 1,
+        "medium": 1.05,
+        "high": 1.12
+      }
+    }
+  },
   "leadTime": {
-    "utilizationFactor": 0.70,
+    "utilizationFactor": 0.7,
     "minDays": 2,
     "maxDaysCap": 21,
     "segmentationExtraDays": {
       "moderate": 1,
       "heavy": 3
     }
+  },
+  "riskModel": {
+    "type": "capped_percent",
+    "baseRiskPercent": 0.08,
+    "tierBump": {
+      "none": 0,
+      "moderate": 0.05,
+      "heavy": 0.1
+    },
+    "capPercentOfBase": 0.25,
+    "minRisk": 50
+  },
+  "unitSanity": {
+    "enabled": true,
+    "maxReasonableDimMm": 6000,
+    "scaleRules": [
+      {
+        "ifMaxDimGreaterThan": 60000,
+        "scaleDivisor": 1000,
+        "label": "likely meters→mm"
+      },
+      {
+        "ifMaxDimGreaterThan": 6000,
+        "scaleDivisor": 10,
+        "label": "likely cm→mm"
+      }
+    ]
+  },
+  "ui": {
+    "showSinglePriceOnly": true
   }
 }

@@ -71,6 +71,8 @@ const QuoteOutputSchema = z.object({
 });
 export type QuoteOutput = z.infer<typeof QuoteOutputSchema>;
 
+type SegTier = "none" | "moderate" | "heavy";
+
 
 // --- Main Exported Quote Generator Function ---
 
@@ -82,12 +84,30 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   const estimation = await estimationFlow(input);
   const estimatedHours = estimation.printTimeHours;
 
-  // 2. Determine Printer Eligibility & Selection
+  // 2. Unit Sanity Check & Bbox Scaling
+  if (pricingMatrix.unitSanity.enabled) {
+    let maxDim = Math.max(metrics.bbox_mm.x, metrics.bbox_mm.y, metrics.bbox_mm.z);
+    for (const rule of pricingMatrix.unitSanity.scaleRules) {
+        if (maxDim > rule.ifMaxDimGreaterThan) {
+            metrics.bbox_mm.x /= rule.scaleDivisor;
+            metrics.bbox_mm.y /= rule.scaleDivisor;
+            metrics.bbox_mm.z /= rule.scaleDivisor;
+            warnings.push(`Unit scale adjusted (likely ${rule.label})`);
+            break; // Apply only the first matching rule
+        }
+    }
+  }
+  
+  const bboxAfterScaling = metrics.bbox_mm;
+  const maxDimAfterScaling = Math.max(bboxAfterScaling.x, bboxAfterScaling.y, bboxAfterScaling.z);
+
+
+  // 3. Determine Printer Eligibility & Selection
   let autoPrinterSelection = initialAutoSelection;
   let selectedPrinterKey: string | undefined = undefined;
 
   const printersSupportingFilament = Object.entries(pricingMatrix.printers).filter(([_, printer]) => 
-    printer.supportedFilaments.includes(material)
+    (printer.supportedFilaments as string[]).includes(material)
   );
 
   if (printersSupportingFilament.length === 0) {
@@ -107,9 +127,9 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   // Auto-select printer if no valid user choice
   if (autoPrinterSelection) {
     const eligiblePrintersUnsegmented = printersSupportingFilament.filter(([_, printer]) => 
-      printer.buildVolume_mm.x >= metrics.bbox_mm.x &&
-      printer.buildVolume_mm.y >= metrics.bbox_mm.y &&
-      printer.buildVolume_mm.z >= metrics.bbox_mm.z
+      printer.buildVolume_mm.x >= bboxAfterScaling.x &&
+      printer.buildVolume_mm.y >= bboxAfterScaling.y &&
+      printer.buildVolume_mm.z >= bboxAfterScaling.z
     );
 
     if (eligiblePrintersUnsegmented.length > 0) {
@@ -138,24 +158,23 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
 
   const selectedPrinter = pricingMatrix.printers[selectedPrinterKey as keyof typeof pricingMatrix.printers];
   
-  // 3. Determine if segmentation is required for the *selected* printer
+  // 4. Determine if segmentation is required for the *selected* printer
   const segmentationRequired = !(
-    selectedPrinter.buildVolume_mm.x >= metrics.bbox_mm.x &&
-    selectedPrinter.buildVolume_mm.y >= metrics.bbox_mm.y &&
-    selectedPrinter.buildVolume_mm.z >= metrics.bbox_mm.z
+    selectedPrinter.buildVolume_mm.x >= bboxAfterScaling.x &&
+    selectedPrinter.buildVolume_mm.y >= bboxAfterScaling.y &&
+    selectedPrinter.buildVolume_mm.z >= bboxAfterScaling.z
   );
 
-  // 4. Determine Job Scale & Mode
+  // 5. Determine Job Scale & Mode
   const { jobScaleRules } = pricingMatrix;
-  const maxDim = Math.max(metrics.bbox_mm.x, metrics.bbox_mm.y, metrics.bbox_mm.z);
   
   let jobScale: "Small Part" | "Medium Part" | "Large Assembly";
   let mode: "Hourly" | "Bed-Cycle Mode";
 
-  if (segmentationRequired || maxDim > 380 || estimatedHours >= jobScaleRules.largeAssembly.minHours) {
+  if (segmentationRequired || maxDimAfterScaling > 380 || estimatedHours >= jobScaleRules.largeAssembly.minHours) {
     jobScale = "Large Assembly";
     mode = "Bed-Cycle Mode";
-  } else if (maxDim <= jobScaleRules.smallPart.maxDim_mm && estimatedHours < jobScaleRules.smallPart.maxHours) {
+  } else if (maxDimAfterScaling <= jobScaleRules.smallPart.maxDim_mm && estimatedHours < jobScaleRules.smallPart.maxHours) {
     jobScale = "Small Part";
     mode = "Hourly";
   } else {
@@ -163,20 +182,22 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
     mode = "Hourly";
   }
   
-  // 5. Calculate Costs based on Mode
-  let costBreakdown;
+  // 6. Calculate Costs, Segments, and Tiers
+  let machineCost = 0;
+  let segmentationCost = 0;
+  let riskCost = 0;
   let segmentCountEstimate = 1;
   let bedCyclesEstimate = 0;
   let finalEstimatedHours = estimatedHours;
-  let segmentationTier: 'none' | 'moderate' | 'heavy' = 'none';
+  let segmentationTier: SegTier = 'none';
 
   if (mode === "Bed-Cycle Mode") {
     warnings.push("Large assembly detected: bed-cycle mode enforced.");
     if (segmentationRequired) {
       warnings.push("Model exceeds build volume: segmentation required.");
-      const sx = Math.ceil(metrics.bbox_mm.x / (selectedPrinter.buildVolume_mm.x * pricingMatrix.segmentation.efficiency));
-      const sy = Math.ceil(metrics.bbox_mm.y / (selectedPrinter.buildVolume_mm.y * pricingMatrix.segmentation.efficiency));
-      const sz = Math.ceil(metrics.bbox_mm.z / (selectedPrinter.buildVolume_mm.z * pricingMatrix.segmentation.efficiency * 0.6));
+      const sx = Math.ceil(bboxAfterScaling.x / (selectedPrinter.buildVolume_mm.x * pricingMatrix.segmentation.efficiency));
+      const sy = Math.ceil(bboxAfterScaling.y / (selectedPrinter.buildVolume_mm.y * pricingMatrix.segmentation.efficiency));
+      const sz = Math.ceil(bboxAfterScaling.z / (selectedPrinter.buildVolume_mm.z * pricingMatrix.segmentation.efficiency * 0.6));
       segmentCountEstimate = Math.max(2, sx * sy * Math.max(1, sz));
     }
     bedCyclesEstimate = segmentCountEstimate;
@@ -189,59 +210,65 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
     }
     
     // Determine segmentation tier
-    if (segmentCountEstimate > 1) {
-        const tier = pricingMatrix.segmentation.segmentationTiers.find(t => segmentCountEstimate <= t.maxSegments);
-        segmentationTier = tier ? tier.name as typeof segmentationTier : 'heavy';
-    }
+    if (segmentCountEstimate > 12) segmentationTier = 'heavy';
+    else if (segmentCountEstimate > 1) segmentationTier = 'moderate';
+    else segmentationTier = 'none';
+    
     if (segmentationTier === 'heavy') warnings.push("Heavy segmentation: increased seam count and extended lead time.");
 
 
     // Calculate costs for Bed-Cycle mode
     const bedCycleRate = selectedPrinter.bedCycleRates_withShippingEmbedded[nozzleSize as keyof typeof selectedPrinter.bedCycleRates_withShippingEmbedded];
-    const machineCost = bedCyclesEstimate * bedCycleRate;
+    machineCost = bedCyclesEstimate * bedCycleRate;
     
-    const segmentationLaborCost = segmentCountEstimate * pricingMatrix.segmentation.seamsPerSegmentDefault * pricingMatrix.segmentation.bondingLaborPerSeam;
-    const riskCost = (machineCost + segmentationLaborCost) * (segmentCountEstimate * pricingMatrix.segmentation.riskMultiplierPerSegment);
+    segmentationCost = segmentCountEstimate * pricingMatrix.segmentation.seamsPerSegmentDefault * pricingMatrix.segmentation.bondingLaborPerSeam;
+    
+    // Capped Risk Model
+    const baseCostForRisk = machineCost + segmentationCost;
+    const { baseRiskPercent, tierBump, capPercentOfBase, minRisk } = pricingMatrix.riskModel;
+    const riskPercent = baseRiskPercent + tierBump[segmentationTier];
+    const maxRisk = baseCostForRisk * capPercentOfBase;
+    const rawRisk = baseCostForRisk * riskPercent;
+    riskCost = Math.max(minRisk, Math.min(rawRisk, maxRisk));
 
-    costBreakdown = { machine: machineCost, segmentation: segmentationLaborCost, risk: riskCost };
   } else { // Hourly Mode
-    bedCyclesEstimate = 0; // Explicitly zero for hourly
+    bedCyclesEstimate = 0;
     segmentationTier = 'none';
     const hourlyRate = selectedPrinter.hourlyRates_withShippingEmbedded[nozzleSize as keyof typeof selectedPrinter.hourlyRates_withShippingEmbedded];
-    const machineCost = finalEstimatedHours * hourlyRate;
-    costBreakdown = { machine: machineCost, segmentation: 0, risk: 0 };
+    machineCost = finalEstimatedHours * hourlyRate;
+    segmentationCost = 0;
+    riskCost = 0; // No risk cost in hourly mode as per original logic
   }
 
-  // 6. Calculate Material Cost (common for both modes)
+  // 7. Calculate Material Cost (common for both modes)
   const materialCost = estimation.materialGrams * pricingMatrix.filaments[material as keyof typeof pricingMatrix.filaments].sellPricePerGram;
 
-  // 7. Apply Multipliers
-  const { complexity, longJob, segmentation } = pricingMatrix.multipliers;
-  let subtotalForMultipliers = costBreakdown.machine + costBreakdown.segmentation + costBreakdown.risk;
+  // 8. Apply Multipliers
+  let subtotalForMultipliers = machineCost + segmentationCost + riskCost;
   
   // Apply segmentation tier multiplier
   const segTierMultiplier = pricingMatrix.segmentation.segmentationModeMultipliers[segmentationTier];
   subtotalForMultipliers *= segTierMultiplier;
 
   // Apply complexity multiplier
-  let complexityMultiplier = complexity.multipliers.low;
-  if (metrics.triangles > complexity.triangleCountThresholds.high) {
-      complexityMultiplier = complexity.multipliers.high;
+  let complexityMultiplier = pricingMatrix.multipliers.complexity.multipliers.low;
+  if (metrics.triangles > pricingMatrix.multipliers.complexity.triangleCountThresholds.high) {
+      complexityMultiplier = pricingMatrix.multipliers.complexity.multipliers.high;
       warnings.push("Complexity high: manual review recommended.");
-  } else if (metrics.triangles > complexity.triangleCountThresholds.medium) {
-      complexityMultiplier = complexity.multipliers.medium;
+  } else if (metrics.triangles > pricingMatrix.multipliers.complexity.triangleCountThresholds.medium) {
+      complexityMultiplier = pricingMatrix.multipliers.complexity.multipliers.medium;
   }
   subtotalForMultipliers *= complexityMultiplier;
   
   // Apply long job multiplier
-  if (finalEstimatedHours > longJob.thresholdHours) {
-      subtotalForMultipliers *= longJob.multiplier;
+  if (finalEstimatedHours > pricingMatrix.multipliers.longJob.thresholdHours) {
+      subtotalForMultipliers *= pricingMatrix.multipliers.longJob.multiplier;
       warnings.push("Long job multiplier applied due to extended print time.");
   }
 
   const totalCost = subtotalForMultipliers + materialCost;
 
-  // 8. Calculate Lead Time
+  // 9. Calculate Lead Time
   let eligibleFleetCount = 0;
   if (mode === "Bed-Cycle Mode") {
       if (!autoPrinterSelection) {
@@ -268,7 +295,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       max: Math.min(maxLead, pricingMatrix.leadTime.maxDaysCap),
   };
   
-  // 9. Add common warnings & Finalize
+  // 10. Add common warnings & Finalize
   if (!metrics.watertight_est) {
       warnings.push("Non-watertight mesh may affect volume/time estimates and print quality.");
   }
@@ -279,7 +306,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       selectedPrinterKey,
       selectedNozzle: nozzleSize,
       selectedFilament: material,
-      bbox_mm: metrics.bbox_mm,
+      bbox_mm: bboxAfterScaling,
       volume_cm3: metrics.volume_mm3 / 1000,
       segmentCountEstimate,
       bedCyclesEstimate,
@@ -287,10 +314,10 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       segmentationTier,
       leadTimeDays,
       costBreakdown: {
-        machine: costBreakdown.machine,
+        machine: machineCost,
         material: materialCost,
-        segmentation: costBreakdown.segmentation,
-        risk: costBreakdown.risk,
+        segmentation: segmentationCost,
+        risk: riskCost,
         shippingEmbedded: finalEstimatedHours * pricingMatrix.meta.shippingEmbedded.embeddedPerHour,
         total: totalCost,
       },
