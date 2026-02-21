@@ -55,7 +55,7 @@ export function AutomotiveQuoteWizard() {
   const handleFileSelected = (selectedFile: File | null) => {
     if (selectedFile) {
       // Validate file type
-      const acceptedTypes = ['.stl', '.obj', '.3mf'];
+      const acceptedTypes = ['.stl', '.obj', '.3mf', '.amf'];
       const fileExtension = selectedFile.name.slice(selectedFile.name.lastIndexOf('.')).toLowerCase();
       if (!acceptedTypes.includes(fileExtension)) {
         setError(`Invalid file type. Please upload one of the following: ${acceptedTypes.join(', ')}`);
@@ -137,7 +137,7 @@ export function AutomotiveQuoteWizard() {
           </CardHeader>
           <CardContent className="space-y-6 flex-grow">
             <div className="space-y-2">
-              <Label>3D Model (STL, OBJ, 3MF)</Label>
+              <Label>3D Model (STL, OBJ, 3MF, AMF)</Label>
                <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -160,7 +160,7 @@ export function AutomotiveQuoteWizard() {
                   ref={fileInputRef}
                   id="file-upload"
                   type="file"
-                  accept=".stl,.obj,.3mf"
+                  accept=".stl,.obj,.3mf,.amf"
                   className="hidden"
                   onChange={handleFileChange}
                   disabled={isLoading}

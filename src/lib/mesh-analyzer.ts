@@ -8,7 +8,7 @@ type Vec3 = [number, number, number];
 type Triangle = [Vec3, Vec3, Vec3];
 
 export interface MeshMetrics {
-  format: 'stl' | 'obj' | '3mf';
+  format: 'stl' | 'obj' | '3mf' | 'amf';
   units: string;
   triangles: number;
   bbox_mm: { x: number; y: number; z: number };
@@ -285,8 +285,8 @@ async function analyze3mf(buffer: Buffer): Promise<Omit<MeshMetrics, 'file_bytes
 
     let unit = modelJson.model?.unit || 'millimeter';
     if (!['millimeter', 'centimeter', 'meter', 'micron', 'inch', 'foot'].includes(unit)) {
+        notes.push(`invalid_unit_assumed_mm: ${unit}`);
         unit = 'millimeter'; // Assume mm if invalid or missing
-        notes.push('invalid_or_missing_units_assumed_mm');
     }
 
     const conversionFactors: { [key: string]: number } = {
@@ -303,18 +303,23 @@ async function analyze3mf(buffer: Buffer): Promise<Omit<MeshMetrics, 'file_bytes
     const allTriangles: Triangle[] = [];
     let objectCount = 0;
 
-    const resources = Array.isArray(modelJson.model.resources.object) 
-      ? modelJson.model.resources.object
-      : [modelJson.model.resources.object];
+    const resources = modelJson.model?.resources?.object;
+    if (!resources) {
+         throw new Error('PARSE_ERROR: No resources found in 3MF file.');
+    }
+
+    const objects = Array.isArray(resources) 
+      ? resources
+      : [resources];
       
-    for (const obj of resources) {
+    for (const obj of objects) {
       if (obj.mesh) {
         objectCount++;
         const mesh = obj.mesh;
         const currentVertices: Vec3[] = mesh.vertices.vertex.map((v: any) => [
-            parseFloat(v.x),
-            parseFloat(v.y),
-            parseFloat(v.z),
+            parseFloat(v.x) * unit_conversion_factor,
+            parseFloat(v.y) * unit_conversion_factor,
+            parseFloat(v.z) * unit_conversion_factor,
         ]);
 
         const vertexOffset = allVertices.length;
@@ -339,11 +344,75 @@ async function analyze3mf(buffer: Buffer): Promise<Omit<MeshMetrics, 'file_bytes
         notes.push('transforms_ignored_mvp');
     }
 
-    const metrics = calculateMetricsFromTriangles(allTriangles, unit_conversion_factor);
+    const metrics = calculateMetricsFromTriangles(allTriangles, 1.0); // Already converted to mm
 
     return {
         ...metrics,
         format: '3mf',
+        units: unit,
+        notes,
+    };
+}
+
+// --- AMF Parser ---
+function analyzeAmf(buffer: Buffer): Omit<MeshMetrics, 'file_bytes' | 'parse_ms'> {
+    const xmlText = buffer.toString('utf-8');
+    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "" });
+    const amfJson = parser.parse(xmlText);
+
+    const notes: string[] = [];
+    let unit = amfJson.amf?.unit || 'millimeter';
+
+    if (!['millimeter', 'centimeter', 'meter', 'micron', 'inch', 'foot'].includes(unit)) {
+        notes.push('unit_missing_assumed_mm');
+        unit = 'millimeter';
+    }
+
+    const conversionFactors: { [key: string]: number } = {
+        millimeter: 1, centimeter: 10, meter: 1000, micron: 0.001, inch: 25.4, foot: 304.8,
+    };
+    const unit_conversion_factor = conversionFactors[unit];
+
+    const allTriangles: Triangle[] = [];
+    const objects = Array.isArray(amfJson.amf.object) ? amfJson.amf.object : [amfJson.amf.object];
+    if (objects.length > 1) notes.push('multi_object_combined');
+    
+    for (const obj of objects) {
+        if (!obj.mesh) continue;
+
+        const verticesRaw = obj.mesh.vertices.vertex;
+        const vertices: Vec3[] = verticesRaw.map((v: any) => [
+            parseFloat(v.coordinates.x) * unit_conversion_factor,
+            parseFloat(v.coordinates.y) * unit_conversion_factor,
+            parseFloat(v.coordinates.z) * unit_conversion_factor,
+        ]);
+
+        const volumes = Array.isArray(obj.mesh.volume) ? obj.mesh.volume : [obj.mesh.volume];
+        if (volumes.length > 1 && !notes.includes('multi_volume_combined')) {
+            notes.push('multi_volume_combined');
+        }
+
+        for (const vol of volumes) {
+            if (!vol.triangle) continue;
+            const trianglesRaw = Array.isArray(vol.triangle) ? vol.triangle : [vol.triangle];
+            for (const t of trianglesRaw) {
+                const i1 = parseInt(t.v1);
+                const i2 = parseInt(t.v2);
+                const i3 = parseInt(t.v3);
+
+                if (i1 >= vertices.length || i2 >= vertices.length || i3 >= vertices.length) {
+                    throw new Error(`PARSE_ERROR: AMF triangle index out of bounds.`);
+                }
+                allTriangles.push([vertices[i1], vertices[i2], vertices[i3]]);
+            }
+        }
+    }
+
+    const metrics = calculateMetricsFromTriangles(allTriangles, 1.0); // Already converted
+
+    return {
+        ...metrics,
+        format: 'amf',
         units: unit,
         notes,
     };
@@ -374,11 +443,16 @@ export async function analyzeMeshFile({ fileName, buffer }: AnalyzeMeshInput): P
             case '.3mf':
                 result = await analyze3mf(buffer);
                 break;
+            case '.amf':
+                result = analyzeAmf(buffer);
+                break;
             default:
                 throw new Error(`UNSUPPORTED_FORMAT: File type '${extension}' is not supported.`);
         }
     } catch(err: any) {
         if (err.message.startsWith('UNSUPPORTED_FORMAT')) throw err;
+        // Keep the original error for specific parse failures like index out of bounds
+        if (err.message.startsWith('PARSE_ERROR')) throw err;
         throw new Error(`PARSE_ERROR: Failed to parse ${extension} file. The file may be corrupt or malformed. Original error: ${err.message}`);
     }
 

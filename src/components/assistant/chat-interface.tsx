@@ -33,7 +33,7 @@ export function ChatInterface() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
-      const acceptedTypes = ['.stl', '.obj', '.3mf'];
+      const acceptedTypes = ['.stl', '.obj', '.3mf', '.amf'];
       const fileExtension = selectedFile.name.slice(selectedFile.name.lastIndexOf('.')).toLowerCase();
       if (!acceptedTypes.includes(fileExtension)) {
           // Maybe show a toast error here in the future
@@ -167,7 +167,7 @@ export function ChatInterface() {
                   ref={fileInputRef}
                   onChange={handleFileChange}
                   className="hidden"
-                  accept=".stl,.obj,.3mf"
+                  accept=".stl,.obj,.3mf,.amf"
                   disabled={isLoading}
               />
               <Button
