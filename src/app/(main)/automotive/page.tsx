@@ -128,20 +128,14 @@ export default function AutomotivePage() {
                   </div>
                 </CardContent>
                 <CardFooter>
-                  {pkg.id === 'digital-file' || pkg.id === 'disassembled-kit' ? (
-                    <div className="flex w-full flex-col gap-2">
-                      <Button asChild className="w-full">
-                        <Link href="/gallery">Choose from our selection</Link>
-                      </Button>
-                      <Button asChild className="w-full" variant="secondary">
-                        <Link href={`/quote?package=${pkg.id}`}>Upload your own file</Link>
-                      </Button>
-                    </div>
-                  ) : (
+                  <div className="flex w-full flex-col gap-2">
                     <Button asChild className="w-full">
-                      <Link href={`/quote?package=${pkg.id}`}>Select</Link>
+                      <Link href="/gallery">Choose from our selection</Link>
                     </Button>
-                  )}
+                    <Button asChild className="w-full" variant="secondary">
+                      <Link href={`/quote?package=${pkg.id}`}>Upload your own file</Link>
+                    </Button>
+                  </div>
                 </CardFooter>
               </Card>
             </div>
