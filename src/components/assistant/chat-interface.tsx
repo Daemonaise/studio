@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useRef } from "react";
@@ -6,7 +5,8 @@ import { Bot, Loader2, Send, User, Paperclip, X } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { aiEngineeringAssistant, AiEngineeringAssistantOutput, AiEngineeringAssistantInput } from "@/ai/flows/ai-engineering-assistant-flow";
+import { AiEngineeringAssistantOutput } from "@/ai/flows/ai-engineering-assistant-flow";
+import { getAssistantResponse } from "@/app/actions/assistant-actions";
 import { cn } from "@/lib/utils";
 
 type Message = {
@@ -32,7 +32,15 @@ export function ChatInterface() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+      const selectedFile = e.target.files[0];
+      const acceptedTypes = ['.stl', '.obj', '.3mf'];
+      const fileExtension = selectedFile.name.slice(selectedFile.name.lastIndexOf('.')).toLowerCase();
+      if (!acceptedTypes.includes(fileExtension)) {
+          // Maybe show a toast error here in the future
+          console.error("Invalid file type for assistant");
+          return;
+      }
+      setFile(selectedFile);
     }
   };
 
@@ -55,12 +63,14 @@ export function ChatInterface() {
     setFile(null);
 
     try {
-      const inputData: AiEngineeringAssistantInput = { query: currentInput };
-      if (currentFile) {
-        inputData.fileDataUri = await toDataURL(currentFile);
-      }
-
-      const assistantResponse = await aiEngineeringAssistant(inputData);
+      const fileDataUri = currentFile ? await toDataURL(currentFile) : undefined;
+      
+      const assistantResponse = await getAssistantResponse({
+          query: currentInput,
+          fileName: currentFile?.name,
+          fileDataUri: fileDataUri
+      });
+      
       const assistantMessage: Message = {
         role: "assistant",
         content: assistantResponse,

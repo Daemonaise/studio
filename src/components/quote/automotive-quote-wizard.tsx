@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useRef } from "react";
@@ -21,7 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { quoteGenerator, QuoteOutput, QuoteGeneratorInput } from "@/ai/flows/quote-generator-flow";
+import { QuoteOutput } from "@/ai/flows/quote-generator-flow";
+import { generateQuoteFromModel } from "@/app/actions/quote-actions";
 import { materials } from "@/app/data/materials";
 import { cn } from "@/lib/utils";
 
@@ -41,46 +41,6 @@ const formatCurrency = (amount: number) => {
   }).format(amount);
 };
 
-// Helper to format model names
-const formatModelName = (modelId: string) => {
-  return modelId
-    .split(/[-/]/)
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ')
-    .replace('Gemini', 'Gemini') // Keep Gemini as is
-    .replace('Flash', 'Flash');
-};
-
-function ConsensusBreakdown({ quote }: { quote: QuoteOutput }) {
-  if (!quote.consensusDetails || quote.consensusDetails.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="border-t pt-4">
-      <h4 className="text-sm font-sans font-semibold text-foreground mb-2">AI Consensus Breakdown</h4>
-      <div className="space-y-2 text-sm font-mono">
-        {quote.consensusDetails.map((detail) => (
-          <div key={detail.model} className="p-2 rounded-md bg-muted/50">
-             <div className="flex justify-between items-center font-medium capitalize">
-                <span>{formatModelName(detail.model)}</span>
-             </div>
-             <div className="flex justify-between text-muted-foreground text-xs">
-                <span>Print Time:</span>
-                <span>{detail.printTimeHours.toFixed(1)} hrs</span>
-             </div>
-             <div className="flex justify-between text-muted-foreground text-xs">
-                <span>Material:</span>
-                <span>{detail.materialGrams.toFixed(0)} g</span>
-             </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-
 export function AutomotiveQuoteWizard() {
   const [file, setFile] = useState<File | null>(null);
   const [material, setMaterial] = useState<string>("PLA");
@@ -99,6 +59,7 @@ export function AutomotiveQuoteWizard() {
       const fileExtension = selectedFile.name.slice(selectedFile.name.lastIndexOf('.')).toLowerCase();
       if (!acceptedTypes.includes(fileExtension)) {
         setError(`Invalid file type. Please upload one of the following: ${acceptedTypes.join(', ')}`);
+        setFile(null); // Clear invalid file
         return;
       }
       setFile(selectedFile);
@@ -145,16 +106,18 @@ export function AutomotiveQuoteWizard() {
 
     try {
       const fileDataUri = await toDataURL(file);
-      const input: QuoteGeneratorInput = {
+      const input = {
+        fileName: file.name,
         fileDataUri,
         material,
         nozzleSize,
       };
-      const result = await quoteGenerator(input);
+      // Call the server action
+      const result = await generateQuoteFromModel(input);
       setQuote(result);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      setError("An error occurred while generating the quote. The AI model may be busy, please try again.");
+      setError(e.message || "An error occurred while generating the quote. Please check the model file or try again.");
     } finally {
       setIsLoading(false);
     }
@@ -258,7 +221,7 @@ export function AutomotiveQuoteWizard() {
               {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  Running AI Consensus...
+                  Analyzing Model & Generating Quote...
                 </>
               ) : (
                 <>
@@ -282,7 +245,7 @@ export function AutomotiveQuoteWizard() {
             {isLoading && (
                <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-full">
                   <Loader2 className="h-10 w-10 animate-spin text-primary" />
-                  <p className="font-medium">AI consensus is analyzing your model...</p>
+                  <p className="font-medium">AI is analyzing your model...</p>
                   <p className="text-sm">This may take a moment depending on model complexity.</p>
                 </div>
             )}
@@ -322,8 +285,6 @@ export function AutomotiveQuoteWizard() {
                     <span>{formatCurrency(quote.shippingCost)}</span>
                   </div>
                 </div>
-
-                <ConsensusBreakdown quote={quote} />
 
                 {quote.warnings.length > 0 && (
                   <div className="border-t pt-4">

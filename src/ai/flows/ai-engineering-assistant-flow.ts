@@ -9,17 +9,28 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
+import { MeshMetrics } from '@/lib/mesh-analyzer';
+
+// Schema for the STL metrics
+const MeshMetricsSchema = z.object({
+  format: z.enum(['stl', 'obj', '3mf']),
+  units: z.string(),
+  triangles: z.number(),
+  bbox_mm: z.object({ x: z.number(), y: z.number(), z: z.number() }),
+  surface_area_mm2: z.number(),
+  volume_mm3: z.number(),
+  watertight_est: z.boolean(),
+  notes: z.array(z.string()),
+  file_bytes: z.number(),
+  parse_ms: z.number(),
+}).optional();
+
 
 const AiEngineeringAssistantInputSchema = z.object({
   query: z
     .string()
     .describe("The user's question about optimal material recommendations or trade-offs for a 3D printing part's intended use."),
-  fileDataUri: z
-    .string()
-    .optional()
-    .describe(
-      "An optional 3D model file (STL, OBJ, 3MF), as a data URI that must include a MIME type and use Base64 encoding. Expected format: 'data:<mimetype>;base64,<encoded_data>'."
-    ),
+  metrics: MeshMetricsSchema.describe("Optional metrics of a 3D model file if one was provided."),
 });
 export type AiEngineeringAssistantInput = z.infer<typeof AiEngineeringAssistantInputSchema>;
 
@@ -40,14 +51,20 @@ const aiEngineeringAssistantPrompt = ai.definePrompt({
   output: {schema: AiEngineeringAssistantOutputSchema},
   prompt: `You are an expert engineering assistant specializing in 3D printing materials. Your task is to recommend optimal materials based on a part's intended use and explain the complex trade-offs between strength, print time, and cost.
 
-{{#if fileDataUri}}
-Analyze the provided 3D model to understand its geometry, size, and potential use cases.
-Model: {{media url=fileDataUri}}
+{{#if metrics}}
+Analyze the provided 3D model's metrics to understand its geometry, size, and potential use cases.
+Model Metrics:
+- Bounding Box (mm): {{metrics.bbox_mm.x}} x {{metrics.bbox_mm.y}} x {{metrics.bbox_mm.z}}
+- Volume (mm³): {{metrics.volume_mm3}}
+- Surface Area (mm²): {{metrics.surface_area_mm2}}
+- Triangle Count: {{metrics.triangles}}
+- Watertight (Est): {{metrics.watertight_est}}
+- Notes: {{#each metrics.notes}}{{{this}}}{{/each}}
 {{/if}}
 
 User's query: {{{query}}}
 
-Based on the user's query{{#if fileDataUri}} and the provided 3D model{{/if}}, please provide:
+Based on the user's query{{#if metrics}} and the provided 3D model metrics{{/if}}, please provide:
 1.  Optimal material recommendations, considering the part's intended use and specific requirements.
 2.  A clear and concise explanation of the trade-offs between strength, print time, and cost for the recommended materials, helping the user make an informed decision and optimize their 3D printing project.`,
 });
@@ -60,6 +77,9 @@ const aiEngineeringAssistantFlow = ai.defineFlow(
   },
   async input => {
     const {output} = await aiEngineeringAssistantPrompt(input);
+    if (!output) {
+        throw new Error('The AI model failed to provide a response. Please try again later.');
+    }
     return output!;
   }
 );

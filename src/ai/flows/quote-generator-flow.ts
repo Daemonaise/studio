@@ -1,7 +1,7 @@
 'use server';
 /**
  * @fileOverview An AI-powered 3D print quote generator.
- * - quoteGenerator - A function that analyzes a 3D model and provides a price quote.
+ * - quoteGenerator - A function that analyzes a 3D model's metrics and provides a price quote.
  * - QuoteGeneratorInput - The input type for the quoteGenerator function.
  * - QuoteOutput - The return type for the quoteGenerator function.
  */
@@ -9,14 +9,25 @@
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
 import pricingMatrix from '@/app/data/pricing-matrix.json';
+import { MeshMetrics } from '@/lib/mesh-analyzer';
 
-// Schema for the input required by the main function
+// Schema for the STL metrics
+const MeshMetricsSchema = z.object({
+  format: z.enum(['stl', 'obj', '3mf']),
+  units: z.string(),
+  triangles: z.number(),
+  bbox_mm: z.object({ x: z.number(), y: z.number(), z: z.number() }),
+  surface_area_mm2: z.number(),
+  volume_mm3: z.number(),
+  watertight_est: z.boolean(),
+  notes: z.array(z.string()),
+  file_bytes: z.number(),
+  parse_ms: z.number(),
+});
+
+// Schema for the input required by the main function, now using metrics
 const QuoteGeneratorInputSchema = z.object({
-  fileDataUri: z
-    .string()
-    .describe(
-      "A 3D model file (STL, OBJ, 3MF), as a data URI that must include a MIME type and use Base64 encoding. Expected format: 'data:<mimetype>;base64,<encoded_data>'."
-    ),
+  metrics: MeshMetricsSchema,
   material: z.string().describe('The filament material to be used (e.g., PLA, PETG, ASA).'),
   nozzleSize: z.string().describe('The diameter of the printer nozzle in mm (e.g., "0.4", "0.6").'),
 });
@@ -28,21 +39,6 @@ const EstimationOutputSchema = z.object({
   materialGrams: z.number().describe('The estimated material needed in grams.'),
 });
 
-// New schema for the output of the estimation flow
-const EstimationConsensusOutputSchema = z.object({
-  printTimeHours: z.number().describe('The estimated time to print the object in hours.'),
-  materialGrams: z.number().describe('The estimated material needed in grams.'),
-  consensusDetails: z
-    .array(
-      z.object({
-        model: z.string(),
-        printTimeHours: z.number(),
-        materialGrams: z.number(),
-      })
-    )
-    .describe('Breakdown of estimates from each AI model.'),
-});
-
 // Schema for the final, calculated quote returned to the client
 const QuoteOutputSchema = z.object({
   materialCost: z.number(),
@@ -52,27 +48,29 @@ const QuoteOutputSchema = z.object({
   warnings: z.array(z.string()),
   printTimeHours: z.number(),
   materialGrams: z.number(),
-  consensusDetails: z
-    .array(
-      z.object({
-        model: z.string(),
-        printTimeHours: z.number(),
-        materialGrams: z.number(),
-      })
-    )
-    .optional(),
 });
 export type QuoteOutput = z.infer<typeof QuoteOutputSchema>;
 
-// The main exported function that the client will call
+// The main exported function that the client-action will call
 export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteOutput> {
-  // 1. Get the estimation from the AI
+  // 1. Get the estimation from the AI based on metrics
   const estimation = await estimationFlow(input);
-  const {printTimeHours, materialGrams, consensusDetails} = estimation;
+  const {printTimeHours, materialGrams} = estimation;
 
   // 2. Perform calculations based on the pricing matrix
-  const {material, nozzleSize} = input;
+  const {material, nozzleSize, metrics} = input;
   const warnings: string[] = [];
+
+  if (!metrics.watertight_est) {
+      warnings.push("Model is not watertight, which may cause printing issues. Please check your model.");
+  }
+  // This is a very rough estimation. The AI will likely be more accurate.
+  const overhang_pct_est_rough = (metrics.notes.includes('overhangs_present_basic') ? 40 : 0);
+  if (overhang_pct_est_rough > 30) { 
+      warnings.push(`Model may have significant overhangs which may require support material and increase print time/cost.`);
+  }
+  warnings.push(...metrics.notes.map(note => `Analysis Note: ${note}`));
+
 
   // Find a suitable printer that supports the filament
   const supportedPrinter = Object.entries(pricingMatrix.printers).find(([_, printerDetails]) =>
@@ -137,25 +135,30 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
     warnings,
     printTimeHours,
     materialGrams,
-    consensusDetails,
   };
 }
 
-// Genkit prompt that asks the AI for estimations
+// Genkit prompt that asks the AI for estimations based on metrics
 const estimationPrompt = ai.definePrompt({
   name: '3dPrintEstimatorPrompt',
   input: {schema: QuoteGeneratorInputSchema},
   output: {schema: EstimationOutputSchema},
-  prompt: `You are an expert 3D printing technician. Your task is to analyze a 3D model file and provide accurate estimations for print time and material consumption.
+  prompt: `You are an expert 3D printing technician. Your task is to analyze a 3D model's metrics and provide accurate estimations for print time and material consumption.
 
-Analyze the geometry, size, and complexity of the provided 3D model. Consider standard print settings for the given material '{{{material}}}' and nozzle size '{{{nozzleSize}}}'.
+Analyze the provided metrics. Consider standard print settings for the given material '{{{material}}}' and nozzle size '{{{nozzleSize}}}'.
 
-Based on your analysis, estimate:
+Model Metrics:
+- Format: {{metrics.format}} (units: {{metrics.units}})
+- Bounding Box (mm): {{metrics.bbox_mm.x}} x {{metrics.bbox_mm.y}} x {{metrics.bbox_mm.z}}
+- Volume (mm³): {{metrics.volume_mm3}}
+- Surface Area (mm²): {{metrics.surface_area_mm2}}
+- Triangle Count: {{metrics.triangles}}
+- Watertight (Est): {{metrics.watertight_est}}
+- Parser Notes: {{#each metrics.notes}}{{{this}}}{{/each}}
+
+Based on your analysis of these metrics, estimate:
 1.  The total print time in hours.
 2.  The total material required in grams.
-
-The user's model is provided below.
-Model: {{media url=fileDataUri}}
 
 Respond with ONLY a valid JSON object containing 'printTimeHours' and 'materialGrams' keys.`,
 });
@@ -165,52 +168,14 @@ const estimationFlow = ai.defineFlow(
   {
     name: 'estimationFlow',
     inputSchema: QuoteGeneratorInputSchema,
-    outputSchema: EstimationConsensusOutputSchema,
+    outputSchema: EstimationOutputSchema,
   },
   async input => {
-    // Define the models for consensus
-    const models = [
-      'googleai/gemini-2.5-pro',
-    ];
-
-    const estimationPromises = models.map(async modelId => {
-      try {
-        const {output} = await estimationPrompt(input, {model: modelId as any});
-        if (output) {
-          return {
-            model: modelId,
-            printTimeHours: output.printTimeHours,
-            materialGrams: output.materialGrams,
-          };
-        }
-        return null;
-      } catch (err) {
-        console.warn(`Model ${modelId} failed to provide an estimate:`, err);
-        return null; // Return null on failure to not break Promise.all
-      }
-    });
-
-    const results = await Promise.all(estimationPromises);
-    const validResults = results.filter(r => r !== null) as {
-      model: string;
-      printTimeHours: number;
-      materialGrams: number;
-    }[];
-
-    if (validResults.length === 0) {
-      throw new Error('All AI models failed to provide an estimation. Please try again later.');
+    // Keeping it simple with one reliable model as the new architecture is the main fix.
+    const {output} = await estimationPrompt(input);
+    if (!output) {
+      throw new Error('The AI model failed to provide an estimation. Please try again later.');
     }
-
-    // Calculate the average
-    const totalPrintTime = validResults.reduce((sum, r) => sum + r.printTimeHours, 0);
-    const totalMaterialGrams = validResults.reduce((sum, r) => sum + r.materialGrams, 0);
-    const avgPrintTime = totalPrintTime / validResults.length;
-    const avgMaterialGrams = totalMaterialGrams / validResults.length;
-
-    return {
-      printTimeHours: avgPrintTime,
-      materialGrams: avgMaterialGrams,
-      consensusDetails: validResults.map(r => ({...r, model: r.model.split('/')[1] || r.model})), // Clean up model name
-    };
+    return output;
   }
 );
