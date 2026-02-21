@@ -174,40 +174,12 @@ const estimationFlow = ai.defineFlow(
     outputSchema: EstimationOutputSchema,
   },
   async (input) => {
-    const models = [
-      ai.model('googleai/gemini-2.5-pro'),
-      ai.model('googleai/gemini-1.5-pro'),
-      ai.model('googleai/gemini-1.5-flash'),
-    ];
-
-    const promises = models.map(model => 
-        estimationPrompt(input, { model })
-    );
-
-    const results = await Promise.allSettled(promises);
-
-    const validResults: EstimationOutput[] = [];
-    results.forEach((result, index) => {
-      if (result.status === 'fulfilled' && result.value.output) {
-        validResults.push(result.value.output);
-      } else {
-        // Don't log the model object, just its name.
-        const modelName = (models[index] as any)?.name || `Model ${index}`;
-        console.error(`Model ${modelName} failed:`, result.status === 'rejected' ? result.reason : 'No output');
-      }
-    });
-
-    if (validResults.length === 0) {
-      throw new Error('All AI models failed to provide an estimation. Please try again later.');
+    // Using a single, fast and powerful model as requested to simplify logic.
+    const model = ai.model('googleai/gemini-1.5-flash');
+    const { output } = await estimationPrompt(input, { model });
+    if (!output) {
+      throw new Error('The AI model failed to provide an estimation. Please try again later.');
     }
-
-    // Calculate the average
-    const totalPrintTime = validResults.reduce((acc, r) => acc + r.printTimeHours, 0);
-    const totalMaterial = validResults.reduce((acc, r) => acc + r.materialGrams, 0);
-    
-    return {
-      printTimeHours: totalPrintTime / validResults.length,
-      materialGrams: totalMaterial / validResults.length,
-    };
+    return output;
   }
 );
