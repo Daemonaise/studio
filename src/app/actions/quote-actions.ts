@@ -8,10 +8,12 @@ interface QuoteActionInput {
     fileDataUri: string;
     material: string;
     nozzleSize: string;
+    autoPrinterSelection: boolean;
+    selectedPrinterKey?: string;
 }
 
 export async function generateQuoteFromModel(input: QuoteActionInput) {
-    const { fileName, fileDataUri, material, nozzleSize } = input;
+    const { fileName, fileDataUri, material, nozzleSize, autoPrinterSelection, selectedPrinterKey } = input;
 
     if (!fileDataUri) {
         throw new Error('File data URI is missing.');
@@ -35,6 +37,8 @@ export async function generateQuoteFromModel(input: QuoteActionInput) {
         metrics,
         material,
         nozzleSize,
+        autoPrinterSelection,
+        selectedPrinterKey
     });
 
     return quote;

@@ -23,7 +23,10 @@ import {
 import { QuoteOutput } from "@/ai/flows/quote-generator-flow";
 import { generateQuoteFromModel } from "@/app/actions/quote-actions";
 import { materials } from "@/app/data/materials";
+import pricingMatrix from "@/app/data/pricing-matrix.json";
 import { cn } from "@/lib/utils";
+import { Switch } from "../ui/switch";
+import { Badge } from "../ui/badge";
 
 // Helper to convert file to data URI
 const toDataURL = (file: File): Promise<string> =>
@@ -45,7 +48,9 @@ export function AutomotiveQuoteWizard() {
   const [file, setFile] = useState<File | null>(null);
   const [material, setMaterial] = useState<string>("PLA");
   const [nozzleSize, setNozzleSize] = useState<string>("0.4");
-  
+  const [autoPrinterSelection, setAutoPrinterSelection] = useState(true);
+  const [userSelectedPrinter, setUserSelectedPrinter] = useState<string>('');
+
   const [quote, setQuote] = useState<QuoteOutput | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,12 +59,11 @@ export function AutomotiveQuoteWizard() {
 
   const handleFileSelected = (selectedFile: File | null) => {
     if (selectedFile) {
-      // Validate file type
       const acceptedTypes = ['.stl', '.obj', '.3mf', '.amf'];
       const fileExtension = selectedFile.name.slice(selectedFile.name.lastIndexOf('.')).toLowerCase();
       if (!acceptedTypes.includes(fileExtension)) {
         setError(`Invalid file type. Please upload one of the following: ${acceptedTypes.join(', ')}`);
-        setFile(null); // Clear invalid file
+        setFile(null);
         return;
       }
       setFile(selectedFile);
@@ -111,8 +115,9 @@ export function AutomotiveQuoteWizard() {
         fileDataUri,
         material,
         nozzleSize,
+        autoPrinterSelection,
+        selectedPrinterKey: userSelectedPrinter
       };
-      // Call the server action
       const result = await generateQuoteFromModel(input);
       setQuote(result);
     } catch (e: any) {
@@ -123,11 +128,11 @@ export function AutomotiveQuoteWizard() {
     }
   };
 
-  const nozzleSizes = ["0.2", "0.4", "0.6", "0.8"];
+  const nozzleSizes = pricingMatrix.nozzles.available_mm.map(String);
   const availableMaterials = materials.map(m => m.id);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
       <div className="group relative transform-gpu rounded-lg transition-transform duration-300 ease-in-out will-change-transform hover:scale-105">
         <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-100"></div>
         <Card className="relative h-full flex flex-col">
@@ -171,63 +176,48 @@ export function AutomotiveQuoteWizard() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="material">Material</Label>
-                <Select
-                  value={material}
-                  onValueChange={setMaterial}
-                  disabled={isLoading}
-                >
-                  <SelectTrigger id="material">
-                    <SelectValue placeholder="Select material" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableMaterials.map((mat) => (
-                      <SelectItem key={mat} value={mat}>
-                        {mat}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
+                <Select value={material} onValueChange={setMaterial} disabled={isLoading}>
+                  <SelectTrigger id="material"><SelectValue placeholder="Select material" /></SelectTrigger>
+                  <SelectContent>{availableMaterials.map((mat) => (<SelectItem key={mat} value={mat}>{mat}</SelectItem>))}</SelectContent>
                 </Select>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="nozzle">Nozzle Size</Label>
-                <Select
-                  value={nozzleSize}
-                  onValueChange={setNozzleSize}
-                  disabled={isLoading}
-                >
-                  <SelectTrigger id="nozzle">
-                    <SelectValue placeholder="Select nozzle size" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {nozzleSizes.map((size) => (
-                      <SelectItem key={size} value={size}>
-                        {size} mm
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
+                <Select value={nozzleSize} onValueChange={setNozzleSize} disabled={isLoading}>
+                  <SelectTrigger id="nozzle"><SelectValue placeholder="Select nozzle size" /></SelectTrigger>
+                  <SelectContent>{nozzleSizes.map((size) => (<SelectItem key={size} value={size}>{size} mm</SelectItem>))}</SelectContent>
                 </Select>
               </div>
+            </div>
+             <div className="space-y-4">
+                <div className="flex items-center space-x-2">
+                    <Switch id="auto-printer" checked={autoPrinterSelection} onCheckedChange={setAutoPrinterSelection} disabled={isLoading}/>
+                    <Label htmlFor="auto-printer">Auto-select most cost-effective printer</Label>
+                </div>
+                {!autoPrinterSelection && (
+                    <div className="space-y-2">
+                        <Label htmlFor="printer-select">Preferred Printer</Label>
+                         <Select value={userSelectedPrinter} onValueChange={setUserSelectedPrinter} disabled={isLoading}>
+                            <SelectTrigger id="printer-select"><SelectValue placeholder="Select a printer" /></SelectTrigger>
+                            <SelectContent>
+                                {Object.entries(pricingMatrix.printers).map(([key, printer]) => (
+                                    <SelectItem key={key} value={key}>{printer.label}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">Note: An eligible printer will be chosen if your selection cannot fit the part.</p>
+                    </div>
+                )}
             </div>
 
           </CardContent>
           <CardFooter>
-            <Button
-              onClick={handleGenerateQuote}
-              disabled={isLoading || !file}
-              className="w-full"
-              size="lg"
-            >
+            <Button onClick={handleGenerateQuote} disabled={isLoading || !file} className="w-full" size="lg">
               {isLoading ? (
-                <>
-                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  Analyzing Model & Generating Quote...
-                </>
+                <><Loader2 className="mr-2 h-5 w-5 animate-spin" />Analyzing & Quoting...</>
               ) : (
-                <>
-                  <Wand2 className="mr-2 h-5 w-5" />
-                  Generate AI Quote
-                </>
+                <><Wand2 className="mr-2 h-5 w-5" />Generate AI Quote</>
               )}
             </Button>
           </CardFooter>
@@ -246,7 +236,7 @@ export function AutomotiveQuoteWizard() {
                <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-full">
                   <Loader2 className="h-10 w-10 animate-spin text-primary" />
                   <p className="font-medium">AI is analyzing your model...</p>
-                  <p className="text-sm">This may take a moment depending on model complexity.</p>
+                  <p className="text-sm">This may take a moment for complex models.</p>
                 </div>
             )}
             {error && (
@@ -263,28 +253,59 @@ export function AutomotiveQuoteWizard() {
             )}
             {quote && (
               <div className="space-y-4">
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <Badge variant="outline" className="text-primary border-primary">{quote.jobScale}</Badge>
+                  <Badge variant="outline">{quote.mode} Mode</Badge>
+                </div>
+
                 <div className="bg-secondary/50 rounded-lg p-4 text-center">
                   <Label className="text-sm font-normal text-muted-foreground">Total Estimated Cost</Label>
                   <p className="text-4xl font-bold tracking-tight text-primary">
-                    {formatCurrency(quote.totalCost)}
+                    {formatCurrency(quote.costBreakdown.total)}
+                  </p>
+                </div>
+
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground">
+                      Estimated Lead Time: <strong>{quote.leadTimeDays.min} - {quote.leadTimeDays.max} days</strong>
                   </p>
                 </div>
                 
                 <div className="space-y-2 text-sm font-mono border-t pt-4">
                   <h4 className="text-sm font-sans font-semibold text-foreground mb-2">Cost Breakdown</h4>
                    <div className="flex justify-between">
-                    <span className="text-muted-foreground">Machine Time ({quote.printTimeHours.toFixed(1)} hrs):</span>
-                    <span>{formatCurrency(quote.machineTimeCost)}</span>
+                    <span className="text-muted-foreground">Machine Time:</span>
+                    <span>{formatCurrency(quote.costBreakdown.machine)}</span>
                   </div>
                    <div className="flex justify-between">
-                    <span className="text-muted-foreground">Material ({quote.materialGrams.toFixed(0)}g):</span>
-                    <span>{formatCurrency(quote.materialCost)}</span>
+                    <span className="text-muted-foreground">Material:</span>
+                    <span>{formatCurrency(quote.costBreakdown.material)}</span>
+                  </div>
+                  {quote.costBreakdown.segmentation > 0 && (
+                     <div className="flex justify-between">
+                        <span className="text-muted-foreground">Segmentation/Assembly:</span>
+                        <span>{formatCurrency(quote.costBreakdown.segmentation)}</span>
+                      </div>
+                  )}
+                  {quote.costBreakdown.risk > 0 && (
+                     <div className="flex justify-between">
+                        <span className="text-muted-foreground">Risk/Contingency:</span>
+                        <span>{formatCurrency(quote.costBreakdown.risk)}</span>
+                      </div>
+                  )}
+                   <div className="flex justify-between border-t mt-2 pt-2">
+                    <span className="font-sans font-semibold text-foreground">Subtotal</span>
+                    <span className="font-sans font-semibold text-foreground">{formatCurrency(quote.costBreakdown.total)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Shipping (Embedded)</span>
+                    <span className="text-muted-foreground">{formatCurrency(quote.costBreakdown.shippingEmbedded)}</span>
                   </div>
                 </div>
 
                 {quote.warnings.length > 0 && (
                   <div className="border-t pt-4">
-                      <h4 className="text-sm font-sans font-semibold text-amber-600 mb-2">Warnings</h4>
+                      <h4 className="text-sm font-sans font-semibold text-amber-600 mb-2">Analysis & Warnings</h4>
                       <ul className="text-sm text-amber-600 list-disc list-inside space-y-1">
                         {quote.warnings.map((warning, i) => (
                           <li key={i}>{warning}</li>

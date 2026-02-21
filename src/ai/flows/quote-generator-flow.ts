@@ -7,12 +7,13 @@
  */
 
 import {ai} from '@/ai/genkit';
-import {z} from 'genkit';
+import {z} from 'zod';
 import pricingMatrix from '@/app/data/pricing-matrix.json';
 import { MeshMetrics } from '@/lib/mesh-analyzer';
-import { EstimationOutput } from '@/ai/flows/quote-generator-flow';
 
-// Schema for the STL metrics
+// --- Zod Schemas for Type Safety ---
+
+// Schema for the mesh metrics from the analyzer
 const MeshMetricsSchema = z.object({
   format: z.enum(['stl', 'obj', '3mf', 'amf']),
   units: z.string(),
@@ -26,13 +27,16 @@ const MeshMetricsSchema = z.object({
   parse_ms: z.number(),
 });
 
-// Schema for the input required by the main function, now using metrics
+// Schema for the input required by the main function
 const QuoteGeneratorInputSchema = z.object({
   metrics: MeshMetricsSchema,
   material: z.string().describe('The filament material to be used (e.g., PLA, PETG, ASA).'),
   nozzleSize: z.string().describe('The diameter of the printer nozzle in mm (e.g., "0.4", "0.6").'),
+  autoPrinterSelection: z.boolean().describe("Whether to auto-select the most cost-effective printer."),
+  selectedPrinterKey: z.string().optional().describe("The printer key selected by the user if auto-selection is off.")
 });
 export type QuoteGeneratorInput = z.infer<typeof QuoteGeneratorInputSchema>;
+
 
 // Schema for the AI model's direct output (estimation part)
 const EstimationOutputSchema = z.object({
@@ -41,110 +45,242 @@ const EstimationOutputSchema = z.object({
 });
 export type EstimationOutput = z.infer<typeof EstimationOutputSchema>;
 
-
 // Schema for the final, calculated quote returned to the client
 const QuoteOutputSchema = z.object({
-  materialCost: z.number(),
-  machineTimeCost: z.number(),
-  totalCost: z.number(),
-  shippingCost: z.number(),
+  mode: z.string(),
+  jobScale: z.string(),
+  selectedPrinterKey: z.string(),
+  selectedNozzle: z.string(),
+  selectedFilament: z.string(),
+  bbox_mm: z.object({ x: z.number(), y: z.number(), z: z.number() }),
+  volume_cm3: z.number(),
+  segmentCountEstimate: z.number(),
+  bedCyclesEstimate: z.number(),
+  estimatedHours: z.number(),
+  leadTimeDays: z.object({ min: z.number(), max: z.number() }),
+  costBreakdown: z.object({
+    machine: z.number(),
+    material: z.number(),
+    segmentation: z.number(),
+    shippingEmbedded: z.number(),
+    risk: z.number(),
+    total: z.number(),
+  }),
   warnings: z.array(z.string()),
-  printTimeHours: z.number(),
-  materialGrams: z.number(),
 });
 export type QuoteOutput = z.infer<typeof QuoteOutputSchema>;
 
-// The main exported function that the client-action will call
+
+// --- Main Exported Quote Generator Function ---
+
 export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteOutput> {
-  // 1. Get the estimation from the AI based on metrics
+  // 1. Get AI estimation for time and material (this remains the first crucial step)
   const estimation = await estimationFlow(input);
-  const {printTimeHours, materialGrams} = estimation;
 
-  // 2. Perform calculations based on the pricing matrix
-  const {material, nozzleSize, metrics} = input;
+  // 2. Initial setup and validation from input and pricing matrix
   const warnings: string[] = [];
+  const { metrics, material, nozzleSize, autoPrinterSelection, selectedPrinterKey: userSelectedPrinter } = input;
+  const maxDim = Math.max(metrics.bbox_mm.x, metrics.bbox_mm.y, metrics.bbox_mm.z);
 
+  // 3. Determine if segmentation is required and find all printers that can handle the material
+  const printersSupportingFilament = Object.entries(pricingMatrix.printers).filter(([_, printer]) => 
+    printer.supportedFilaments.includes(material)
+  ).map(([key, _]) => key);
+
+  if (printersSupportingFilament.length === 0) {
+    throw new Error(`No available printer supports the selected material: ${material}.`);
+  }
+
+  const eligiblePrintersUnsegmented = printersSupportingFilament.filter(key => {
+    const printer = pricingMatrix.printers[key as keyof typeof pricingMatrix.printers];
+    return (
+      printer.buildVolume_mm.x >= metrics.bbox_mm.x &&
+      printer.buildVolume_mm.y >= metrics.bbox_mm.y &&
+      printer.buildVolume_mm.z >= metrics.bbox_mm.z
+    );
+  });
+  
+  const segmentationRequired = eligiblePrintersUnsegmented.length === 0;
+  
+  // 4. Determine Job Scale based on size, time, and segmentation
+  const { jobScaleRules } = pricingMatrix;
+  let jobScale: "Small Part" | "Medium Part" | "Large Assembly";
+  if (segmentationRequired || estimation.printTimeHours >= jobScaleRules.largeAssembly.minHours) {
+    jobScale = "Large Assembly";
+  } else if (maxDim <= jobScaleRules.smallPart.maxDim_mm && estimation.printTimeHours < jobScaleRules.smallPart.maxHours) {
+    jobScale = "Small Part";
+  } else {
+    jobScale = "Medium Part"; // Default for everything in between
+  }
+
+  // 5. Determine Mode & Calculate Costs based on Job Scale
+  let mode: "Hourly" | "Bed-Cycle";
+  let costBreakdown;
+  let segmentCountEstimate = 1;
+  let bedCyclesEstimate = 0;
+  let selectedPrinterKey: string;
+  let leadTimeDays;
+
+  if (jobScale === "Large Assembly") {
+    mode = "Bed-Cycle";
+    warnings.push("Large assembly detected: bed-cycle mode enforced.");
+    if(segmentationRequired) warnings.push("Model exceeds build volume: segmentation required.");
+
+    // Select the best printer for segmentation (prefer largest build volume)
+    const segmentationPrinterKeys = printersSupportingFilament.sort((a, b) => {
+        const printerA = pricingMatrix.printers[a as keyof typeof pricingMatrix.printers];
+        const printerB = pricingMatrix.printers[b as keyof typeof pricingMatrix.printers];
+        return (printerB.buildVolume_mm.x * printerB.buildVolume_mm.y) - (printerA.buildVolume_mm.x * printerA.buildVolume_mm.y);
+    });
+    selectedPrinterKey = segmentationPrinterKeys[0];
+    let selectedPrinter = pricingMatrix.printers[selectedPrinterKey as keyof typeof pricingMatrix.printers];
+
+    // Estimate segments and bed cycles
+    if (segmentationRequired) {
+      const sx = Math.ceil(metrics.bbox_mm.x / (selectedPrinter.buildVolume_mm.x * pricingMatrix.segmentation.efficiency));
+      const sy = Math.ceil(metrics.bbox_mm.y / (selectedPrinter.buildVolume_mm.y * pricingMatrix.segmentation.efficiency));
+      const sz = Math.ceil(metrics.bbox_mm.z / (selectedPrinter.buildVolume_mm.z * pricingMatrix.segmentation.efficiency));
+      segmentCountEstimate = Math.max(1, sx * sy * sz);
+    }
+    bedCyclesEstimate = segmentCountEstimate; // Assumption: 1 segment per bed cycle
+
+    // Failsafe: Check if Bambu is suitable for this many segments
+    if (selectedPrinterKey === 'bambu_h2s' && segmentCountEstimate > pricingMatrix.segmentation.maxAutoSegments.bambu_h2s) {
+        warnings.push("High segment count for Bambu printer. Forcing selection of a large-format printer.");
+        const largeFormatPrinters = segmentationPrinterKeys.filter(p => p !== 'bambu_h2s');
+        if (largeFormatPrinters.length === 0) {
+          throw new Error("No large format printer available for this high-segment-count job.");
+        }
+        selectedPrinterKey = largeFormatPrinters[0];
+        selectedPrinter = pricingMatrix.printers[selectedPrinterKey as keyof typeof pricingMatrix.printers];
+    }
+    
+    // Calculate costs for Bed-Cycle mode
+    const bedCycleRate = selectedPrinter.bedCycleRates_withShippingEmbedded[nozzleSize as keyof typeof selectedPrinter.bedCycleRates_withShippingEmbedded];
+    const machineCost = bedCyclesEstimate * bedCycleRate;
+    
+    const filamentDetails = pricingMatrix.filaments[material as keyof typeof pricingMatrix.filaments];
+    const materialCost = estimation.materialGrams * filamentDetails.sellPricePerGram;
+
+    const segmentationCost = segmentCountEstimate * pricingMatrix.segmentation.seamsPerSegmentDefault * pricingMatrix.segmentation.bondingLaborPerSeam;
+
+    const subTotalForRisk = machineCost + materialCost + segmentationCost;
+    const riskCost = subTotalForRisk * segmentCountEstimate * pricingMatrix.segmentation.riskMultiplierPerSegment;
+    
+    let totalCost = subTotalForRisk + riskCost;
+    
+    if (estimation.printTimeHours > pricingMatrix.multipliers.longJob.thresholdHours) {
+        totalCost *= pricingMatrix.multipliers.longJob.multiplier;
+        warnings.push("Long job multiplier applied due to extended print time.");
+    }
+    
+    const shippingEmbedded = bedCyclesEstimate * selectedPrinter.bedCycleHours * pricingMatrix.meta.shippingEmbedded.embeddedPerHour;
+    
+    costBreakdown = { machine: machineCost, material: materialCost, segmentation: segmentationCost, shippingEmbedded, risk: riskCost, total: totalCost };
+
+    // Calculate lead time for large assemblies
+    const totalFleetCount = Object.values(pricingMatrix.printer_fleet).reduce((sum, p) => sum + p.count, 0);
+    const daysRaw = Math.ceil(bedCyclesEstimate / (totalFleetCount * pricingMatrix.leadTime.utilizationFactor));
+    leadTimeDays = {
+      min: Math.max(daysRaw, pricingMatrix.leadTime.minDays),
+      max: Math.min(daysRaw + Math.ceil(daysRaw * 0.5), pricingMatrix.leadTime.maxDaysCap)
+    };
+
+  } else { // Small or Medium Part (Hourly Mode)
+    mode = "Hourly";
+    
+    // Determine the printer to use
+    if (userSelectedPrinter && !autoPrinterSelection) {
+        if (eligiblePrintersUnsegmented.includes(userSelectedPrinter)) {
+            selectedPrinterKey = userSelectedPrinter;
+        } else {
+            warnings.push(`Your selected printer cannot fit this part. Auto-selecting a suitable printer.`);
+            autoPrinterSelection = true; // Force auto-selection
+        }
+    }
+    
+    if (!userSelectedPrinter || autoPrinterSelection) {
+        // Auto-select cheapest eligible printer
+        eligiblePrintersUnsegmented.sort((a, b) => {
+            const printerA = pricingMatrix.printers[a as keyof typeof pricingMatrix.printers];
+            const printerB = pricingMatrix.printers[b as keyof typeof pricingMatrix.printers];
+            const rateA = printerA.hourlyRates_withShippingEmbedded[nozzleSize as keyof typeof printerA.hourlyRates_withShippingEmbedded];
+            const rateB = printerB.hourlyRates_withShippingEmbedded[nozzleSize as keyof typeof printerB.hourlyRates_withShippingEmbedded];
+            return rateA - rateB;
+        });
+        selectedPrinterKey = eligiblePrintersUnsegmented[0];
+    }
+
+    if (!selectedPrinterKey) {
+        throw new Error(`Could not find an eligible printer for material ${material} and part size.`);
+    }
+    
+    // Calculate costs for Hourly mode
+    const printer = pricingMatrix.printers[selectedPrinterKey as keyof typeof pricingMatrix.printers];
+    const hourlyRate = printer.hourlyRates_withShippingEmbedded[nozzleSize as keyof typeof printer.hourlyRates_withShippingEmbedded];
+    
+    const machineCost = estimation.printTimeHours * hourlyRate;
+    const materialCost = estimation.materialGrams * pricingMatrix.filaments[material as keyof typeof pricingMatrix.filaments].sellPricePerGram;
+    let totalCost = machineCost + materialCost;
+
+    // Apply complexity multiplier based on triangle count
+    const {triangleCountThresholds, multipliers} = pricingMatrix.multipliers.complexity;
+    let complexityMultiplier = multipliers.low;
+    if (metrics.triangles > triangleCountThresholds.high) {
+        complexityMultiplier = multipliers.high;
+        warnings.push("Complexity high: manual review recommended.");
+    } else if (metrics.triangles > triangleCountThresholds.medium) {
+        complexityMultiplier = multipliers.medium;
+    }
+    totalCost *= complexityMultiplier;
+
+    const shippingEmbedded = estimation.printTimeHours * pricingMatrix.meta.shippingEmbedded.embeddedPerHour;
+    const riskCost = totalCost - (machineCost + materialCost); // Risk/contingency is the amount from the complexity markup
+    
+    costBreakdown = { machine: machineCost, material: materialCost, segmentation: 0, shippingEmbedded, risk: riskCost, total: totalCost };
+
+    // Simple lead time for smaller jobs
+    const daysRaw = Math.ceil(estimation.printTimeHours / 12); // Rough estimate: 12h of printing per day
+    leadTimeDays = {
+      min: Math.max(daysRaw, pricingMatrix.leadTime.minDays),
+      max: Math.min(daysRaw + 2, pricingMatrix.leadTime.maxDaysCap)
+    };
+  }
+  
+  // Add common warnings
   if (!metrics.watertight_est) {
-      warnings.push("Model is not watertight, which may cause printing issues. Please check your model.");
+      warnings.push("Non-watertight mesh may affect volume/time estimates and print quality.");
   }
-  // This is a very rough estimation. The AI will likely be more accurate.
-  const overhang_pct_est_rough = (metrics.notes.includes('overhangs_present_basic') ? 40 : 0);
-  if (overhang_pct_est_rough > 30) { 
-      warnings.push(`Model may have significant overhangs which may require support material and increase print time/cost.`);
-  }
-  warnings.push(...metrics.notes.map(note => `Analysis Note: ${note}`));
-
-
-  // Find a suitable printer that supports the filament
-  const supportedPrinter = Object.entries(pricingMatrix.printers).find(([_, printerDetails]) =>
-    printerDetails.supportedFilaments.includes(material)
-  );
-
-  if (!supportedPrinter) {
-    warnings.push(`No available printer supports ${material}. Quote is based on default rates.`);
-    // Fallback logic or error could be here. For now, we'll calculate with some default to avoid crashing.
-    return {
-      materialCost: 0,
-      machineTimeCost: 0,
-      totalCost: 0,
-      shippingCost: 0,
-      warnings,
-      printTimeHours,
-      materialGrams,
-    };
-  }
-
-  const [printerName, printerDetails] = supportedPrinter;
-
-  // Get nozzle multiplier
-  const nozzleMultiplier =
-    pricingMatrix.nozzleMultipliers[nozzleSize as keyof typeof pricingMatrix.nozzleMultipliers] || 1.0;
-  if (!pricingMatrix.nozzleMultipliers[nozzleSize as keyof typeof pricingMatrix.nozzleMultipliers]) {
-    warnings.push(`Nozzle size ${nozzleSize} not in matrix, using default multiplier.`);
-  }
-
-  // Calculate Machine Time Cost (with embedded shipping)
-  const baseRate = printerDetails.baseRatePerHour;
-  const finalHourlyRate = (baseRate + pricingMatrix.meta.shippingEmbeddedPerHour) * nozzleMultiplier * (1 + pricingMatrix.meta.businessMarkup);
-  const machineTimeCost = printTimeHours * finalHourlyRate;
-
-  // Calculate Material Cost
-  const filamentDetails = pricingMatrix.filaments[material as keyof typeof pricingMatrix.filaments];
-  if (!filamentDetails) {
-    warnings.push(`Material ${material} not in pricing matrix.`);
-    return {
-      materialCost: 0,
-      machineTimeCost,
-      totalCost: machineTimeCost,
-      shippingCost: 0,
-      warnings,
-      printTimeHours,
-      materialGrams,
-    };
-  }
-  const materialCost = materialGrams * filamentDetails.sellPricePerGram;
-
-  // Shipping Cost is now baked into the hourly rate
-  const shippingCost = 0;
-
-  // Total Cost
-  const totalCost = materialCost + machineTimeCost;
-
+  
+  // Return the final structured quote
   return {
-    materialCost,
-    machineTimeCost,
-    totalCost,
-    shippingCost: 0, // Return 0 for consistency
-    warnings,
-    printTimeHours,
-    materialGrams,
+      mode,
+      jobScale,
+      selectedPrinterKey,
+      selectedNozzle: nozzleSize,
+      selectedFilament: material,
+      bbox_mm: metrics.bbox_mm,
+      volume_cm3: metrics.volume_mm3 / 1000,
+      segmentCountEstimate,
+      bedCyclesEstimate,
+      estimatedHours: estimation.printTimeHours,
+      leadTimeDays,
+      costBreakdown,
+      warnings,
   };
 }
+
+
+// --- Genkit Flow for AI Estimation ---
 
 // Genkit prompt that asks the AI for estimations based on metrics
 const estimationPrompt = ai.definePrompt({
   name: '3dPrintEstimatorPrompt',
-  input: {schema: QuoteGeneratorInputSchema},
+  input: {schema: z.object({
+    metrics: MeshMetricsSchema,
+    material: z.string(),
+    nozzleSize: z.string()
+  })},
   output: {schema: EstimationOutputSchema},
   prompt: `You are an expert 3D printing technician. Your task is to analyze a 3D model's metrics and provide accurate estimations for print time and material consumption.
 
@@ -174,7 +310,6 @@ const estimationFlow = ai.defineFlow(
     outputSchema: EstimationOutputSchema,
   },
   async (input) => {
-    // Using a single, fast and powerful model as requested to simplify logic.
     const { output } = await estimationPrompt(input, { model: 'googleai/gemini-2.5-flash-lite' });
     if (!output) {
       throw new Error('The AI model failed to provide an estimation. Please try again later.');
