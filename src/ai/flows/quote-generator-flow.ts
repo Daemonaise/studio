@@ -79,7 +79,8 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
 
   // 2. Initial setup and validation from input and pricing matrix
   const warnings: string[] = [];
-  const { metrics, material, nozzleSize, autoPrinterSelection, selectedPrinterKey: userSelectedPrinter } = input;
+  const { metrics, material, nozzleSize, selectedPrinterKey: userSelectedPrinter } = input;
+  let autoPrinterSelection = input.autoPrinterSelection;
   const maxDim = Math.max(metrics.bbox_mm.x, metrics.bbox_mm.y, metrics.bbox_mm.z);
 
   // 3. Determine if segmentation is required and find all printers that can handle the material
@@ -310,6 +311,7 @@ const estimationFlow = ai.defineFlow(
     outputSchema: EstimationOutputSchema,
   },
   async (input) => {
+    // Using a single, fast and powerful model as requested to simplify logic.
     const { output } = await estimationPrompt(input, { model: 'googleai/gemini-2.5-flash-lite' });
     if (!output) {
       throw new Error('The AI model failed to provide an estimation. Please try again later.');
