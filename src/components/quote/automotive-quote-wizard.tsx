@@ -239,7 +239,7 @@ export function AutomotiveQuoteWizard() {
         <Card className="relative h-full flex flex-col">
           <CardHeader>
             <CardTitle>2. Instant Quote</CardTitle>
-            <CardDescription>Your estimated cost will appear here after analysis.</CardDescription>
+            <CardDescription>Your estimated cost will appear here. All quotes include free shipping.</CardDescription>
           </CardHeader>
           <CardContent className="flex-grow flex flex-col">
             {isLoading && (
@@ -279,10 +279,6 @@ export function AutomotiveQuoteWizard() {
                    <div className="flex justify-between">
                     <span className="text-muted-foreground">Material ({quote.materialGrams.toFixed(0)}g):</span>
                     <span>{formatCurrency(quote.materialCost)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Freight Shipping:</span>
-                    <span>{formatCurrency(quote.shippingCost)}</span>
                   </div>
                 </div>
 

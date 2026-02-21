@@ -100,9 +100,9 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
     warnings.push(`Nozzle size ${nozzleSize} not in matrix, using default multiplier.`);
   }
 
-  // Calculate Machine Time Cost
+  // Calculate Machine Time Cost (with embedded shipping)
   const baseRate = printerDetails.baseRatePerHour;
-  const finalHourlyRate = baseRate * nozzleMultiplier * (1 + pricingMatrix.meta.businessMarkup);
+  const finalHourlyRate = (baseRate + pricingMatrix.meta.shippingEmbeddedPerHour) * nozzleMultiplier * (1 + pricingMatrix.meta.businessMarkup);
   const machineTimeCost = printTimeHours * finalHourlyRate;
 
   // Calculate Material Cost
@@ -121,17 +121,17 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   }
   const materialCost = materialGrams * filamentDetails.sellPricePerGram;
 
-  // Shipping Cost
-  const shippingCost = pricingMatrix.meta.shippingBasis.freightSellPrice;
+  // Shipping Cost is now baked into the hourly rate
+  const shippingCost = 0;
 
   // Total Cost
-  const totalCost = materialCost + machineTimeCost + shippingCost;
+  const totalCost = materialCost + machineTimeCost;
 
   return {
     materialCost,
     machineTimeCost,
     totalCost,
-    shippingCost,
+    shippingCost: 0, // Return 0 for consistency
     warnings,
     printTimeHours,
     materialGrams,
