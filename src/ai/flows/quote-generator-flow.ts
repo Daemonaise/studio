@@ -98,9 +98,17 @@ function estimateSegmentsForBBox(b: BBox, build: Build, efficiency = 0.70, softe
   const sy = Math.ceil(b.y / build.y);
   const szRaw = Math.ceil(b.z / build.z);
   const sz = Math.max(1, Math.ceil(szRaw * softenZ));
-  const raw = Math.max(1, sx * sy * sz);
+  const raw = sx * sy * sz;
+
+  // If the part fits in one piece, segment count is 1.
+  if (raw <= 1) {
+    return 1;
+  }
+  
+  // Otherwise, calculate segments considering packing efficiency.
   return Math.ceil(raw / efficiency);
 }
+
 
 function bestOrientationSegments(bbox: BBox, build: Build, efficiency = 0.70): { segments: number; orientedBBox: BBox } {
   let best = Infinity;
@@ -123,7 +131,8 @@ function getSegmentationTier(segments: number): SegTier {
 
 export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteOutput> {
   const { metrics, material, nozzleSize } = input;
-  let { autoPrinterSelection, selectedPrinterKey: userSelectedPrinter } = input;
+  let autoPrinterSelection = input.autoPrinterSelection;
+  let userSelectedPrinter = input.selectedPrinterKey;
   const warnings: string[] = [];
 
   // 1. Initial AI estimation for baseline time and material
@@ -430,7 +439,7 @@ const estimationFlow = ai.defineFlow(
         let estimatedHours = Math.max(0.3, volume_cm3 / 6.0); 
 
         // Adjust for nozzle size. Larger nozzles print faster.
-        estimatedHours /= (1 / nozzleMultiplier); 
+        estimatedHours *= nozzleMultiplier; 
 
         // Increase time for very complex parts
         if (metrics.triangles > pricingMatrix.multipliers.complexity.triangleCountThresholds.high) {
