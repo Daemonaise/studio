@@ -9,7 +9,6 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
-import { MeshMetrics } from '@/lib/mesh-analyzer';
 
 // Schema for the STL metrics
 const MeshMetricsSchema = z.object({
@@ -80,6 +79,6 @@ const aiEngineeringAssistantFlow = ai.defineFlow(
     if (!output) {
         throw new Error('The AI model failed to provide a response. Please try again later.');
     }
-    return output!;
+    return output;
   }
 );

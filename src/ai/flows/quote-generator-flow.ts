@@ -10,7 +10,6 @@
 import {ai} from '@/ai/genkit';
 import {z} from 'zod';
 import pricingMatrix from '@/app/data/pricing-matrix.json';
-import { MeshMetrics } from '@/lib/mesh-analyzer';
 
 // --- Zod Schemas for Type Safety ---
 
@@ -66,6 +65,7 @@ const QuoteOutputSchema = z.object({
     segmentation: z.number(),
     shippingEmbedded: z.number(),
     risk: z.number(),
+    handling: z.number(),
     total: z.number(),
   }),
   warnings: z.array(z.string()),
@@ -164,7 +164,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       throw new Error(`Filament requirements not found for ${material}.`);
   }
 
-  const compatiblePrinterKeys = Object.entries(pricingMatrix.printers).filter(([key, printer]) => {
+  const compatiblePrinterKeys = Object.entries(pricingMatrix.printers).filter(([, printer]) => {
       const caps = (printer as any).capabilities;
       if (!caps) return false;
       return (
@@ -218,7 +218,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   const selectedPrinter = (pricingMatrix.printers as any)[selectedPrinterKey];
   
   // 4. Calculate Segmentation for the *selected* printer
-  const { segments: segmentCountEstimate, orientedBBox } = bestOrientationSegments(bbox_mm, selectedPrinter.buildVolume_mm, pricingMatrix.segmentation.efficiency);
+  const { segments: segmentCountEstimate } = bestOrientationSegments(bbox_mm, selectedPrinter.buildVolume_mm, pricingMatrix.segmentation.efficiency);
   const segmentationRequired = segmentCountEstimate > 1;
 
   if (segmentationRequired) warnings.push("Model exceeds build volume: segmentation required.");
@@ -298,9 +298,13 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       warnings.push("Long job multiplier applied due to extended print time.");
   }
 
-  const totalCost = subtotalForMultipliers + materialCost;
+  // 9. Shipping & Handling
+  const embeddedShippingCost = finalEstimatedHours * pricingMatrix.meta.shippingEmbedded.embeddedPerHour;
+  const handlingSurcharge = Math.max(0, 25 - embeddedShippingCost);
 
-  // 9. Calculate Lead Time
+  const totalCost = subtotalForMultipliers + materialCost + handlingSurcharge;
+
+  // 10. Calculate Lead Time
   let eligibleFleetCount = 0;
   if (mode === "Bed-Cycle Mode") {
       if (!autoPrinterSelection && userSelectedPrinter) {
@@ -326,7 +330,7 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       max: Math.min(maxLead, pricingMatrix.leadTime.maxDaysCap),
   };
   
-  // 10. Finalize
+  // 11. Finalize
   if (!metrics.watertight_est) {
       warnings.push("Non-watertight mesh may affect volume/time estimates and print quality.");
   }
@@ -353,7 +357,8 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
         material: materialCost,
         segmentation: segmentationCost,
         risk: riskCost,
-        shippingEmbedded: 0, // This is now included in rates
+        shippingEmbedded: embeddedShippingCost,
+        handling: handlingSurcharge,
         total: totalCost,
       },
       warnings,
@@ -427,8 +432,7 @@ const estimationFlow = ai.defineFlow(
   async (input) => {
     // For monocoque-scale parts, deterministic calculation is more reliable than AI estimation.
     const { metrics, nozzleSize } = input;
-    const maxDim = Math.max(metrics.bbox_mm.x, metrics.bbox_mm.y, metrics.bbox_mm.z);
-    
+
     // If volume data is available and part is large, use deterministic estimation.
     if (metrics.volume_mm3 > 0) {
         const volume_cm3 = metrics.volume_mm3 / 1000;

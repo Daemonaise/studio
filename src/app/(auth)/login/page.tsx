@@ -28,8 +28,7 @@ export default function LoginPage() {
     if (email === "test@test.com" && password === "password") {
       router.push("/");
     } else {
-      const newError = "Invalid email or password. Please try again.";
-      setError(newError);
+      setError("Invalid email or password. Please try again.");
     }
   };
 

@@ -306,5 +306,3 @@ export function AutomotiveQuoteWizard() {
     </div>
   );
 }
-
-    
