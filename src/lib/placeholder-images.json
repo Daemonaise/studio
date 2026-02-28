@@ -15,19 +15,19 @@
     {
       "id": "digital-file-package",
       "description": "Image for the digital file package.",
-      "imageUrl": "https://images.unsplash.com/photo-1593349480503-615f1d486952?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwyfHxkaWdpdGFsJTIwYmx1ZXByaW50fGVufDB8fHx8MTc3MDk1Mjg4NHww&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageUrl": "https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FIMG_9477.PNG?alt=media&token=01eec7ff-e6f0-4d90-abd5-854d2bb65a83",
       "imageHint": "digital blueprint"
     },
     {
       "id": "disassembled-kit-package",
       "description": "Image for the disassembled kit package.",
-      "imageUrl": "https://images.unsplash.com/photo-1560969184-10fe8719e047?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw0fHxjYXIlMjBwYXJ0cyUyMGtpdHxlbnwwfHx8fDE3NzA5NTI4ODR8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageUrl": "https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FDigitalsvj.png?alt=media&token=be38a2ff-ac4e-4e86-95ac-2c10607d4fcb",
       "imageHint": "car parts"
     },
     {
       "id": "assembled-package",
       "description": "Image for the assembled package.",
-      "imageUrl": "https://images.unsplash.com/photo-1605516280452-911571212c4b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwxfHxjYXIlMjBib2R5JTIwc2hlbGx8ZW58MHx8fHwxNzA5NTI4ODR8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageUrl": "https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FAssembled%20kit%20photo.jpg?alt=media&token=1169bbdb-3781-4ea6-9469-bd517510825c",
       "imageHint": "car body"
     },
     {

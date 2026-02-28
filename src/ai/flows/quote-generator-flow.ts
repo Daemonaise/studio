@@ -166,8 +166,10 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
 
   const compatiblePrinterKeys = Object.entries(pricingMatrix.printers).filter(([, printer]) => {
       const caps = (printer as any).capabilities;
+      const supported: string[] = (printer as any).supportedFilaments ?? [];
       if (!caps) return false;
       return (
+        supported.includes(material) &&
         caps.maxNozzleC >= filamentReqs.minNozzleC &&
         caps.maxBedC >= filamentReqs.minBedC &&
         (!filamentReqs.requiresEnclosure || caps.hasEnclosure) &&
@@ -268,11 +270,17 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
     segmentationCost = 0;
   }
   
-  // NEW: Capped risk model.
+  // Capped risk model — values driven by riskModel config.
+  const { riskModel } = pricingMatrix;
   const baseCostForRisk = machineCost + segmentationCost;
-  riskCost = mode === "Bed-Cycle Mode"
-    ? Math.min(Math.max(baseCostForRisk * 0.12, 250), baseCostForRisk * 0.25)
-    : 0;
+  if (mode === "Bed-Cycle Mode") {
+    const tierBump = (riskModel.tierBump as any)[segmentationTier] ?? 0;
+    const riskPercent = riskModel.baseRiskPercent + tierBump;
+    riskCost = Math.min(
+      Math.max(baseCostForRisk * riskPercent, riskModel.minRisk),
+      baseCostForRisk * riskModel.capPercentOfBase
+    );
+  }
 
   // 7. Calculate Material Cost
   const materialInfo = pricingMatrix.filaments[material as keyof typeof pricingMatrix.filaments];
@@ -437,24 +445,21 @@ const estimationFlow = ai.defineFlow(
     if (metrics.volume_mm3 > 0) {
         const volume_cm3 = metrics.volume_mm3 / 1000;
         const nozzleMultiplier = (pricingMatrix.nozzles.multipliers as any)[nozzleSize] || 1.0;
-        
+
         // Base hours estimate on volume. A simple heuristic.
         // Assume roughly 6 cm³/hr for a 0.4mm nozzle on a standard part.
-        let estimatedHours = Math.max(0.3, volume_cm3 / 6.0); 
+        let estimatedHours = Math.max(0.3, volume_cm3 / 6.0);
 
         // Adjust for nozzle size. Larger nozzles print faster.
-        estimatedHours *= nozzleMultiplier; 
+        estimatedHours *= nozzleMultiplier;
+        // Note: complexity premium is applied to cost in quoteGenerator via subtotal
+        // multipliers, not here, to avoid double-charging in Hourly mode.
 
-        // Increase time for very complex parts
-        if (metrics.triangles > pricingMatrix.multipliers.complexity.triangleCountThresholds.high) {
-            estimatedHours *= pricingMatrix.multipliers.complexity.multipliers.high;
-        } else if (metrics.triangles > pricingMatrix.multipliers.complexity.triangleCountThresholds.medium) {
-            estimatedHours *= pricingMatrix.multipliers.complexity.multipliers.medium;
-        }
-        
-        // Estimate material based on volume and a typical density
-        // PLA density is ~1.24 g/cm³. We add a factor for support/infill.
-        const materialGrams = volume_cm3 * 1.24 * 1.15;
+        // Estimate material based on volume and material-specific density.
+        // We add a 15% factor for support structures and infill overhead.
+        const materialInfo = pricingMatrix.filaments[input.material as keyof typeof pricingMatrix.filaments];
+        const density = (materialInfo as any)?.densityGPerCm3 ?? 1.24;
+        const materialGrams = volume_cm3 * density * 1.15;
 
         return {
             printTimeHours: estimatedHours,

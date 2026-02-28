@@ -74,9 +74,7 @@
       },
       "supportedFilaments": [
         "PLA",
-        "PETG",
-        "ABS",
-        "TPU"
+        "PETG"
       ],
       "recommendedUse": [
         "large_parts",
@@ -117,9 +115,7 @@
       },
       "supportedFilaments": [
         "PLA",
-        "PETG",
-        "ABS",
-        "TPU"
+        "PETG"
       ],
       "recommendedUse": [
         "large_parts",
@@ -186,6 +182,7 @@
         "requiresChamberTempC": 0,
         "requiresHardenedNozzle": false
       },
+      "densityGPerCm3": 1.24,
       "sellPricePerKg": 34.47,
       "sellPricePerGram": 0.034,
       "defaultGPerHour_0_4": 40
@@ -199,6 +196,7 @@
         "requiresChamberTempC": 0,
         "requiresHardenedNozzle": false
       },
+      "densityGPerCm3": 1.27,
       "sellPricePerKg": 35.97,
       "sellPricePerGram": 0.036,
       "defaultGPerHour_0_4": 40
@@ -212,6 +210,7 @@
         "requiresChamberTempC": 0,
         "requiresHardenedNozzle": false
       },
+      "densityGPerCm3": 1.04,
       "sellPricePerKg": 35.97,
       "sellPricePerGram": 0.036,
       "defaultGPerHour_0_4": 38
@@ -225,6 +224,7 @@
         "requiresChamberTempC": 0,
         "requiresHardenedNozzle": false
       },
+      "densityGPerCm3": 1.21,
       "sellPricePerKg": 77.94,
       "sellPricePerGram": 0.078,
       "defaultGPerHour_0_4": 28
@@ -238,6 +238,7 @@
         "requiresChamberTempC": 50,
         "requiresHardenedNozzle": false
       },
+      "densityGPerCm3": 1.07,
       "sellPricePerKg": 80.97,
       "sellPricePerGram": 0.081,
       "defaultGPerHour_0_4": 35
@@ -251,6 +252,7 @@
         "requiresChamberTempC": 50,
         "requiresHardenedNozzle": false
       },
+      "densityGPerCm3": 1.13,
       "sellPricePerKg": 137.97,
       "sellPricePerGram": 0.138,
       "defaultGPerHour_0_4": 30
@@ -264,6 +266,7 @@
         "requiresChamberTempC": 0,
         "requiresHardenedNozzle": true
       },
+      "densityGPerCm3": 1.30,
       "sellPricePerKg": 104.97,
       "sellPricePerGram": 0.105,
       "defaultGPerHour_0_4": 28
@@ -277,6 +280,7 @@
         "requiresChamberTempC": 55,
         "requiresHardenedNozzle": true
       },
+      "densityGPerCm3": 1.23,
       "sellPricePerKg": 134.97,
       "sellPricePerGram": 0.135,
       "defaultGPerHour_0_4": 25

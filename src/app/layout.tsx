@@ -16,7 +16,7 @@ const fontSourceCodePro = Source_Code_Pro({
 });
 
 export const metadata: Metadata = {
-  title: "Karasawa Heavy Industries",
+  title: "Karasawa Labs",
   description: "Precision Engineering, On-Demand Manufacturing",
 };
 

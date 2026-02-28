@@ -41,8 +41,8 @@ export default function HomePage() {
             </div>
           </div>
           <div className="relative">
-            <div className="absolute -inset-1 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-60 blur-xl"></div>
-            <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted shadow-2xl shadow-primary/20">
+            <div className="absolute -inset-1 rounded-lg bg-gradient-to-br from-primary/50 via-accent/50 to-secondary/40 opacity-50 blur-xl"></div>
+            <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted shadow-2xl shadow-primary/20 teal-frame">
               <video
                 className="absolute top-0 left-0 w-full h-full object-cover"
                 src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2FHero%20video.mp4?alt=media&token=15f35f34-1dae-4197-9fec-895a186ce9e9"
@@ -58,20 +58,7 @@ export default function HomePage() {
 
       <section className="w-full bg-background py-20 md:py-32">
         <div className="container grid lg:grid-cols-2 gap-12 xl:gap-20 items-center">
-          <div className="relative">
-            <div className="absolute -inset-1 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-60 blur-xl"></div>
-            <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted shadow-2xl shadow-primary/20">
-              <video
-                className="absolute top-0 left-0 w-full h-full object-cover"
-                src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2F20fd23dec958480baafbcb5e2e7dc22b.mov?alt=media&token=bd957dbc-d6f1-45da-a912-db18186bed35"
-                autoPlay
-                loop
-                muted
-                playsInline
-              />
-            </div>
-          </div>
-          <div className="space-y-6">
+          <div className="space-y-6 lg:order-2">
             <div className="space-y-2">
               <p className="font-semibold text-accent">Engineered From First Principles</p>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
@@ -103,6 +90,19 @@ export default function HomePage() {
                 geometry that remains functional—not ornamental. Every vent,
                 channel, and surface has a purpose.
               </p>
+            </div>
+          </div>
+          <div className="relative lg:order-1">
+            <div className="absolute -inset-1 rounded-lg bg-gradient-to-br from-primary/50 via-accent/50 to-secondary/40 opacity-50 blur-xl"></div>
+            <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted shadow-2xl shadow-primary/20 teal-frame">
+              <video
+                className="absolute top-0 left-0 w-full h-full object-cover"
+                src="https://firebasestorage.googleapis.com/v0/b/studio-4705021877-a1dff.firebasestorage.app/o/Stock%20images%2F20fd23dec958480baafbcb5e2e7dc22b.mov?alt=media&token=bd957dbc-d6f1-45da-a912-db18186bed35"
+                autoPlay
+                loop
+                muted
+                playsInline
+              />
             </div>
           </div>
         </div>
