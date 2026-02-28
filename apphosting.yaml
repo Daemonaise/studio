@@ -3,7 +3,7 @@
 
 # By setting a backendId, you are telling App Hosting to always deploy
 # to this specific backend, rather than creating a new one on each deploy.
-backendId: karasawa-labs-backend
+backendId: karasawalabs
 
 runConfig:
   # Increase this value if you'd like to automatically spin up
