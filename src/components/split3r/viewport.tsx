@@ -41,6 +41,8 @@ export interface ViewportHandle {
   } | null;
   /** Raw geometry for analysis (before transforms). */
   getRawGeometry(): THREE.BufferGeometry | null;
+  /** Replace the current mesh with a repaired geometry (keeps camera position). */
+  loadRepairedGeometry(geo: THREE.BufferGeometry, fileName: string): void;
 }
 
 interface ViewportProps {
@@ -92,31 +94,21 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
   const splitMeshesRef  = useRef<THREE.Mesh[]>([]);
   const planeHelpersRef = useRef<THREE.Object3D[]>([]);
+  const gridRef         = useRef<THREE.GridHelper | null>(null);
 
   const [hasMesh, setHasMesh] = useState(false);
-
-  // ── Imperative handle ───────────────────────────────────────────────────────
-
-  useImperativeHandle(ref, () => ({
-    getBakedGeometry() {
-      if (!meshRef.current) return null;
-      const mesh = meshRef.current;
-      mesh.updateWorldMatrix(true, false);
-      const cloned = mesh.geometry.clone();
-      cloned.applyMatrix4(mesh.matrixWorld);
-      cloned.computeBoundingBox();
-      return { geo: cloned, bbox: cloned.boundingBox! };
-    },
-    getRawGeometry() {
-      return meshRef.current?.geometry ?? null;
-    },
-  }));
 
   // ── Cut plane visuals ───────────────────────────────────────────────────────
 
   const rebuildPlanes = useCallback(() => {
     if (!sceneRef.current || !bbRef.current) return;
-    planeHelpersRef.current.forEach((p) => sceneRef.current!.remove(p));
+    planeHelpersRef.current.forEach((p) => {
+      sceneRef.current!.remove(p);
+      if (p instanceof THREE.Mesh || p instanceof THREE.LineSegments) {
+        p.geometry.dispose();
+        (p.material as THREE.Material).dispose();
+      }
+    });
     planeHelpersRef.current = [];
 
     cutPlanes.forEach(({ axis, position, enabled }) => {
@@ -171,40 +163,63 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     if (!mountRef.current) return;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0d0d12);
+    scene.background = new THREE.Color(0x0e0e14);
     sceneRef.current = scene;
 
-    scene.add(new THREE.GridHelper(400, 40, 0x1a1a2e, 0x1a1a2e));
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-    const dir1 = new THREE.DirectionalLight(0xffffff, 1.2);
-    dir1.position.set(5, 10, 7);
-    scene.add(dir1);
-    const dir2 = new THREE.DirectionalLight(0x88eeff, 0.4);
-    dir2.position.set(-5, -3, -5);
-    scene.add(dir2);
+    // Grid — size is updated when a mesh loads; start at a reasonable default
+    const grid = new THREE.GridHelper(400, 40, 0x252545, 0x18182e);
+    grid.position.y = -0.05; // slight offset avoids z-fighting with model bottom at Y=0
+    scene.add(grid);
+    gridRef.current = grid;
+    // Axes helper so orientation is always clear (red=X, green=Y, blue=Z)
+    scene.add(new THREE.AxesHelper(30));
 
-    // Use a safe initial aspect ratio; ResizeObserver will correct it on first fire.
-    const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 10000);
+    // Hemisphere light gives realistic sky/ground color separation
+    scene.add(new THREE.HemisphereLight(0xddeeff, 0x0a0a1a, 0.8));
+    // Key light — warm, slightly above-right
+    const key = new THREE.DirectionalLight(0xfff4e0, 2.2);
+    key.position.set(6, 12, 8);
+    scene.add(key);
+    // Fill light — cool, opposite side
+    const fill = new THREE.DirectionalLight(0x9fd8ff, 0.6);
+    fill.position.set(-8, 2, -6);
+    scene.add(fill);
+
+    const camera = new THREE.PerspectiveCamera(55, 16 / 9, 0.5, 50000);
     camera.position.set(200, 160, 200);
     cameraRef.current = camera;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
-    // Initialize to 1×1; CSS controls the visual size and ResizeObserver
-    // updates the resolution.  Using setSize with updateStyle=false means
-    // Three.js won't override the CSS 100% × 100% we set below.
-    renderer.setSize(1, 1, false);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, logarithmicDepthBuffer: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping      = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+
+    // Canvas fills its container via CSS absolute positioning.
+    // Pixel buffer is updated by ResizeObserver using entry.contentRect,
+    // which is guaranteed to have the correct post-layout dimensions.
     const canvas = renderer.domElement;
-    canvas.style.display  = "block";
+    canvas.style.position = "absolute";
+    canvas.style.top      = "0";
+    canvas.style.left     = "0";
     canvas.style.width    = "100%";
     canvas.style.height   = "100%";
+    canvas.style.display  = "block";
     canvas.style.outline  = "none";
+    renderer.setSize(1, 1, false);   // tiny pixel buffer; ResizeObserver corrects it
+
     mountRef.current.appendChild(canvas);
     rendererRef.current = renderer;
 
     const controls = new OrbitControls(camera, canvas);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
+    controls.enableDamping    = true;
+    controls.dampingFactor    = 0.08;
+    controls.minDistance      = 0.5;
+    controls.maxDistance      = 20000;
+    controls.enablePan        = true;
+    controls.enableZoom       = true;
+    controls.zoomSpeed        = 1.2;
+    controls.panSpeed         = 0.8;
     controlsRef.current = controls;
 
     const animate = () => {
@@ -214,23 +229,31 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     };
     animate();
 
-    // Single resize handler used by both window resize and ResizeObserver.
+    // ResizeObserver with entry.contentRect: fires immediately on observe()
+    // and gives the true content-box size — no race with clientWidth/clientHeight.
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = Math.round(entry.contentRect.width);
+        const h = Math.round(entry.contentRect.height);
+        if (!w || !h) continue;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h, false);
+      }
+    });
+    ro.observe(mountRef.current);
+
+    // window resize as a belt-and-suspenders fallback
     const onResize = () => {
       if (!mountRef.current) return;
-      const w = mountRef.current.clientWidth;
-      const h = mountRef.current.clientHeight;
+      const w = mountRef.current.offsetWidth;
+      const h = mountRef.current.offsetHeight;
       if (!w || !h) return;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      // false = don't touch CSS style (it stays 100% × 100%)
       renderer.setSize(w, h, false);
     };
     window.addEventListener("resize", onResize);
-
-    // ResizeObserver fires immediately on first observe, ensuring the canvas
-    // resolution is correct before the first user interaction or file load.
-    const ro = new ResizeObserver(onResize);
-    ro.observe(mountRef.current);
 
     const onLoadFile = (e: Event) => {
       const file = (e as CustomEvent<File>).detail;
@@ -240,9 +263,10 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
     return () => {
       cancelAnimationFrame(frameRef.current);
+      ro.disconnect();
       window.removeEventListener("resize", onResize);
       window.removeEventListener("split3r:load-file", onLoadFile);
-      ro.disconnect();
+      controls.dispose();
       renderer.dispose();
       if (mountRef.current?.contains(canvas)) {
         mountRef.current.removeChild(canvas);
@@ -262,16 +286,20 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     if (!sceneRef.current || !cameraRef.current || !controlsRef.current) return;
 
     geo.computeBoundingBox();
-    geo.center();
+    geo.center();  // XZ centered, but then lift so bottom face sits on Y=0 (build plate)
+    geo.computeBoundingBox();
+    const liftY = -geo.boundingBox!.min.y;
+    geo.translate(0, liftY, 0);
     geo.computeVertexNormals();
 
     if (meshRef.current) {
       sceneRef.current.remove(meshRef.current);
       meshRef.current.geometry.dispose();
+      (meshRef.current.material as THREE.Material).dispose();
     }
 
-    const mat = new THREE.MeshPhongMaterial({
-      color: 0xd0d8e8, specular: 0x222244, shininess: 30,
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xc8d4e8, roughness: 0.45, metalness: 0.15,
       side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geo, mat);
@@ -285,9 +313,28 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     const size = new THREE.Vector3();
     bb.getSize(size);
     const maxDim = Math.max(size.x, size.y, size.z);
-    cameraRef.current.position.set(maxDim * 1.5, maxDim * 1.2, maxDim * 1.5);
-    controlsRef.current.target.set(0, 0, 0);
+    const center = new THREE.Vector3();
+    bb.getCenter(center);
+    cameraRef.current.position.set(
+      center.x + maxDim * 1.6,
+      center.y + maxDim * 1.0,
+      center.z + maxDim * 1.6
+    );
+    controlsRef.current.target.copy(center);
     controlsRef.current.update();
+
+    // Resize grid to comfortably surround the loaded part.
+    // Round up to a clean number so grid lines stay at whole-unit intervals.
+    if (gridRef.current && sceneRef.current) {
+      const footprint = Math.max(size.x, size.z);
+      const gridSize  = Math.ceil(footprint * 3 / 100) * 100 || 400; // round to nearest 100
+      const divisions = Math.max(20, Math.min(80, Math.round(gridSize / 10)));
+      sceneRef.current.remove(gridRef.current);
+      gridRef.current.dispose();
+      const newGrid = new THREE.GridHelper(gridSize, divisions, 0x252545, 0x18182e);
+      sceneRef.current.add(newGrid);
+      gridRef.current = newGrid;
+    }
 
     const triangleCount = geo.index
       ? geo.index.count / 3
@@ -347,6 +394,30 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     }
   }, [loadGeometry]);
 
+  // ── Imperative handle ───────────────────────────────────────────────────────
+
+  useImperativeHandle(ref, () => ({
+    getBakedGeometry() {
+      if (!meshRef.current) return null;
+      const mesh = meshRef.current;
+      mesh.updateWorldMatrix(true, false);
+      const cloned = mesh.geometry.clone();
+      cloned.applyMatrix4(mesh.matrixWorld);
+      cloned.computeBoundingBox();
+      return { geo: cloned, bbox: cloned.boundingBox! };
+    },
+    getRawGeometry() {
+      return meshRef.current?.geometry ?? null;
+    },
+    loadRepairedGeometry(geo: THREE.BufferGeometry, fileName: string) {
+      const currentMesh = meshRef.current;
+      const sizeMB = currentMesh
+        ? parseFloat(((currentMesh.geometry.attributes.position?.array.byteLength ?? 0) / 1_048_576).toFixed(2))
+        : 0;
+      loadGeometry(geo, fileName, sizeMB, "stl");
+    },
+  }), [loadGeometry]);
+
   // Stable ref so the event listener in the scene init effect always calls latest version
   const handleFileRef = useRef(handleFile);
   useEffect(() => { handleFileRef.current = handleFile; }, [handleFile]);
@@ -381,6 +452,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     // Remove old split meshes
     splitMeshesRef.current.forEach((m) => {
       sceneRef.current!.remove(m);
+      m.geometry.dispose();
       (m.material as THREE.Material).dispose();
     });
     splitMeshesRef.current = [];
@@ -409,14 +481,15 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       const isSelected = selectedPartIndex === i;
       const color = PART_COLORS[i % PART_COLORS.length];
 
-      const mat = new THREE.MeshPhongMaterial({
+      const mat = new THREE.MeshStandardMaterial({
         color,
-        specular: 0x111122,
-        shininess: 20,
+        roughness: 0.5,
+        metalness: 0.1,
         transparent: ghostMode && !isSelected,
         opacity: ghostMode && !isSelected ? 0.28 : 1.0,
         wireframe,
-        emissive: isSelected ? new THREE.Color(0x334455) : new THREE.Color(0x000000),
+        emissive: isSelected ? new THREE.Color(0x1a2a3a) : new THREE.Color(0x000000),
+        emissiveIntensity: isSelected ? 1.0 : 0,
       });
 
       const mesh = new THREE.Mesh(part.geometry, mat);
@@ -472,7 +545,8 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
     >
-      <div ref={mountRef} className="w-full h-full" />
+      {/* absolute inset-0 gives definite dimensions regardless of h-full chain */}
+      <div ref={mountRef} className="absolute inset-0" />
 
       {!hasMesh && (
         <label className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer gap-4 bg-background/60 backdrop-blur-sm">

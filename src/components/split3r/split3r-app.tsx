@@ -1,14 +1,16 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   Upload, FileBox, Cpu, Scissors, Package,
   ChevronDown, ChevronRight, Plus, Minus, Download,
   RotateCcw, Info, AlertTriangle, CheckCircle2, Loader2,
   Maximize2, Link2, Eye, ZapOff, Zap, Keyboard, X,
-  Target, Scale, Send,
+  Target, Scale, Send, Menu, Wrench, ArrowLeft, Ruler,
 } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
@@ -76,6 +78,35 @@ const DEFAULT_TRANSFORMS: TransformState = {
   rotX: 0, rotY: 0, rotZ: 0,
 };
 
+type DisplayUnit = "mm" | "cm" | "in";
+
+const UNIT_LABELS: Record<DisplayUnit, string> = {
+  mm: "mm",
+  cm: "cm",
+  in: "in",
+};
+
+/** Conversion factor: multiply mm value by this to get display value. */
+const MM_TO_UNIT: Record<DisplayUnit, number> = {
+  mm: 1,
+  cm: 0.1,
+  in: 1 / 25.4,
+};
+
+/** Conversion factor: multiply display value by this to get mm value. */
+const UNIT_TO_MM: Record<DisplayUnit, number> = {
+  mm: 1,
+  cm: 10,
+  in: 25.4,
+};
+
+/** Format a mm value into the selected display unit. */
+function fmtDim(mm: number, unit: DisplayUnit, decimals?: number): string {
+  const val = mm * MM_TO_UNIT[unit];
+  const d = decimals ?? (unit === "in" ? 2 : unit === "cm" ? 1 : 1);
+  return val.toFixed(d);
+}
+
 const KEYBOARD_SHORTCUTS = [
   ["E", "Toggle explode view"],
   ["G", "Toggle ghost mode"],
@@ -113,6 +144,7 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
 
 export function Split3rApp() {
   const { toast } = useToast();
+  const router = useRouter();
   const viewportRef = useRef<ViewportHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -124,13 +156,29 @@ export function Split3rApp() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
 
+  // ── Repair (mesh) ───────────────────────────────────────────────────────────
+  const [repairing, setRepairing] = useState(false);
+  const [repairMessage, setRepairMessage] = useState("");
+  const [repairResult, setRepairResult] = useState<import("./manifold-engine").RepairStats | null>(null);
+
+  // ── Repair (parts) ──────────────────────────────────────────────────────────
+  const [repairingParts, setRepairingParts] = useState(false);
+  const [repairPartsMessage, setRepairPartsMessage] = useState("");
+
   // ── Prepare ─────────────────────────────────────────────────────────────────
   const [transforms, setTransforms] = useState<TransformState>(DEFAULT_TRANSFORMS);
   const [uniformScale, setUniformScale] = useState(true);
 
+  // ── Units ────────────────────────────────────────────────────────────────────
+  const [displayUnit, setDisplayUnit] = useState<DisplayUnit>("mm");
+
   // ── Pre-split ───────────────────────────────────────────────────────────────
   const [cutPlanes, setCutPlanes] = useState<CutPlane[]>([]);
   const [selectedPrinter, setSelectedPrinter] = useState<PrinterProfile | null>(null);
+  const [useCustomPrinter, setUseCustomPrinter] = useState(false);
+  const [customPrinterX, setCustomPrinterX] = useState(220);
+  const [customPrinterY, setCustomPrinterY] = useState(220);
+  const [customPrinterZ, setCustomPrinterZ] = useState(250);
   const [tenonType, setTenonType] = useState<"none" | "cylinder" | "dovetail">("none");
   const [tenonSize, setTenonSize] = useState(5);
   const [tenonHollow, setTenonHollow] = useState(false);
@@ -151,10 +199,11 @@ export function Split3rApp() {
   const [ghostMode, setGhostMode] = useState(false);
   const [wireframe, setWireframe] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // ── Sections ────────────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState({
-    fileInfo: true, analysis: true,
+    fileInfo: true, repair: true, analysis: true,
     scale: true, rotate: true,
     printer: true, cutPlanes: true, tenon: false,
     splitResult: true,
@@ -204,6 +253,78 @@ export function Split3rApp() {
     }
   };
 
+  // ── Repair ────────────────────────────────────────────────────────────────────
+  const handleRepair = async () => {
+    if (!viewportRef.current || !meshInfo) return;
+    setRepairing(true);
+    setRepairResult(null);
+    setRepairMessage("Starting repair…");
+    try {
+      const geo = viewportRef.current.getRawGeometry();
+      if (!geo) return;
+      const { repairMesh } = await import("./manifold-engine");
+      const { geometry, stats } = await repairMesh(geo, (step, total, msg) => {
+        void step; void total;
+        setRepairMessage(msg);
+      });
+      setRepairResult(stats);
+      viewportRef.current.loadRepairedGeometry(geometry, meshInfo.fileName);
+      setAnalysisResult(null); // invalidate stale analysis
+      toast({
+        title: stats.isWatertight ? "Repair complete — mesh is watertight" : "Repair complete",
+        description: stats.isWatertight
+          ? "All issues resolved. Ready to split."
+          : "Some issues may remain. Check analysis for details.",
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({ title: "Repair failed", description: msg, variant: "destructive" });
+    } finally {
+      setRepairing(false);
+      setRepairMessage("");
+    }
+  };
+
+  // ── Repair Parts ─────────────────────────────────────────────────────────────
+  const handleRepairParts = async () => {
+    if (splitParts.length === 0) return;
+    setRepairingParts(true);
+    try {
+      const { repairMesh, computeGeometryVolume } = await import("./manifold-engine");
+      const THREE = await import("three");
+      const repairedParts: SplitPart[] = [];
+      for (let i = 0; i < splitParts.length; i++) {
+        setRepairPartsMessage(`Repairing part ${i + 1} of ${splitParts.length}…`);
+        const { geometry } = await repairMesh(splitParts[i].geometry, () => {});
+        geometry.computeBoundingBox();
+        const size = new THREE.Vector3();
+        geometry.boundingBox!.getSize(size);
+        repairedParts.push({
+          ...splitParts[i],
+          geometry,
+          triangleCount: geometry.index
+            ? geometry.index.count / 3
+            : (geometry.attributes.position?.count ?? 0) / 3,
+          volumeMM3: parseFloat(computeGeometryVolume(geometry).toFixed(2)),
+          bbox: {
+            x: parseFloat(size.x.toFixed(1)),
+            y: parseFloat(size.y.toFixed(1)),
+            z: parseFloat(size.z.toFixed(1)),
+          },
+        });
+      }
+      splitParts.forEach((p) => p.geometry.dispose());
+      setSplitParts(repairedParts);
+      toast({ title: "Parts repaired", description: `${repairedParts.length} part${repairedParts.length !== 1 ? "s" : ""} repaired.` });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({ title: "Repair failed", description: msg, variant: "destructive" });
+    } finally {
+      setRepairingParts(false);
+      setRepairPartsMessage("");
+    }
+  };
+
   // ── Scale ────────────────────────────────────────────────────────────────────
   const handleScaleChange = (axis: "X" | "Y" | "Z", value: number) => {
     if (uniformScale) {
@@ -224,11 +345,11 @@ export function Split3rApp() {
     setCutPlanes((prev) => prev.map((p, idx) => idx === i ? { ...p, ...patch } : p));
 
   const autoSlice = () => {
-    if (!meshInfo || !selectedPrinter) return;
+    if (!meshInfo || !effectivePrinter) return;
     const planes: CutPlane[] = [];
     const axes: ("x" | "y" | "z")[] = ["x", "y", "z"];
     const meshDims = [meshInfo.boundingBox.x, meshInfo.boundingBox.y, meshInfo.boundingBox.z];
-    const pDims = [selectedPrinter.x, selectedPrinter.y, selectedPrinter.z];
+    const pDims = [effectivePrinter.x, effectivePrinter.y, effectivePrinter.z];
 
     axes.forEach((axis, i) => {
       const count = Math.ceil(meshDims[i] / pDims[i]) - 1;
@@ -331,22 +452,27 @@ export function Split3rApp() {
 
   const handleSendToQuote = async () => {
     const { geometryToSTLBuffer } = await import("./stl-utils");
+    const { split3rTransfer } = await import("@/lib/split3r-transfer");
     const base = getBase();
-    const parts = splitParts.map((part, i) => {
-      const buf   = geometryToSTLBuffer(part.geometry);
-      const bytes = new Uint8Array(buf);
-      let binary  = "";
-      for (let j = 0; j < bytes.byteLength; j++) binary += String.fromCharCode(bytes[j]);
-      return { name: `${base}_part${i + 1}.stl`, stlBase64: btoa(binary), dims: part.bbox, volumeMM3: part.volumeMM3 };
-    });
-    sessionStorage.setItem("split3r_quote_parts", JSON.stringify(parts));
-    window.location.href = "/automotive?from=split3r";
+    split3rTransfer.set(splitParts.map((part, i) => {
+      const buf  = geometryToSTLBuffer(part.geometry);
+      const file = new File([buf], `${base}_part${i + 1}.stl`, { type: "model/stl" });
+      return { name: file.name, file, bbox: part.bbox, volumeMM3: part.volumeMM3 };
+    }));
+    // router.push keeps the JS context alive so the module-level store persists
+    router.push("/quote?from=split3r");
   };
 
   // ── Derived ───────────────────────────────────────────────────────────────────
   const brands = Array.from(new Set((printerProfiles as PrinterProfile[]).map((p) => p.brand))).sort();
   const enabledPlaneCount = cutPlanes.filter((p) => p.enabled).length;
   const splitPartsVisual: SplitPartVisual[] = splitParts.map((p) => ({ geometry: p.geometry, label: p.label }));
+  const u = displayUnit; // shorthand
+
+  /** Effective printer build volume in mm — either from a preset or custom input. */
+  const effectivePrinter: PrinterProfile | null = useCustomPrinter
+    ? { id: "custom", name: "Custom", brand: "Custom", x: customPrinterX, y: customPrinterY, z: customPrinterZ }
+    : selectedPrinter;
 
   const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
     { id: "file",     label: "File",      icon: FileBox },
@@ -359,16 +485,61 @@ export function Split3rApp() {
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
 
+      {/* Hidden file input — lives at the root (outside any fixed/transformed ancestor)
+          so that programmatic .click() works correctly on iOS Safari */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".stl,.obj,.3mf"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          window.dispatchEvent(new CustomEvent("split3r:load-file", { detail: file }));
+          e.target.value = "";
+        }}
+      />
+
+      {/* ── Mobile backdrop ─────────────────────────────────────────────────── */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-20 bg-black/50 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
-      <aside className="flex w-72 flex-shrink-0 flex-col border-r border-border bg-card/50">
+      <aside className={cn(
+        "flex w-72 max-w-[85vw] flex-shrink-0 flex-col border-r border-border bg-card/50 transition-transform duration-200",
+        // On desktop: always visible (normal flow)
+        // On mobile: fixed overlay, slide in/out
+        "md:relative md:translate-x-0 md:z-auto",
+        "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-30",
+        sidebarOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full",
+      )}>
 
         {/* Header */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <Link
+            href="/"
+            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground transition-colors"
+            title="Back to Karasawa Labs"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent/10 text-accent">
             <Scissors className="h-4 w-4" />
           </div>
           <span className="font-semibold tracking-tight">Split3r</span>
           <Badge variant="secondary" className="ml-auto text-[10px]">Beta</Badge>
+          {/* Close button — mobile only */}
+          <button
+            className="ml-1 flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground transition-colors md:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close menu"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
 
         {/* Tabs */}
@@ -390,6 +561,29 @@ export function Split3rApp() {
           ))}
         </div>
 
+        {/* Unit selector */}
+        <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+          <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            <Ruler className="h-3 w-3" /> Units
+          </span>
+          <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+            {(["mm", "cm", "in"] as const).map((unit) => (
+              <button
+                key={unit}
+                onClick={() => setDisplayUnit(unit)}
+                className={cn(
+                  "rounded px-2 py-0.5 text-[10px] font-semibold transition-colors",
+                  displayUnit === unit
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {unit}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Panel content */}
         <div className="flex-1 overflow-y-auto py-1 text-sm">
 
@@ -406,18 +600,6 @@ export function Split3rApp() {
                   <Upload className="h-3.5 w-3.5" />
                   {meshInfo ? "Load New File" : "Upload STL / OBJ / 3MF"}
                 </Button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".stl,.obj,.3mf"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    window.dispatchEvent(new CustomEvent("split3r:load-file", { detail: file }));
-                    e.target.value = "";
-                  }}
-                />
               </div>
               <Separator className="my-1" />
 
@@ -430,12 +612,65 @@ export function Split3rApp() {
                       <Row label="Format"    value={meshInfo.format.toUpperCase()} />
                       <Row label="Size"      value={`${meshInfo.fileSizeMB} MB`} />
                       <Row label="Triangles" value={meshInfo.triangleCount.toLocaleString()} />
-                      <Row label="Dim X"     value={`${meshInfo.boundingBox.x} mm`} />
-                      <Row label="Dim Y"     value={`${meshInfo.boundingBox.y} mm`} />
-                      <Row label="Dim Z"     value={`${meshInfo.boundingBox.z} mm`} />
+                      <Row label="Dim X"     value={`${fmtDim(meshInfo.boundingBox.x, u)} ${UNIT_LABELS[u]}`} />
+                      <Row label="Dim Y"     value={`${fmtDim(meshInfo.boundingBox.y, u)} ${UNIT_LABELS[u]}`} />
+                      <Row label="Dim Z"     value={`${fmtDim(meshInfo.boundingBox.z, u)} ${UNIT_LABELS[u]}`} />
                     </>
                   ) : (
                     <p className="text-xs text-muted-foreground py-2 text-center">No file loaded</p>
+                  )}
+                </div>
+              )}
+              <Separator className="my-1" />
+
+              {/* ── Repair ──────────────────────────────────────────────── */}
+              <SectionHeader icon={Wrench} label="Repair Mesh" open={openSections.repair} onToggle={() => toggleSection("repair")} />
+              {openSections.repair && (
+                <div className="px-3 pb-3 space-y-2">
+                  <Button
+                    size="sm" className="w-full gap-2"
+                    style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                    disabled={!meshInfo || repairing}
+                    onClick={handleRepair}
+                  >
+                    {repairing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                    {repairing ? repairMessage || "Repairing…" : "Auto-Repair"}
+                  </Button>
+
+                  {repairResult && (
+                    <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        {repairResult.isWatertight
+                          ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                          : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
+                        <span className="font-medium">
+                          {repairResult.isWatertight ? "Mesh is watertight" : "Partial repair"}
+                        </span>
+                      </div>
+                      <div className="pl-5 space-y-0.5 text-muted-foreground">
+                        {repairResult.degeneratesRemoved > 0 && (
+                          <p className="text-green-400">Removed {repairResult.degeneratesRemoved} degenerate tri{repairResult.degeneratesRemoved !== 1 ? "s" : ""}</p>
+                        )}
+                        {repairResult.duplicatesRemoved > 0 && (
+                          <p className="text-green-400">Removed {repairResult.duplicatesRemoved} duplicate tri{repairResult.duplicatesRemoved !== 1 ? "s" : ""}</p>
+                        )}
+                        {repairResult.windingFixed > 0 && (
+                          <p className="text-green-400">Fixed winding on {repairResult.windingFixed} tri{repairResult.windingFixed !== 1 ? "s" : ""}</p>
+                        )}
+                        {repairResult.invertedNormalsFixed && (
+                          <p className="text-green-400">Corrected inverted normals</p>
+                        )}
+                        {repairResult.holesFilled > 0 && (
+                          <p className="text-green-400">Filled {repairResult.holesFilled} hole{repairResult.holesFilled !== 1 ? "s" : ""}</p>
+                        )}
+                        {repairResult.weldToleranceMM > 1e-3 && (
+                          <p className="text-muted-foreground">Welded vertices ±{repairResult.weldToleranceMM.toFixed(repairResult.weldToleranceMM < 0.01 ? 4 : 2)} mm</p>
+                        )}
+                        {!repairResult.isWatertight && (
+                          <p className="text-yellow-400">Some issues remain — run analysis for details</p>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}
@@ -463,8 +698,18 @@ export function Split3rApp() {
                       </div>
                       <div className="pl-5 space-y-0.5 text-muted-foreground">
                         <p>Vertices: {analysisResult.vertexCount.toLocaleString()}</p>
-                        <p>Surface: {(analysisResult.surfaceAreaMM2 / 100).toFixed(1)} cm²</p>
-                        <p>Volume: {(analysisResult.volumeMM3 / 1000).toFixed(1)} cm³</p>
+                        <p>Surface: {u === "in"
+                          ? (analysisResult.surfaceAreaMM2 / 645.16).toFixed(2) + " in²"
+                          : u === "cm"
+                          ? (analysisResult.surfaceAreaMM2 / 100).toFixed(1) + " cm²"
+                          : analysisResult.surfaceAreaMM2.toFixed(0) + " mm²"
+                        }</p>
+                        <p>Volume: {u === "in"
+                          ? (analysisResult.volumeMM3 / 16387.064).toFixed(2) + " in³"
+                          : u === "cm"
+                          ? (analysisResult.volumeMM3 / 1000).toFixed(1) + " cm³"
+                          : analysisResult.volumeMM3.toFixed(0) + " mm³"
+                        }</p>
                         {analysisResult.openEdgeCount > 0 && (
                           <p className="text-yellow-400">{analysisResult.openEdgeCount} open edges</p>
                         )}
@@ -556,46 +801,107 @@ export function Split3rApp() {
               <SectionHeader icon={FileBox} label="Printer Profile" open={openSections.printer} onToggle={() => toggleSection("printer")} />
               {openSections.printer && (
                 <div className="px-3 pb-3 space-y-2">
-                  <Select
-                    value={selectedPrinter?.id ?? ""}
-                    onValueChange={(id) => {
-                      const p = (printerProfiles as PrinterProfile[]).find((x) => x.id === id) ?? null;
-                      setSelectedPrinter(p);
-                    }}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue placeholder="Select printer…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {brands.map((brand) => (
-                        <div key={brand}>
-                          <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                            {brand}
-                          </div>
-                          {(printerProfiles as PrinterProfile[])
-                            .filter((p) => p.brand === brand)
-                            .map((p) => (
-                              <SelectItem key={p.id} value={p.id} className="text-xs">
-                                {p.name}
-                              </SelectItem>
-                            ))}
-                        </div>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {/* Preset / Custom toggle */}
+                  <div className="flex items-center gap-1 rounded-md border border-border p-1">
+                    <button
+                      onClick={() => setUseCustomPrinter(false)}
+                      className={cn(
+                        "flex-1 rounded py-1 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                        !useCustomPrinter ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      Preset
+                    </button>
+                    <button
+                      onClick={() => setUseCustomPrinter(true)}
+                      className={cn(
+                        "flex-1 rounded py-1 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                        useCustomPrinter ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      Custom
+                    </button>
+                  </div>
 
-                  {selectedPrinter && (
-                    <div className="rounded-md bg-muted/40 px-2 py-1.5 text-xs space-y-0.5">
-                      <p className="text-muted-foreground">Build volume</p>
-                      <p className="font-mono font-medium">
-                        {selectedPrinter.x} × {selectedPrinter.y} × {selectedPrinter.z} mm
-                      </p>
+                  {!useCustomPrinter ? (
+                    <>
+                      <Select
+                        value={selectedPrinter?.id ?? ""}
+                        onValueChange={(id) => {
+                          const p = (printerProfiles as PrinterProfile[]).find((x) => x.id === id) ?? null;
+                          setSelectedPrinter(p);
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue placeholder="Select printer…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {brands.map((brand) => (
+                            <div key={brand}>
+                              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                {brand}
+                              </div>
+                              {(printerProfiles as PrinterProfile[])
+                                .filter((p) => p.brand === brand)
+                                .map((p) => (
+                                  <SelectItem key={p.id} value={p.id} className="text-xs">
+                                    {p.name}
+                                  </SelectItem>
+                                ))}
+                            </div>
+                          ))}
+                        </SelectContent>
+                      </Select>
+
+                      {selectedPrinter && (
+                        <div className="rounded-md bg-muted/40 px-2 py-1.5 text-xs space-y-0.5">
+                          <p className="text-muted-foreground">Build volume</p>
+                          <p className="font-mono font-medium">
+                            {fmtDim(selectedPrinter.x, u)} × {fmtDim(selectedPrinter.y, u)} × {fmtDim(selectedPrinter.z, u)} {UNIT_LABELS[u]}
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-[10px] text-muted-foreground">Enter build volume ({UNIT_LABELS[u]})</p>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(["x", "y", "z"] as const).map((axis) => {
+                          const mmVal = axis === "x" ? customPrinterX : axis === "y" ? customPrinterY : customPrinterZ;
+                          const setter = axis === "x" ? setCustomPrinterX : axis === "y" ? setCustomPrinterY : setCustomPrinterZ;
+                          const displayVal = parseFloat(fmtDim(mmVal, u));
+                          return (
+                            <div key={axis} className="space-y-0.5">
+                              <label className={cn("text-[10px] font-semibold font-mono", AXIS_COLORS[axis])}>
+                                {axis.toUpperCase()}
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                step={u === "in" ? 0.1 : 1}
+                                value={displayVal}
+                                onChange={(e) => {
+                                  const raw = parseFloat(e.target.value);
+                                  if (!isNaN(raw) && raw >= 0) setter(Math.round(raw * UNIT_TO_MM[u]));
+                                }}
+                                className="w-full h-7 rounded-md border border-border bg-background px-1.5 text-xs font-mono text-center focus:outline-none focus:ring-1 focus:ring-accent"
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="rounded-md bg-muted/40 px-2 py-1.5 text-xs space-y-0.5">
+                        <p className="text-muted-foreground">Build volume</p>
+                        <p className="font-mono font-medium">
+                          {fmtDim(customPrinterX, u)} × {fmtDim(customPrinterY, u)} × {fmtDim(customPrinterZ, u)} {UNIT_LABELS[u]}
+                        </p>
+                      </div>
                     </div>
                   )}
 
                   <Button
                     size="sm" variant="outline" className="w-full gap-1.5"
-                    disabled={!meshInfo || !selectedPrinter}
+                    disabled={!meshInfo || !effectivePrinter}
                     onClick={autoSlice}
                   >
                     <RotateCcw className="h-3 w-3" />
@@ -700,7 +1006,7 @@ export function Split3rApp() {
                       <div className="space-y-1">
                         <div className="flex justify-between text-[10px] text-muted-foreground">
                           <span>Tenon size</span>
-                          <span className="font-mono">{tenonSize} mm</span>
+                          <span className="font-mono">{fmtDim(tenonSize, u)} {UNIT_LABELS[u]}</span>
                         </div>
                         <Slider
                           min={2} max={20} step={0.5}
@@ -770,6 +1076,15 @@ export function Split3rApp() {
                     {splitParts.length} parts generated
                   </div>
 
+                  <Button
+                    size="sm" variant="outline" className="w-full gap-2"
+                    disabled={repairingParts}
+                    onClick={handleRepairParts}
+                  >
+                    {repairingParts ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                    {repairingParts ? repairPartsMessage || "Repairing…" : "Repair All Parts"}
+                  </Button>
+
                   <Separator />
 
                   {/* View controls */}
@@ -827,7 +1142,7 @@ export function Split3rApp() {
                             </span>
                           </div>
                           <p className="text-[10px] text-muted-foreground mt-0.5">
-                            {part.bbox.x} × {part.bbox.y} × {part.bbox.z} mm
+                            {fmtDim(part.bbox.x, u)} × {fmtDim(part.bbox.y, u)} × {fmtDim(part.bbox.z, u)} {UNIT_LABELS[u]}
                           </p>
                         </button>
                       ))}
@@ -886,6 +1201,15 @@ export function Split3rApp() {
                   >
                     <Send className="h-3.5 w-3.5" />
                     Send Parts to Quote
+                  </Button>
+
+                  <Button
+                    size="sm" variant="outline" className="w-full gap-2"
+                    disabled={repairingParts}
+                    onClick={handleRepairParts}
+                  >
+                    {repairingParts ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                    {repairingParts ? repairPartsMessage || "Repairing…" : "Repair All Parts"}
                   </Button>
 
                   <Separator />
@@ -950,7 +1274,7 @@ export function Split3rApp() {
                       </div>
                       <p className="text-[10px] text-muted-foreground">
                         {part.triangleCount.toLocaleString()} tri ·{" "}
-                        {part.bbox.x} × {part.bbox.y} × {part.bbox.z} mm
+                        {fmtDim(part.bbox.x, u)} × {fmtDim(part.bbox.y, u)} × {fmtDim(part.bbox.z, u)} {UNIT_LABELS[u]}
                       </p>
                     </div>
                   ))}
@@ -960,7 +1284,7 @@ export function Split3rApp() {
                   <div className="rounded-md bg-muted/40 p-2 text-xs space-y-1">
                     {meshInfo && <Row label="Source" value={meshInfo.fileName} mono />}
                     <Row label="Parts" value={String(splitParts.length)} />
-                    {selectedPrinter && <Row label="Printer" value={selectedPrinter.name} />}
+                    {effectivePrinter && <Row label="Printer" value={effectivePrinter.name} />}
                   </div>
                 </>
               )}
@@ -987,8 +1311,8 @@ export function Split3rApp() {
           ref={viewportRef}
           onMeshLoaded={handleMeshLoaded}
           cutPlanes={cutPlanes}
-          printerVolume={selectedPrinter
-            ? { x: selectedPrinter.x, y: selectedPrinter.y, z: selectedPrinter.z }
+          printerVolume={effectivePrinter
+            ? { x: effectivePrinter.x, y: effectivePrinter.y, z: effectivePrinter.z }
             : null}
           transforms={transforms}
           splitParts={splitPartsVisual}
@@ -1005,9 +1329,9 @@ export function Split3rApp() {
             <p className="text-muted-foreground truncate max-w-[200px]">{meshInfo.fileName}</p>
             <p><span className="text-accent">{meshInfo.triangleCount.toLocaleString()}</span> triangles</p>
             <p>
-              <span className="text-accent">{meshInfo.boundingBox.x}</span> ×{" "}
-              <span className="text-accent">{meshInfo.boundingBox.y}</span> ×{" "}
-              <span className="text-accent">{meshInfo.boundingBox.z}</span> mm
+              <span className="text-accent">{fmtDim(meshInfo.boundingBox.x, u)}</span> ×{" "}
+              <span className="text-accent">{fmtDim(meshInfo.boundingBox.y, u)}</span> ×{" "}
+              <span className="text-accent">{fmtDim(meshInfo.boundingBox.z, u)}</span> {UNIT_LABELS[u]}
             </p>
             {enabledPlaneCount > 0 && (
               <p><span className="text-accent">{enabledPlaneCount}</span> cut plane{enabledPlaneCount !== 1 ? "s" : ""}</p>
@@ -1018,9 +1342,18 @@ export function Split3rApp() {
           </div>
         )}
 
+        {/* Mobile sidebar toggle */}
+        <button
+          className="absolute top-3 left-3 z-10 flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card/80 backdrop-blur-sm text-muted-foreground hover:text-foreground transition-colors md:hidden"
+          onClick={() => setSidebarOpen((v) => !v)}
+          aria-label={sidebarOpen ? "Close menu" : "Open menu"}
+        >
+          {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+        </button>
+
         {/* View mode badges */}
         {(ghostMode || wireframe || explodeAmount > 0) && (
-          <div className="absolute top-3 left-3 flex gap-1.5">
+          <div className="absolute top-3 left-14 md:left-3 flex gap-1.5">
             {ghostMode && (
               <Badge variant="secondary" className="text-[10px] gap-1">
                 <Eye className="h-2.5 w-2.5" /> Ghost

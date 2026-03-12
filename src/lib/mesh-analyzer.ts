@@ -190,7 +190,10 @@ function analyzeObj(bufferOrText: Buffer | string): Omit<MeshMetrics, 'file_byte
         const parts = line.trim().split(/\s+/);
         const type = parts.shift();
         if (type === 'v') {
-            vertices.push([parseFloat(parts[0]), parseFloat(parts[1]), parseFloat(parts[2])]);
+            if (parts.length < 3) continue; // skip malformed vertex lines
+            const x = parseFloat(parts[0]), y = parseFloat(parts[1]), z = parseFloat(parts[2]);
+            if (isNaN(x) || isNaN(y) || isNaN(z)) continue;
+            vertices.push([x, y, z]);
         } else if (type === 'f') {
             const faceVertices: Vec3[] = [];
             for (const part of parts) {
@@ -248,31 +251,19 @@ async function analyze3mf(buffer: Buffer): Promise<Omit<MeshMetrics, 'file_bytes
 
     const zip = await JSZip.loadAsync(buffer);
 
-    let modelFile: JSZip.JSZipObject | null = null;
     let fileCount = 0;
     let totalSize = 0;
 
-    zip.forEach((relativePath, file) => {
-        fileCount++;
-        // This is a simplified size check; for perfect accuracy, we'd need to decompress first.
-        // JSZip doesn't expose compressed size directly in forEach.
-        // We'll check the uncompressed size later.
-        if (relativePath.toLowerCase().startsWith('3d/') && relativePath.toLowerCase().endsWith('.model')) {
-            modelFile = file;
-        }
-    });
+    zip.forEach(() => { fileCount++; });
 
     if (fileCount > MAX_FILES) throw new Error('3MF PARSE_ERROR: Too many files in archive (potential zip bomb).');
 
+    // Use zip.file(regex) instead of forEach mutation so TS can track the type.
+    let modelFile: JSZip.JSZipObject | undefined =
+        zip.file(/^3d\/.*\.model$/i)[0];
     if (!modelFile) {
-      // Fallback search
-       zip.forEach((relativePath, file) => {
-          if (relativePath.toLowerCase().endsWith('.model')) {
-            modelFile = file;
-          }
-      });
+        modelFile = zip.file(/\.model$/i)[0];
     }
-    
     if (!modelFile) throw new Error('3MF PARSE_ERROR: No .model file found in archive.');
 
     const modelXml = await modelFile.async('string');
@@ -326,10 +317,13 @@ async function analyze3mf(buffer: Buffer): Promise<Omit<MeshMetrics, 'file_bytes
         allVertices.push(...currentVertices);
 
         const meshTriangles = mesh.triangles.triangle.map((t: any) => {
-            const v1 = allVertices[parseInt(t.v1) + vertexOffset];
-            const v2 = allVertices[parseInt(t.v2) + vertexOffset];
-            const v3 = allVertices[parseInt(t.v3) + vertexOffset];
-            return [v1, v2, v3] as Triangle;
+            const i1 = parseInt(t.v1) + vertexOffset;
+            const i2 = parseInt(t.v2) + vertexOffset;
+            const i3 = parseInt(t.v3) + vertexOffset;
+            if (i1 >= allVertices.length || i2 >= allVertices.length || i3 >= allVertices.length) {
+              throw new Error('PARSE_ERROR: 3MF triangle index out of bounds.');
+            }
+            return [allVertices[i1], allVertices[i2], allVertices[i3]] as Triangle;
         });
         allTriangles.push(...meshTriangles);
       }

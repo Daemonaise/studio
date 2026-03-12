@@ -46,7 +46,7 @@ export interface OrderFulfillmentResult {
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error('STRIPE_SECRET_KEY is not set.');
-  return new Stripe(key, { apiVersion: '2025-01-27.acacia' });
+  return new Stripe(key, { apiVersion: '2026-02-25.clover' });
 }
 
 // Stripe metadata values are capped at 500 chars
@@ -77,9 +77,7 @@ export async function createCheckoutSession(
     ).replace(/\/$/, '');
 
     const session = await stripe.checkout.sessions.create({
-      // automatic_payment_methods enables cards, Apple Pay, Google Pay, etc.
-      // without enumerating them — the current Stripe-recommended approach
-      automatic_payment_methods: { enabled: true },
+      payment_method_types: ['card'],
       line_items: [
         {
           price_data: {

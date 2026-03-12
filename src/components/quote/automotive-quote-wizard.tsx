@@ -1,9 +1,10 @@
 
 "use client";
 
-import { useState, useRef, Suspense, useEffect } from "react";
+import { useState, useRef, Suspense, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import { Upload, Loader2, Wand2, Info, Clock, AlertTriangle, CheckCircle2, CreditCard, MapPin, Phone, Mail, User, Building2, FileBox, Layers, Zap } from "lucide-react";
+import type { Split3rPartTransfer } from "@/lib/split3r-transfer";
+import { Upload, Loader2, Wand2, Info, Clock, AlertTriangle, CheckCircle2, CreditCard, MapPin, Phone, Mail, User, Building2, FileBox, Layers, Zap, Package, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -115,31 +116,36 @@ function AutomotiveQuoteWizardInner() {
   const initialMaterial =
     materialParam && validMaterialIds.includes(materialParam) ? materialParam : "PLA";
 
+  // ── Single-file state ───────────────────────────────────────────────────────
   const [file, setFile] = useState<File | null>(null);
   const [material, setMaterial] = useState<string>(initialMaterial);
   const [nozzleSize, setNozzleSize] = useState<string>("0.4");
   const [autoPrinterSelection, setAutoPrinterSelection] = useState(true);
   const [userSelectedPrinter, setUserSelectedPrinter] = useState<string>("");
-
   const [quote, setQuote] = useState<QuoteOutput | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-load first part when arriving from Split3r
+  // ── Multi-part state (Split3r) ──────────────────────────────────────────────
+  const [multiParts, setMultiParts] = useState<Split3rPartTransfer[]>([]);
+  const [partQuotes, setPartQuotes] = useState<(QuoteOutput | null)[]>([]);
+  const [activePartIndex, setActivePartIndex] = useState(0);
+  const [quotingIndex, setQuotingIndex] = useState<number | null>(null); // which part is being quoted
+  const isMultiMode = multiParts.length > 0;
+
+  // Load parts from the transfer store when arriving from Split3r
   useEffect(() => {
     if (searchParams.get("from") !== "split3r") return;
-    const raw = sessionStorage.getItem("split3r_quote_parts");
-    if (!raw) return;
-    try {
-      const parts = JSON.parse(raw) as Array<{ name: string; stlBase64: string }>;
-      if (parts.length === 0) return;
-      const bytes = Uint8Array.from(atob(parts[0].stlBase64), (c) => c.charCodeAt(0));
-      const f = new File([bytes], parts[0].name, { type: "model/stl" });
-      if (f.size <= 50 * 1024 * 1024) setFile(f);
-      sessionStorage.removeItem("split3r_quote_parts");
-    } catch { /* ignore malformed data */ }
+    import("@/lib/split3r-transfer").then(({ split3rTransfer }) => {
+      const parts = split3rTransfer.get();
+      if (parts.length > 0) {
+        setMultiParts(parts);
+        setPartQuotes(new Array(parts.length).fill(null));
+        split3rTransfer.clear();
+      }
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -230,29 +236,75 @@ function AutomotiveQuoteWizardInner() {
     }
   };
 
+  // Quote all Split3r parts in succession
+  const handleQuoteAll = useCallback(async () => {
+    if (multiParts.length === 0) return;
+    setIsLoading(true);
+    setError(null);
+    const results: (QuoteOutput | null)[] = new Array(multiParts.length).fill(null);
+    for (let i = 0; i < multiParts.length; i++) {
+      setQuotingIndex(i);
+      setActivePartIndex(i);
+      try {
+        const fileDataUri = await toDataURL(multiParts[i].file);
+        const result = await generateQuoteFromModel({
+          fileName: multiParts[i].name,
+          fileDataUri,
+          material,
+          nozzleSize,
+          autoPrinterSelection,
+          selectedPrinterKey: userSelectedPrinter,
+        });
+        results[i] = result;
+        setPartQuotes([...results]);
+      } catch (e: any) {
+        setError(`Part ${i + 1} failed: ${e.message ?? "Unknown error"}`);
+        break;
+      }
+    }
+    setQuotingIndex(null);
+    setIsLoading(false);
+    setActivePartIndex(0);
+  }, [multiParts, material, nozzleSize, autoPrinterSelection, userSelectedPrinter]);
+
   const setShippingField = (field: keyof ShippingInfo) =>
     (e: React.ChangeEvent<HTMLInputElement>) =>
       setShipping((prev) => ({ ...prev, [field]: e.target.value }));
 
   const handleCheckout = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!quote) return;
+    // In multi-part mode use the combined total; otherwise use the single quote
+    const activeQuote = isMultiMode ? partQuotes[activePartIndex] : quote;
+    const completedQuotes = isMultiMode ? partQuotes.filter(Boolean) as QuoteOutput[] : [];
+    const combinedTotal = isMultiMode
+      ? completedQuotes.reduce((s, q) => s + q.costBreakdown.total, 0)
+      : (quote?.costBreakdown.total ?? 0);
+    if (!activeQuote && !isMultiMode) return;
 
     setIsCheckingOut(true);
     setCheckoutError(null);
 
+    const representativeQuote = isMultiMode
+      ? (completedQuotes[0] ?? activeQuote)
+      : quote;
+    if (!representativeQuote) { setIsCheckingOut(false); return; }
+
     try {
       const result = await createCheckoutSession(
         {
-          totalCost: quote.costBreakdown.total,
-          material: quote.selectedFilament,
-          jobScale: quote.jobScale,
-          mode: quote.mode,
-          leadTimeMin: quote.leadTimeDays.min,
-          leadTimeMax: quote.leadTimeDays.max,
-          estimatedHours: quote.estimatedHours,
-          selectedPrinterKey: quote.selectedPrinterKey,
-          fileName: file?.name || "3D Model",
+          totalCost: isMultiMode ? combinedTotal : representativeQuote.costBreakdown.total,
+          material: representativeQuote.selectedFilament,
+          jobScale: representativeQuote.jobScale,
+          mode: representativeQuote.mode,
+          leadTimeMin: representativeQuote.leadTimeDays.min,
+          leadTimeMax: representativeQuote.leadTimeDays.max,
+          estimatedHours: isMultiMode
+            ? completedQuotes.reduce((s, q) => s + q.estimatedHours, 0)
+            : representativeQuote.estimatedHours,
+          selectedPrinterKey: representativeQuote.selectedPrinterKey,
+          fileName: isMultiMode
+            ? `${multiParts.length} parts (Split3r)`
+            : (file?.name || "3D Model"),
         },
         shipping
       );
@@ -272,6 +324,11 @@ function AutomotiveQuoteWizardInner() {
 
   const nozzleSizes = pricingMatrix.nozzles.available_mm.map(String);
   const selectedMaterial = materials.find((m) => m.id === material);
+  const completedPartQuotes = partQuotes.filter(Boolean) as QuoteOutput[];
+  const allPartsQuoted = isMultiMode && completedPartQuotes.length === multiParts.length;
+  const combinedTotal = completedPartQuotes.reduce((s, q) => s + q.costBreakdown.total, 0);
+  const activePartQuote = isMultiMode ? partQuotes[activePartIndex] : null;
+  const displayQuote = isMultiMode ? activePartQuote : quote;
 
   return (
     <>
@@ -293,68 +350,104 @@ function AutomotiveQuoteWizardInner() {
             </CardHeader>
 
             <CardContent className="space-y-5 flex-grow">
-              {/* File upload zone */}
-              <div className="space-y-2">
-                <Label className="flex items-center gap-1.5">
-                  <FileBox className="h-3.5 w-3.5 text-muted-foreground" />
-                  3D Model File
-                </Label>
-                <div
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
-                  className={cn(
-                    "relative flex flex-col items-center justify-center w-full h-40 border-2 border-dashed rounded-lg transition-all duration-200 cursor-pointer",
-                    isDragging
-                      ? "border-accent bg-accent/10 scale-[1.01]"
-                      : file
-                        ? "border-accent/60 bg-accent/5"
-                        : "border-input hover:border-accent/50 hover:bg-accent/5"
-                  )}
-                >
-                  <div className="text-center text-muted-foreground p-4 pointer-events-none">
-                    {file ? (
-                      <>
-                        <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-accent" />
-                        <p className="font-medium text-foreground text-sm">
-                          {file.name}
-                        </p>
-                        <p className="text-xs mt-0.5">
-                          {(file.size / 1024).toFixed(0)} KB · Click to replace
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="h-8 w-8 mx-auto mb-2 animate-pulse [animation-duration:2s]" />
-                        <p className="font-medium text-sm">
-                          Drag & drop or click to browse
-                        </p>
-                        <div className="flex items-center justify-center gap-1.5 mt-2">
-                          {FORMAT_BADGES.map((fmt) => (
-                            <span
-                              key={fmt}
-                              className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border border-accent/30 bg-accent/5 text-accent/70"
-                            >
-                              {fmt}
-                            </span>
-                          ))}
-                          <span className="text-xs opacity-50">· up to 50 MB</span>
-                        </div>
-                      </>
-                    )}
+              {/* Multi-part list (Split3r mode) OR single file upload */}
+              {isMultiMode ? (
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-1.5">
+                    <Package className="h-3.5 w-3.5 text-muted-foreground" />
+                    {multiParts.length} Parts from Split3r
+                  </Label>
+                  <div className="rounded-lg border border-border divide-y divide-border max-h-44 overflow-y-auto">
+                    {multiParts.map((part, i) => {
+                      const q = partQuotes[i];
+                      const isQuoting = quotingIndex === i;
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setActivePartIndex(i)}
+                          className={cn(
+                            "w-full flex items-center justify-between px-3 py-2 text-xs text-left transition-colors",
+                            activePartIndex === i ? "bg-accent/10 text-accent" : "hover:bg-muted/40"
+                          )}
+                        >
+                          <span className="font-medium truncate max-w-[180px]">{part.name}</span>
+                          <span className="flex items-center gap-1.5 shrink-0 ml-2">
+                            {isQuoting ? (
+                              <Loader2 className="h-3 w-3 animate-spin text-accent" />
+                            ) : q ? (
+                              <CheckCircle2 className="h-3 w-3 text-green-400" />
+                            ) : (
+                              <span className="text-muted-foreground">pending</span>
+                            )}
+                            {q && <span className="font-mono text-accent">{formatCurrency(q.costBreakdown.total)}</span>}
+                            <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
-                  <Input
-                    ref={fileInputRef}
-                    id="file-upload"
-                    type="file"
-                    accept=".stl,.obj,.3mf"
-                    className="hidden"
-                    onChange={handleFileChange}
-                    disabled={isLoading}
-                  />
+                  {allPartsQuoted && (
+                    <div className="rounded-md bg-accent/5 border border-accent/20 px-3 py-2 flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground font-medium">Combined Total</span>
+                      <span className="font-bold text-accent text-base">{formatCurrency(combinedTotal)}</span>
+                    </div>
+                  )}
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-1.5">
+                    <FileBox className="h-3.5 w-3.5 text-muted-foreground" />
+                    3D Model File
+                  </Label>
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={() => fileInputRef.current?.click()}
+                    className={cn(
+                      "relative flex flex-col items-center justify-center w-full h-40 border-2 border-dashed rounded-lg transition-all duration-200 cursor-pointer",
+                      isDragging
+                        ? "border-accent bg-accent/10 scale-[1.01]"
+                        : file
+                          ? "border-accent/60 bg-accent/5"
+                          : "border-input hover:border-accent/50 hover:bg-accent/5"
+                    )}
+                  >
+                    <div className="text-center text-muted-foreground p-4 pointer-events-none">
+                      {file ? (
+                        <>
+                          <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-accent" />
+                          <p className="font-medium text-foreground text-sm">{file.name}</p>
+                          <p className="text-xs mt-0.5">{(file.size / 1024).toFixed(0)} KB · Click to replace</p>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="h-8 w-8 mx-auto mb-2 animate-pulse [animation-duration:2s]" />
+                          <p className="font-medium text-sm">Drag & drop or click to browse</p>
+                          <div className="flex items-center justify-center gap-1.5 mt-2">
+                            {FORMAT_BADGES.map((fmt) => (
+                              <span key={fmt} className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border border-accent/30 bg-accent/5 text-accent/70">
+                                {fmt}
+                              </span>
+                            ))}
+                            <span className="text-xs opacity-50">· up to 50 MB</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <Input
+                      ref={fileInputRef}
+                      id="file-upload"
+                      type="file"
+                      accept=".stl,.obj,.3mf"
+                      className="hidden"
+                      onChange={handleFileChange}
+                      disabled={isLoading}
+                    />
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Material */}
@@ -470,8 +563,8 @@ function AutomotiveQuoteWizardInner() {
 
             <CardFooter>
               <Button
-                onClick={handleGenerateQuote}
-                disabled={isLoading || !file}
+                onClick={isMultiMode ? handleQuoteAll : handleGenerateQuote}
+                disabled={isLoading || (!isMultiMode && !file)}
                 className="w-full"
                 size="lg"
                 style={{
@@ -482,12 +575,18 @@ function AutomotiveQuoteWizardInner() {
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    Analyzing & Quoting…
+                    {isMultiMode && quotingIndex !== null
+                      ? `Quoting Part ${quotingIndex + 1} of ${multiParts.length}…`
+                      : "Analyzing & Quoting…"}
                   </>
                 ) : (
                   <>
                     <Wand2 className="mr-2 h-5 w-5" />
-                    Generate AI Quote
+                    {isMultiMode
+                      ? allPartsQuoted
+                        ? `Re-quote All ${multiParts.length} Parts`
+                        : `Quote All ${multiParts.length} Parts`
+                      : "Generate AI Quote"}
                   </>
                 )}
               </Button>
@@ -503,9 +602,17 @@ function AutomotiveQuoteWizardInner() {
               <div className="flex items-center gap-3">
                 <StepCircle n={2} />
                 <div>
-                  <CardTitle>Instant Quote</CardTitle>
+                  <CardTitle>
+                    {isMultiMode
+                      ? activePartIndex < multiParts.length
+                        ? `Part ${activePartIndex + 1} of ${multiParts.length}`
+                        : "Instant Quote"
+                      : "Instant Quote"}
+                  </CardTitle>
                   <CardDescription className="mt-0.5">
-                    Your estimated cost will appear here.
+                    {isMultiMode
+                      ? multiParts[activePartIndex]?.name ?? "Your estimated cost will appear here."
+                      : "Your estimated cost will appear here."}
                   </CardDescription>
                 </div>
               </div>
@@ -513,16 +620,18 @@ function AutomotiveQuoteWizardInner() {
 
             <CardContent className="flex-grow flex flex-col">
               {/* Loading */}
-              {isLoading && (
+              {isLoading && !displayQuote && (
                 <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-full animate-in fade-in-0 duration-300">
                   <div className="relative">
                     <div className="absolute inset-0 rounded-full bg-accent/20 blur-lg scale-150" />
                     <Loader2 className="relative h-10 w-10 animate-spin text-accent" />
                   </div>
-                  <p className="font-medium">AI is analyzing your model…</p>
-                  <p className="text-sm">
-                    This may take a moment for complex models.
+                  <p className="font-medium">
+                    {isMultiMode && quotingIndex !== null
+                      ? `Quoting part ${quotingIndex + 1} of ${multiParts.length}…`
+                      : "AI is analyzing your model…"}
                   </p>
+                  <p className="text-sm">This may take a moment for complex models.</p>
                 </div>
               )}
 
@@ -536,7 +645,7 @@ function AutomotiveQuoteWizardInner() {
               )}
 
               {/* Empty state */}
-              {!isLoading && !quote && !error && (
+              {!isLoading && !displayQuote && !error && (
                 <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-full">
                   <div className="rounded-full border border-accent/20 bg-accent/5 p-5 animate-pulse [animation-duration:3s]">
                     <Wand2 className="h-9 w-9 text-accent/50" />
@@ -559,23 +668,25 @@ function AutomotiveQuoteWizardInner() {
               )}
 
               {/* Quote result */}
-              {quote && (
+              {displayQuote && (
                 <div className="space-y-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-500">
+                  {/* Multi-part: combined total banner */}
+                  {isMultiMode && allPartsQuoted && (
+                    <div className="rounded-lg bg-accent/5 border border-accent/30 px-4 py-2.5 flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">{multiParts.length} parts · combined</span>
+                      <span className="font-bold text-accent text-base">{formatCurrency(combinedTotal)}</span>
+                    </div>
+                  )}
+
                   {/* Status badges */}
                   <div className="flex flex-wrap gap-2">
-                    <Badge
-                      variant="outline"
-                      className="border-accent/50 text-accent bg-accent/5"
-                    >
-                      {quote.jobScale}
+                    <Badge variant="outline" className="border-accent/50 text-accent bg-accent/5">
+                      {displayQuote.jobScale}
                     </Badge>
-                    <Badge variant="outline">{quote.mode}</Badge>
-                    {formatSegmentationTier(quote.segmentationTier) && (
-                      <Badge
-                        variant="outline"
-                        className="border-amber-500/60 text-amber-500 bg-amber-500/5"
-                      >
-                        {formatSegmentationTier(quote.segmentationTier)}
+                    <Badge variant="outline">{displayQuote.mode}</Badge>
+                    {formatSegmentationTier(displayQuote.segmentationTier) && (
+                      <Badge variant="outline" className="border-amber-500/60 text-amber-500 bg-amber-500/5">
+                        {formatSegmentationTier(displayQuote.segmentationTier)}
                       </Badge>
                     )}
                   </div>
@@ -583,10 +694,10 @@ function AutomotiveQuoteWizardInner() {
                   {/* Total price hero */}
                   <div className="rounded-lg bg-gradient-to-br from-accent/10 via-accent/5 to-transparent border border-accent/30 p-5 text-center">
                     <p className="text-xs font-semibold uppercase tracking-widest text-accent/70 mb-1">
-                      Total Estimated Cost
+                      {isMultiMode ? `Part ${activePartIndex + 1} Cost` : "Total Estimated Cost"}
                     </p>
                     <p className="text-5xl font-bold tracking-tight text-accent">
-                      {formatCurrency(quote.costBreakdown.total)}
+                      {formatCurrency(displayQuote.costBreakdown.total)}
                     </p>
                     <p className="text-xs text-muted-foreground mt-1.5">
                       Includes materials, labor &amp; shipping
@@ -598,50 +709,32 @@ function AutomotiveQuoteWizardInner() {
                     <Clock className="h-4 w-4 text-accent flex-shrink-0" />
                     <span className="text-muted-foreground">Est. lead time:</span>
                     <span className="font-semibold">
-                      {quote.leadTimeDays.min}–{quote.leadTimeDays.max} business
-                      days
+                      {displayQuote.leadTimeDays.min}–{displayQuote.leadTimeDays.max} business days
                     </span>
                   </div>
 
                   {/* Cost breakdown */}
                   <div className="rounded-lg border overflow-hidden">
                     <div className="px-4 py-2 bg-muted/40 border-b">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        Cost Breakdown
-                      </p>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Cost Breakdown</p>
                     </div>
                     <div className="divide-y">
-                      <LineItem
-                        label="Machine / Print Time"
-                        value={quote.costBreakdown.machine}
-                      />
-                      {quote.costBreakdown.segmentation > 0 && (
-                        <LineItem
-                          label="Segmentation Labor"
-                          value={quote.costBreakdown.segmentation}
-                        />
+                      <LineItem label="Machine / Print Time" value={displayQuote.costBreakdown.machine} />
+                      {displayQuote.costBreakdown.segmentation > 0 && (
+                        <LineItem label="Segmentation Labor" value={displayQuote.costBreakdown.segmentation} />
                       )}
-                      {quote.costBreakdown.risk > 0 && (
-                        <LineItem
-                          label="Risk / Contingency"
-                          value={quote.costBreakdown.risk}
-                        />
+                      {displayQuote.costBreakdown.risk > 0 && (
+                        <LineItem label="Risk / Contingency" value={displayQuote.costBreakdown.risk} />
                       )}
-                      <LineItem
-                        label={`Material (${quote.selectedFilament})`}
-                        value={quote.costBreakdown.material}
-                      />
+                      <LineItem label={`Material (${displayQuote.selectedFilament})`} value={displayQuote.costBreakdown.material} />
                       <LineItem
                         label="Shipping & Handling"
-                        value={
-                          quote.costBreakdown.shippingEmbedded +
-                          quote.costBreakdown.handling
-                        }
+                        value={displayQuote.costBreakdown.shippingEmbedded + displayQuote.costBreakdown.handling}
                       />
                       <div className="flex items-center justify-between px-4 py-3 bg-accent/5">
                         <span className="text-sm font-semibold">Total</span>
                         <span className="font-bold text-accent text-base">
-                          {formatCurrency(quote.costBreakdown.total)}
+                          {formatCurrency(displayQuote.costBreakdown.total)}
                         </span>
                       </div>
                     </div>
@@ -649,43 +742,25 @@ function AutomotiveQuoteWizardInner() {
 
                   {/* Part specs */}
                   <div className="grid grid-cols-2 gap-2">
-                    <SpecItem
-                      label="Dimensions"
-                      value={`${quote.bbox_mm.x.toFixed(0)} × ${quote.bbox_mm.y.toFixed(0)} × ${quote.bbox_mm.z.toFixed(0)} mm`}
-                    />
-                    <SpecItem
-                      label="Volume"
-                      value={`${quote.volume_cm3.toFixed(1)} cm³`}
-                    />
-                    <SpecItem
-                      label="Est. Print Time"
-                      value={`${quote.estimatedHours.toFixed(1)} hrs`}
-                    />
-                    <SpecItem
-                      label="Printer"
-                      value={
-                        (pricingMatrix.printers as any)[quote.selectedPrinterKey]
-                          ?.label ?? quote.selectedPrinterKey
-                      }
-                    />
-                    <SpecItem label="Nozzle" value={`${quote.selectedNozzle} mm`} />
-                    {quote.segmentCountEstimate > 1 && (
-                      <SpecItem
-                        label="Segments"
-                        value={`${quote.segmentCountEstimate}`}
-                      />
+                    <SpecItem label="Dimensions" value={`${displayQuote.bbox_mm.x.toFixed(0)} × ${displayQuote.bbox_mm.y.toFixed(0)} × ${displayQuote.bbox_mm.z.toFixed(0)} mm`} />
+                    <SpecItem label="Volume" value={`${displayQuote.volume_cm3.toFixed(1)} cm³`} />
+                    <SpecItem label="Est. Print Time" value={`${displayQuote.estimatedHours.toFixed(1)} hrs`} />
+                    <SpecItem label="Printer" value={(pricingMatrix.printers as any)[displayQuote.selectedPrinterKey]?.label ?? displayQuote.selectedPrinterKey} />
+                    <SpecItem label="Nozzle" value={`${displayQuote.selectedNozzle} mm`} />
+                    {displayQuote.segmentCountEstimate > 1 && (
+                      <SpecItem label="Segments" value={`${displayQuote.segmentCountEstimate}`} />
                     )}
                   </div>
 
                   {/* Warnings */}
-                  {quote.warnings.length > 0 && (
+                  {displayQuote.warnings.length > 0 && (
                     <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-4">
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400 mb-2 flex items-center gap-1.5">
                         <AlertTriangle className="h-3.5 w-3.5" />
                         Notes &amp; Warnings
                       </h4>
                       <ul className="text-xs text-amber-700 dark:text-amber-400 space-y-1">
-                        {quote.warnings.map((warning, i) => (
+                        {displayQuote.warnings.map((warning, i) => (
                           <li key={i} className="flex gap-1.5">
                             <span className="flex-shrink-0 opacity-60">›</span>
                             <span>{warning}</span>
@@ -698,7 +773,7 @@ function AutomotiveQuoteWizardInner() {
               )}
             </CardContent>
 
-            {quote && (
+            {(displayQuote || allPartsQuoted) && (
               <CardFooter className="flex-col items-stretch space-y-2">
                 <Button
                   className="w-full"
@@ -713,7 +788,9 @@ function AutomotiveQuoteWizardInner() {
                   }}
                 >
                   <CreditCard className="mr-2 h-5 w-5" />
-                  Proceed to Checkout
+                  {isMultiMode && allPartsQuoted
+                    ? `Proceed to Checkout — ${formatCurrency(combinedTotal)}`
+                    : "Proceed to Checkout"}
                 </Button>
                 <p className="text-xs text-center text-muted-foreground">
                   Shipping included · Secure payment via Stripe
@@ -739,13 +816,15 @@ function AutomotiveQuoteWizardInner() {
           </DialogHeader>
 
           {/* Quote summary strip */}
-          {quote && (
+          {(displayQuote || allPartsQuoted) && (
             <div className="rounded-lg bg-accent/5 border border-accent/20 px-4 py-3 flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
-                {quote.selectedFilament} · {quote.jobScale}
+                {isMultiMode
+                  ? `${multiParts.length} parts · ${material}`
+                  : `${displayQuote?.selectedFilament} · ${displayQuote?.jobScale}`}
               </span>
               <span className="font-bold text-accent text-base">
-                {formatCurrency(quote.costBreakdown.total)}
+                {formatCurrency(isMultiMode ? combinedTotal : (displayQuote?.costBreakdown.total ?? 0))}
               </span>
             </div>
           )}
@@ -942,8 +1021,7 @@ function AutomotiveQuoteWizardInner() {
                 ) : (
                   <>
                     <CreditCard className="mr-2 h-4 w-4" />
-                    Pay{" "}
-                    {quote ? formatCurrency(quote.costBreakdown.total) : ""} Securely
+                    Pay {formatCurrency(isMultiMode ? combinedTotal : (displayQuote?.costBreakdown.total ?? 0))} Securely
                   </>
                 )}
               </Button>

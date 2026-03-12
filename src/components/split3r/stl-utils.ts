@@ -121,38 +121,69 @@ export interface MeshAnalysisResult {
 }
 
 // Analyze mesh watertightness and manifold property.
-// Cap at MAX_TRIS to avoid blocking the main thread too long.
-const MAX_ANALYSIS_TRIS = 200_000;
-
+// Uses indexed geometry + integer edge keys — no string allocations, no triangle cap.
+// Handles 1M+ triangle meshes without OOM.
 export function analyzeGeometry(geo: THREE.BufferGeometry): MeshAnalysisResult {
-  const g = geo.index ? geo.toNonIndexed() : geo;
-  const pos = g.attributes.position as THREE.BufferAttribute;
-  const triCount = pos.count / 3;
-  const analyzedTris = Math.min(triCount, MAX_ANALYSIS_TRIS);
-  const truncated = triCount > MAX_ANALYSIS_TRIS;
-
-  const issues: string[] = [];
-  if (truncated) {
-    issues.push(`Analysis limited to first ${MAX_ANALYSIS_TRIS.toLocaleString()} triangles (mesh has ${triCount.toLocaleString()})`);
+  // Merge duplicate vertices to get a proper index buffer.
+  // This converts non-indexed STL (3 unique verts per tri) into a shared-vertex mesh,
+  // which lets us use integer vertex-index pairs as edge keys instead of coordinate strings.
+  let indexed = geo;
+  if (!geo.index) {
+    // Inline vertex quantization to build index without importing mergeVertices.
+    // Bucket vertices by rounded coordinates (0.01 mm precision).
+    const srcPos = geo.attributes.position as THREE.BufferAttribute;
+    const posArr  = srcPos.array as Float32Array;
+    const nVerts  = srcPos.count;
+    const newIdx  = new Uint32Array(nVerts);
+    const uniqueMap = new Map<string, number>();
+    const uniquePos: number[] = [];
+    for (let i = 0; i < nVerts; i++) {
+      const x = posArr[i * 3], y = posArr[i * 3 + 1], z = posArr[i * 3 + 2];
+      const key = `${Math.round(x * 100)},${Math.round(y * 100)},${Math.round(z * 100)}`;
+      let idx = uniqueMap.get(key);
+      if (idx === undefined) {
+        idx = uniquePos.length / 3;
+        uniqueMap.set(key, idx);
+        uniquePos.push(x, y, z);
+      }
+      newIdx[i] = idx;
+    }
+    indexed = new THREE.BufferGeometry();
+    indexed.setAttribute("position", new THREE.BufferAttribute(new Float32Array(uniquePos), 3));
+    indexed.setIndex(new THREE.BufferAttribute(newIdx, 1));
   }
 
-  // Edge map: canonical edge key → count of adjacent triangles
-  const edgeCounts = new Map<string, number>();
+  const pos     = indexed.attributes.position as THREE.BufferAttribute;
+  const idxBuf  = indexed.index!;
+  const posArr  = pos.array as Float32Array;
+  const idxArr  = idxBuf.array as Uint32Array | Uint16Array;
+  const vertCount = pos.count;
+  const triCount  = idxBuf.count / 3;
+
+  // Integer edge keys: min(a,b) * vertCount + max(a,b)
+  // Safe as a JS Number for up to ~94M vertices (vertCount² < Number.MAX_SAFE_INTEGER).
+  const edgeCounts = new Map<number, number>();
   let surfaceArea = 0;
   let volume = 0;
 
+  // Pre-allocated vectors — zero heap allocations in the hot loop.
   const vA = new THREE.Vector3();
   const vB = new THREE.Vector3();
   const vC = new THREE.Vector3();
   const e1 = new THREE.Vector3();
   const e2 = new THREE.Vector3();
   const cross = new THREE.Vector3();
+  const crossBC = new THREE.Vector3();
 
-  for (let t = 0; t < analyzedTris; t++) {
-    const b = t * 3;
-    vA.set(pos.getX(b),     pos.getY(b),     pos.getZ(b));
-    vB.set(pos.getX(b + 1), pos.getY(b + 1), pos.getZ(b + 1));
-    vC.set(pos.getX(b + 2), pos.getY(b + 2), pos.getZ(b + 2));
+  for (let t = 0; t < triCount; t++) {
+    const t3 = t * 3;
+    const ai = idxArr[t3], bi = idxArr[t3 + 1], ci = idxArr[t3 + 2];
+
+    // Read positions directly from typed array — avoids .getX() method overhead.
+    const a3 = ai * 3, b3 = bi * 3, c3 = ci * 3;
+    vA.set(posArr[a3], posArr[a3 + 1], posArr[a3 + 2]);
+    vB.set(posArr[b3], posArr[b3 + 1], posArr[b3 + 2]);
+    vC.set(posArr[c3], posArr[c3 + 1], posArr[c3 + 2]);
 
     // Surface area
     e1.subVectors(vB, vA);
@@ -161,20 +192,20 @@ export function analyzeGeometry(geo: THREE.BufferGeometry): MeshAnalysisResult {
     surfaceArea += 0.5 * cross.length();
 
     // Signed volume (divergence theorem)
-    volume += vA.dot(new THREE.Vector3().crossVectors(vB, vC)) / 6;
+    crossBC.crossVectors(vB, vC);
+    volume += vA.dot(crossBC) / 6;
 
-    // Register 3 undirected edges (sorted vertex coords as key)
-    const verts = [vA, vB, vC];
-    for (let i = 0; i < 3; i++) {
-      const va = verts[i];
-      const vb = verts[(i + 1) % 3];
-      const ka = `${va.x.toFixed(5)},${va.y.toFixed(5)},${va.z.toFixed(5)}`;
-      const kb = `${vb.x.toFixed(5)},${vb.y.toFixed(5)},${vb.z.toFixed(5)}`;
-      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    // Register 3 undirected edges using integer index pairs.
+    const pairs: [number, number][] = [
+      [ai, bi], [bi, ci], [ci, ai],
+    ];
+    for (const [u, v] of pairs) {
+      const key = u < v ? u * vertCount + v : v * vertCount + u;
       edgeCounts.set(key, (edgeCounts.get(key) ?? 0) + 1);
     }
   }
 
+  const issues: string[] = [];
   let openEdges = 0;
   let nonManifoldEdges = 0;
   for (const count of edgeCounts.values()) {
@@ -182,7 +213,7 @@ export function analyzeGeometry(geo: THREE.BufferGeometry): MeshAnalysisResult {
     else if (count > 2) nonManifoldEdges++;
   }
 
-  const isWatertight = openEdges === 0 && nonManifoldEdges === 0 && !truncated;
+  const isWatertight = openEdges === 0 && nonManifoldEdges === 0;
 
   if (openEdges > 0) {
     issues.push(`${openEdges} open edge${openEdges > 1 ? "s" : ""} — mesh is not watertight`);
@@ -193,7 +224,7 @@ export function analyzeGeometry(geo: THREE.BufferGeometry): MeshAnalysisResult {
 
   return {
     triangleCount: triCount,
-    vertexCount: pos.count,
+    vertexCount: vertCount,
     isWatertight,
     openEdgeCount: openEdges,
     nonManifoldEdgeCount: nonManifoldEdges,

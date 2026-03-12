@@ -12,7 +12,7 @@ import {z} from 'genkit';
 
 // Schema for the STL metrics
 const MeshMetricsSchema = z.object({
-  format: z.enum(['stl', 'obj', '3mf']),
+  format: z.enum(['stl', 'obj', '3mf', 'amf']),
   units: z.string(),
   triangles: z.number(),
   bbox_mm: z.object({ x: z.number(), y: z.number(), z: z.number() }),

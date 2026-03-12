@@ -70,11 +70,13 @@ export default function RootLayout({
           forcedTheme="dark"
           disableTransitionOnChange
         >
-          <ClientOverlays />
           <div className="relative flex min-h-screen flex-col">
             {children}
           </div>
           <Toaster />
+          {/* ClientOverlays last so ssr:false dynamic imports don't shift React useId
+              counters for Radix components (Sheet, Dialog, Popover) rendered earlier */}
+          <ClientOverlays />
         </ThemeProvider>
       </body>
     </html>
