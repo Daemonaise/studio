@@ -103,6 +103,65 @@
   }
 }
 
+/* ── Splash screen & page-transition animations ─────────────────────── */
+
+@keyframes kl-scan-progress {
+  0%   { left: -65%; }
+  100% { left: 110%; }
+}
+
+@keyframes kl-scan-h {
+  0%   { top: -1px;  opacity: 0;   }
+  5%   { opacity: 0.45; }
+  95%  { opacity: 0.45; }
+  100% { top: 100%;  opacity: 0;   }
+}
+
+@keyframes kl-page-sweep {
+  0%   { transform: translateX(-110%); opacity: 0;   }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateX(110%);  opacity: 0;   }
+}
+
+.kl-scan-progress {
+  position: absolute;
+  inset-y: 0;
+  width: 60%;
+  background: linear-gradient(
+    to right,
+    transparent,
+    hsl(183 91% 43% / 0.9),
+    transparent
+  );
+  animation: kl-scan-progress 1.5s ease-in-out infinite;
+}
+
+.kl-scan-h {
+  position: absolute;
+  inset-x: 0;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    hsl(183 91% 43% / 0.55),
+    transparent
+  );
+  animation: kl-scan-h 3.5s linear infinite;
+}
+
+.kl-page-sweep {
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    hsl(183 91% 43%) 40%,
+    hsl(183 91% 85% / 0.8) 50%,
+    hsl(183 91% 43%) 60%,
+    transparent 100%
+  );
+  animation: kl-page-sweep 0.65s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
 @layer utilities {
   /* Teal accent border — dynamically sizes with its container */
   .teal-frame {

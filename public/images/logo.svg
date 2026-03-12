@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 420" role="img" aria-label="Karasawa Labs logo">
+  <defs>
+    <style>
+      .bg { fill: none; }
+      .ink { fill: #0b0b0c; }
+      .ring { fill: none; stroke: #0b0b0c; stroke-width: 18; }
+      .accent { fill: #ff3b3b; }
+      .word { fill: #0b0b0c; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", sans-serif; font-weight: 750; letter-spacing: 0.08em; }
+      .sub  { fill: #0b0b0c; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", sans-serif; font-weight: 650; letter-spacing: 0.22em; opacity: 0.78; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="420"></rect>
+
+  <!-- Icon: circular badge + abstract "K" mark -->
+  <g transform="translate(70,40)">
+    <circle class="ring" cx="170" cy="170" r="145"></circle>
+
+    <!-- Abstract K (industrial, angular, high legibility) -->
+    <g transform="translate(45,45)">
+      <!-- Spine -->
+      <polygon class="ink" points="95,70 145,70 145,255 95,255"></polygon>
+
+      <!-- Upper stroke -->
+      <polygon class="ink" points="145,110 265,70 295,110 175,150"></polygon>
+
+      <!-- Lower stroke -->
+      <polygon class="ink" points="145,210 295,250 265,290 145,250"></polygon>
+
+      <!-- Cutouts to sharpen the K -->
+      <polygon fill="#ffffff" points="145,140 205,115 223,143 163,168"></polygon>
+      <polygon fill="#ffffff" points="145,240 223,266 205,295 145,268"></polygon>
+
+      <!-- Small “fastener” dots -->
+      <circle class="ink" cx="112" cy="95" r="9"></circle>
+      <circle class="ink" cx="272" cy="98" r="9"></circle>
+      <circle class="ink" cx="272" cy="282" r="9"></circle>
+
+      <!-- Subtle accent chip (optional brand pop) -->
+      <polygon class="accent" points="252,78 276,92 266,118 242,104"></polygon>
+    </g>
+  </g>
+
+  <!-- Wordmark -->
+  <g transform="translate(420,125)">
+    <text class="word" x="0" y="92" font-size="92">KARASAWA</text>
+    <text class="sub" x="6" y="162" font-size="46">LABS</text>
+
+    <!-- Thin baseline detail -->
+    <rect class="ink" x="6" y="188" width="520" height="8" opacity="0.22"></rect>
+  </g>
+</svg>

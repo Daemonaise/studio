@@ -28,24 +28,50 @@ export function CheckoutSuccessClient({ order }: { order: OrderFulfillmentResult
     if (!success || !orderNumber) return;
 
     try {
+      // Persist order to order history
       const stored: any[] = JSON.parse(localStorage.getItem("kl_orders") || "[]");
-      if (stored.some((o) => o.orderNumber === orderNumber)) return;
+      if (!stored.some((o) => o.orderNumber === orderNumber)) {
+        stored.unshift({
+          orderNumber,
+          date: new Date().toISOString(),
+          material: order.material ?? "Unknown",
+          jobScale: order.jobScale ?? "Part",
+          amount: order.paymentAmount ?? 0,
+          status: order.trackingNumber ? "Shipped" : "Processing",
+          trackingNumber: order.trackingNumber ?? null,
+          trackingUrl: order.trackingUrl ?? null,
+          carrier: order.carrier ?? null,
+          leadTimeMin: order.leadTimeMin ?? 3,
+          leadTimeMax: order.leadTimeMax ?? 7,
+          shipping: order.shipping,
+        });
+        localStorage.setItem("kl_orders", JSON.stringify(stored.slice(0, 50)));
+      }
 
-      stored.unshift({
-        orderNumber,
-        date: new Date().toISOString(),
-        material: order.material ?? "Unknown",
-        jobScale: order.jobScale ?? "Part",
-        amount: order.paymentAmount ?? 0,
-        status: order.trackingNumber ? "Shipped" : "Processing",
-        trackingNumber: order.trackingNumber ?? null,
-        trackingUrl: order.trackingUrl ?? null,
-        carrier: order.carrier ?? null,
-        leadTimeMin: order.leadTimeMin ?? 3,
-        leadTimeMax: order.leadTimeMax ?? 7,
-        shipping: order.shipping,
-      });
-      localStorage.setItem("kl_orders", JSON.stringify(stored.slice(0, 50)));
+      // Update customer profile so the portal can greet them by name
+      if (order.shipping?.fullName || order.shipping?.email) {
+        const existing = JSON.parse(localStorage.getItem("kl_customer") || "{}");
+        localStorage.setItem(
+          "kl_customer",
+          JSON.stringify({
+            ...existing,
+            name:    order.shipping?.fullName  || existing.name,
+            email:   order.shipping?.email     || existing.email,
+            company: order.shipping?.company   || existing.company,
+            phone:   order.shipping?.phone     || existing.phone,
+            address: order.shipping
+              ? {
+                  address1: order.shipping.address1,
+                  address2: order.shipping.address2,
+                  city:     order.shipping.city,
+                  state:    order.shipping.state,
+                  zip:      order.shipping.zip,
+                  country:  order.shipping.country,
+                }
+              : existing.address,
+          })
+        );
+      }
     } catch {
       // localStorage unavailable (e.g. private browsing with storage blocked)
     }

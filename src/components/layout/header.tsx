@@ -9,16 +9,17 @@ import { Logo } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { ThemeToggle } from "@/components/theme-toggle";
 
 const navItems = [
   { href: "/automotive", label: "Automotive" },
   { href: "/materials", label: "Materials" },
+  { href: "/split3r", label: "Split3r" },
 ];
 
 export function Header() {
   const pathname = usePathname();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
     setIsLoggedIn(localStorage.getItem("kl_logged_in") === "true");
@@ -52,7 +53,7 @@ export function Header() {
           </nav>
         </div>
 
-        <Sheet>
+        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetTrigger asChild>
             <Button
               variant="ghost"
@@ -64,7 +65,7 @@ export function Header() {
             </Button>
           </SheetTrigger>
           <SheetContent side="left" className="pr-0">
-            <Link href="/" className="mr-6 flex items-center space-x-2">
+            <Link href="/" className="mr-6 flex items-center space-x-2" onClick={() => setMobileOpen(false)}>
               <Logo className="h-6 w-6" />
               <span className="font-bold">Karasawa Labs</span>
             </Link>
@@ -74,6 +75,7 @@ export function Header() {
                   <Link
                     key={item.href}
                     href={item.href}
+                    onClick={() => setMobileOpen(false)}
                     className={cn(
                       "transition-colors hover:text-foreground/80",
                       (pathname === item.href || (item.href.startsWith("/#") && pathname === "/"))
@@ -87,6 +89,7 @@ export function Header() {
                 {isLoggedIn && (
                   <Link
                     href="/portal"
+                    onClick={() => setMobileOpen(false)}
                     className={cn(
                       "transition-colors hover:text-foreground/80",
                       pathname === "/portal" ? "text-foreground" : "text-foreground/60"
@@ -101,7 +104,6 @@ export function Header() {
         </Sheet>
 
         <div className="flex flex-1 items-center justify-end space-x-2">
-          <ThemeToggle />
           <nav className="flex items-center space-x-2">
             {isLoggedIn ? (
               <Button asChild variant="ghost">

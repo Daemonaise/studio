@@ -9,7 +9,8 @@
     "build": "NODE_ENV=production next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node -e \"const fs=require('fs');fs.mkdirSync('public/manifold',{recursive:true});fs.copyFileSync('node_modules/manifold-3d/manifold.js','public/manifold/manifold.js');fs.copyFileSync('node_modules/manifold-3d/manifold.wasm','public/manifold/manifold.wasm');\""
   },
   "dependencies": {
     "@genkit-ai/google-genai": "1.26.0",
@@ -45,6 +46,7 @@
     "genkit": "1.26.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.475.0",
+    "manifold-3d": "^3.3.2",
     "next": "15.5.9",
     "next-themes": "^0.4.0",
     "patch-package": "^8.0.0",
@@ -56,12 +58,14 @@
     "stripe": "^20.4.0",
     "tailwind-merge": "^3.0.1",
     "tailwindcss-animate": "^1.0.7",
+    "three": "^0.183.2",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^19.2.1",
     "@types/react-dom": "^19.2.1",
+    "@types/three": "^0.183.1",
     "genkit-cli": "1.26.0",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",

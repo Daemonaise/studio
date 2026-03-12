@@ -12,6 +12,9 @@ import {
   User,
   LayoutDashboard,
   ArrowRight,
+  MapPin,
+  Phone,
+  Mail,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -48,6 +51,15 @@ interface Customer {
   name?: string;
   email?: string;
   company?: string;
+  phone?: string;
+  address?: {
+    address1?: string;
+    address2?: string;
+    city?: string;
+    state?: string;
+    zip?: string;
+    country?: string;
+  };
 }
 
 const formatCurrency = (amount: number) =>
@@ -294,23 +306,57 @@ export default function PortalPage() {
                     Profile
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  {customer.name && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Name</span>
-                      <span className="font-medium">{customer.name}</span>
-                    </div>
-                  )}
-                  {customer.email && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Email</span>
-                      <span className="font-medium">{customer.email}</span>
-                    </div>
-                  )}
-                  {customer.company && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Company</span>
-                      <span className="font-medium">{customer.company}</span>
+                <CardContent className="space-y-3 text-sm">
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {customer.name && (
+                      <div className="flex items-center gap-2">
+                        <User className="h-3.5 w-3.5 text-accent shrink-0" />
+                        <div>
+                          <p className="text-xs text-muted-foreground">Name</p>
+                          <p className="font-medium">{customer.name}</p>
+                        </div>
+                      </div>
+                    )}
+                    {customer.email && (
+                      <div className="flex items-center gap-2">
+                        <Mail className="h-3.5 w-3.5 text-accent shrink-0" />
+                        <div>
+                          <p className="text-xs text-muted-foreground">Email</p>
+                          <p className="font-medium break-all">{customer.email}</p>
+                        </div>
+                      </div>
+                    )}
+                    {customer.phone && (
+                      <div className="flex items-center gap-2">
+                        <Phone className="h-3.5 w-3.5 text-accent shrink-0" />
+                        <div>
+                          <p className="text-xs text-muted-foreground">Phone</p>
+                          <p className="font-medium">{customer.phone}</p>
+                        </div>
+                      </div>
+                    )}
+                    {customer.company && (
+                      <div className="flex items-center gap-2">
+                        <Package className="h-3.5 w-3.5 text-accent shrink-0" />
+                        <div>
+                          <p className="text-xs text-muted-foreground">Company</p>
+                          <p className="font-medium">{customer.company}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {customer.address?.address1 && (
+                    <div className="flex items-start gap-2 pt-1 border-t border-border/50">
+                      <MapPin className="h-3.5 w-3.5 text-accent shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-0.5">Default Shipping Address</p>
+                        <p className="font-medium">{customer.address.address1}</p>
+                        {customer.address.address2 && <p className="text-muted-foreground">{customer.address.address2}</p>}
+                        <p className="text-muted-foreground">
+                          {customer.address.city}, {customer.address.state} {customer.address.zip}
+                        </p>
+                        <p className="text-muted-foreground">{customer.address.country}</p>
+                      </div>
                     </div>
                   )}
                 </CardContent>

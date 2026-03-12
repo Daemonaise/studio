@@ -11,5 +11,34 @@ runConfig:
   maxInstances: 1
 
 env:
+  # Public vars — safe to commit, embedded at build time
+  - variable: NEXT_PUBLIC_BASE_URL
+    value: https://karasawalabs.com
+  - variable: NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+    value: pk_live_51T2mQnRrkouaWiyyMOPj9IsRZcl8CLkJPDcrvQ0EdWGAc41AfjJA3ML5RZ9HkPIN0LAQ8JjGtd4ct1xQp8kzWgI400cL50hexy
+
+  # Secret vars — reference Firebase Secret Manager (do NOT put raw values here)
+  # Run once in terminal to register each secret:
+  #   firebase apphosting:secrets:set STRIPE_SECRET_KEY
+  #   firebase apphosting:secrets:set SHIPPO_API_KEY
+  #   firebase apphosting:secrets:set GEMINI_API_KEY
+  - variable: STRIPE_SECRET_KEY
+    secret: STRIPE_SECRET_KEY
+  - variable: SHIPPO_API_KEY
+    secret: SHIPPO_API_KEY
   - variable: GEMINI_API_KEY
-    secret: gemini-api-key
+    secret: GEMINI_API_KEY
+
+  # Shippo from-address (non-secret)
+  - variable: SHIPPO_FROM_STREET
+    value: 6001 W Parmer Ln Ste 370 974
+  - variable: SHIPPO_FROM_CITY
+    value: Austin
+  - variable: SHIPPO_FROM_STATE
+    value: TX
+  - variable: SHIPPO_FROM_ZIP
+    value: "78727"
+  - variable: SHIPPO_FROM_PHONE
+    value: "+14086588582"
+  - variable: SHIPPO_FROM_EMAIL
+    value: info@karasawalabs.com

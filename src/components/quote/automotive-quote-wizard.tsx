@@ -3,7 +3,7 @@
 
 import { useState, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { Upload, Loader2, Wand2, Info, Clock, AlertTriangle, CheckCircle2, CreditCard, MapPin, Phone, Mail, User, Building2, X } from "lucide-react";
+import { Upload, Loader2, Wand2, Info, Clock, AlertTriangle, CheckCircle2, CreditCard, MapPin, Phone, Mail, User, Building2, FileBox, Layers, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -88,6 +88,26 @@ const defaultShipping: ShippingInfo = {
   country: "US",
 };
 
+const ACCEPTED_EXTS = ["stl", "obj", "3mf"];
+const FORMAT_BADGES = ["STL", "OBJ", "3MF"];
+
+// Category colors for material selector
+const CATEGORY_COLORS: Record<string, string> = {
+  Standard: "text-blue-400",
+  Engineering: "text-orange-400",
+  Flexible: "text-purple-400",
+  Composite: "text-green-400",
+};
+
+function StepCircle({ n }: { n: number }) {
+  return (
+    <span className="inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0"
+      style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}>
+      {n}
+    </span>
+  );
+}
+
 function AutomotiveQuoteWizardInner() {
   const searchParams = useSearchParams();
   const materialParam = searchParams.get("material");
@@ -123,10 +143,9 @@ function AutomotiveQuoteWizardInner() {
       return;
     }
 
-    const acceptedExts = ["stl", "obj", "3mf", "amf"];
     const ext = selectedFile.name.split(".").pop()?.toLowerCase() ?? "";
-    if (!acceptedExts.includes(ext)) {
-      setError(`Invalid file type. Accepted formats: ${acceptedExts.join(", ").toUpperCase()}`);
+    if (!ACCEPTED_EXTS.includes(ext)) {
+      setError(`Invalid file type. Accepted formats: ${FORMAT_BADGES.join(", ")}`);
       setFile(null);
       return;
     }
@@ -228,7 +247,6 @@ function AutomotiveQuoteWizardInner() {
         return;
       }
 
-      // Redirect to Stripe Checkout
       window.location.href = result.url;
     } catch (err: any) {
       setCheckoutError(err.message || "Checkout failed. Please try again.");
@@ -237,26 +255,34 @@ function AutomotiveQuoteWizardInner() {
   };
 
   const nozzleSizes = pricingMatrix.nozzles.available_mm.map(String);
-  const availableMaterials = materials.map((m) => m.id);
+  const selectedMaterial = materials.find((m) => m.id === material);
 
   return (
     <>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* ── Configure card ─────────────────────────────── */}
-        <div className="group relative transform-gpu rounded-lg transition-transform duration-300 ease-in-out will-change-transform hover:scale-[1.02]">
+        <div className="group relative transform-gpu rounded-lg transition-transform duration-300 ease-in-out will-change-transform hover:scale-[1.02] animate-in fade-in-0 slide-in-from-bottom-4 duration-700">
           <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-20 blur-xl transition-opacity duration-300 group-hover:opacity-100" />
           <Card className="relative h-full flex flex-col teal-frame">
-            <CardHeader>
-              <CardTitle>1. Configure Your Print</CardTitle>
-              <CardDescription>
-                Upload your model and select your desired print settings.
-              </CardDescription>
+            <CardHeader className="pb-4">
+              <div className="flex items-center gap-3">
+                <StepCircle n={1} />
+                <div>
+                  <CardTitle>Configure Your Print</CardTitle>
+                  <CardDescription className="mt-0.5">
+                    Upload your model and choose print settings.
+                  </CardDescription>
+                </div>
+              </div>
             </CardHeader>
 
-            <CardContent className="space-y-6 flex-grow">
+            <CardContent className="space-y-5 flex-grow">
               {/* File upload zone */}
               <div className="space-y-2">
-                <Label>3D Model (STL, OBJ, 3MF, AMF)</Label>
+                <Label className="flex items-center gap-1.5">
+                  <FileBox className="h-3.5 w-3.5 text-muted-foreground" />
+                  3D Model File
+                </Label>
                 <div
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
@@ -284,13 +310,21 @@ function AutomotiveQuoteWizardInner() {
                       </>
                     ) : (
                       <>
-                        <Upload className="h-8 w-8 mx-auto mb-2" />
+                        <Upload className="h-8 w-8 mx-auto mb-2 animate-pulse [animation-duration:2s]" />
                         <p className="font-medium text-sm">
                           Drag & drop or click to browse
                         </p>
-                        <p className="text-xs mt-0.5 opacity-70">
-                          STL · OBJ · 3MF · AMF
-                        </p>
+                        <div className="flex items-center justify-center gap-1.5 mt-2">
+                          {FORMAT_BADGES.map((fmt) => (
+                            <span
+                              key={fmt}
+                              className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border border-accent/30 bg-accent/5 text-accent/70"
+                            >
+                              {fmt}
+                            </span>
+                          ))}
+                          <span className="text-xs opacity-50">· up to 50 MB</span>
+                        </div>
                       </>
                     )}
                   </div>
@@ -298,7 +332,7 @@ function AutomotiveQuoteWizardInner() {
                     ref={fileInputRef}
                     id="file-upload"
                     type="file"
-                    accept=".stl,.obj,.3mf,.amf"
+                    accept=".stl,.obj,.3mf"
                     className="hidden"
                     onChange={handleFileChange}
                     disabled={isLoading}
@@ -307,8 +341,12 @@ function AutomotiveQuoteWizardInner() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Material */}
                 <div className="space-y-2">
-                  <Label htmlFor="material">Material</Label>
+                  <Label htmlFor="material" className="flex items-center gap-1.5">
+                    <Layers className="h-3.5 w-3.5 text-muted-foreground" />
+                    Material
+                  </Label>
                   <Select
                     value={material}
                     onValueChange={setMaterial}
@@ -318,17 +356,31 @@ function AutomotiveQuoteWizardInner() {
                       <SelectValue placeholder="Select material" />
                     </SelectTrigger>
                     <SelectContent>
-                      {availableMaterials.map((mat) => (
-                        <SelectItem key={mat} value={mat}>
-                          {mat}
+                      {materials.map((mat) => (
+                        <SelectItem key={mat.id} value={mat.id}>
+                          <div className="flex items-center gap-2">
+                            <span>{mat.id}</span>
+                            <span className={cn("text-xs", CATEGORY_COLORS[mat.category] ?? "text-muted-foreground")}>
+                              {mat.category}
+                            </span>
+                          </div>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  {selectedMaterial && (
+                    <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+                      {selectedMaterial.description}
+                    </p>
+                  )}
                 </div>
 
+                {/* Nozzle */}
                 <div className="space-y-2">
-                  <Label htmlFor="nozzle">Nozzle Size</Label>
+                  <Label htmlFor="nozzle" className="flex items-center gap-1.5">
+                    <Zap className="h-3.5 w-3.5 text-muted-foreground" />
+                    Nozzle Size
+                  </Label>
                   <Select
                     value={nozzleSize}
                     onValueChange={setNozzleSize}
@@ -341,27 +393,38 @@ function AutomotiveQuoteWizardInner() {
                       {nozzleSizes.map((size) => (
                         <SelectItem key={size} value={size}>
                           {size} mm
+                          {size === "0.4" && (
+                            <span className="ml-1.5 text-xs text-muted-foreground">· recommended</span>
+                          )}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Smaller = finer detail · Larger = faster print
+                  </p>
                 </div>
               </div>
 
               <div className="space-y-4">
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/20 px-4 py-3">
+                  <div>
+                    <Label htmlFor="auto-printer" className="cursor-pointer font-medium">
+                      Auto-select printer
+                    </Label>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      We'll pick the most cost-effective machine for your part
+                    </p>
+                  </div>
                   <Switch
                     id="auto-printer"
                     checked={autoPrinterSelection}
                     onCheckedChange={setAutoPrinterSelection}
                     disabled={isLoading}
                   />
-                  <Label htmlFor="auto-printer">
-                    Auto-select most cost-effective printer
-                  </Label>
                 </div>
                 {!autoPrinterSelection && (
-                  <div className="space-y-2">
+                  <div className="space-y-2 animate-in fade-in-0 slide-in-from-top-2 duration-200">
                     <Label htmlFor="printer-select">Preferred Printer</Label>
                     <Select
                       value={userSelectedPrinter}
@@ -382,8 +445,7 @@ function AutomotiveQuoteWizardInner() {
                       </SelectContent>
                     </Select>
                     <p className="text-xs text-muted-foreground">
-                      Note: An eligible printer will be chosen if your selection
-                      cannot fit the part.
+                      If your selection can't fit the part, an eligible printer will be chosen automatically.
                     </p>
                   </div>
                 )}
@@ -418,20 +480,25 @@ function AutomotiveQuoteWizardInner() {
         </div>
 
         {/* ── Quote result card ──────────────────────────── */}
-        <div className="group relative transform-gpu rounded-lg transition-transform duration-300 ease-in-out will-change-transform hover:scale-[1.02]">
+        <div className="group relative transform-gpu rounded-lg transition-transform duration-300 ease-in-out will-change-transform hover:scale-[1.02] animate-in fade-in-0 slide-in-from-bottom-4 duration-700 delay-150">
           <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/70 via-accent/70 to-secondary/70 opacity-20 blur-xl transition-opacity duration-300 group-hover:opacity-100" />
           <Card className="relative h-full flex flex-col teal-frame">
-            <CardHeader>
-              <CardTitle>2. Instant Quote</CardTitle>
-              <CardDescription>
-                Your estimated cost will appear here.
-              </CardDescription>
+            <CardHeader className="pb-4">
+              <div className="flex items-center gap-3">
+                <StepCircle n={2} />
+                <div>
+                  <CardTitle>Instant Quote</CardTitle>
+                  <CardDescription className="mt-0.5">
+                    Your estimated cost will appear here.
+                  </CardDescription>
+                </div>
+              </div>
             </CardHeader>
 
             <CardContent className="flex-grow flex flex-col">
               {/* Loading */}
               {isLoading && (
-                <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-full">
+                <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-full animate-in fade-in-0 duration-300">
                   <div className="relative">
                     <div className="absolute inset-0 rounded-full bg-accent/20 blur-lg scale-150" />
                     <Loader2 className="relative h-10 w-10 animate-spin text-accent" />
@@ -445,7 +512,7 @@ function AutomotiveQuoteWizardInner() {
 
               {/* Error */}
               {error && (
-                <div className="flex flex-col items-center justify-center text-center text-destructive space-y-4 h-full bg-destructive/10 rounded-lg p-4">
+                <div className="flex flex-col items-center justify-center text-center text-destructive space-y-4 h-full bg-destructive/10 rounded-lg p-4 animate-in fade-in-0 duration-300">
                   <Info className="h-10 w-10" />
                   <p className="font-medium">Error Generating Quote</p>
                   <p className="text-sm">{error}</p>
@@ -454,20 +521,30 @@ function AutomotiveQuoteWizardInner() {
 
               {/* Empty state */}
               {!isLoading && !quote && !error && (
-                <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-3 h-full">
-                  <div className="rounded-full border border-accent/20 bg-accent/5 p-4">
-                    <Wand2 className="h-8 w-8 text-accent/50" />
+                <div className="flex flex-col items-center justify-center text-center text-muted-foreground space-y-4 h-full">
+                  <div className="rounded-full border border-accent/20 bg-accent/5 p-5 animate-pulse [animation-duration:3s]">
+                    <Wand2 className="h-9 w-9 text-accent/50" />
                   </div>
-                  <p className="font-medium">Your quote is just a click away.</p>
-                  <p className="text-sm">
-                    Upload a model and hit <em>Generate AI Quote</em>.
-                  </p>
+                  <div className="space-y-1.5">
+                    <p className="font-medium">Your quote is just a click away.</p>
+                    <p className="text-sm">
+                      Upload a model and hit <em>Generate AI Quote</em>.
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 pt-2 text-xs text-muted-foreground/60 w-full max-w-[200px]">
+                    {["Instant AI analysis", "Real-time cost breakdown", "Lead time estimate"].map((item) => (
+                      <div key={item} className="flex items-center gap-2">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-accent/40 shrink-0" />
+                        <span>{item}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
               {/* Quote result */}
               {quote && (
-                <div className="space-y-4">
+                <div className="space-y-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-500">
                   {/* Status badges */}
                   <div className="flex flex-wrap gap-2">
                     <Badge
