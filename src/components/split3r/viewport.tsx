@@ -185,13 +185,16 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     dir2.position.set(-5, -3, -5);
     scene.add(dir2);
 
-    const camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 10000);
+    const camera = new THREE.PerspectiveCamera(50, (w || 800) / (h || 600), 0.1, 10000);
     camera.position.set(200, 160, 200);
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(w, h);
+    renderer.setSize(w || 800, h || 600);
+    // display:block removes the inline baseline gap that would otherwise leave
+    // a dead zone at the bottom of the canvas where OrbitControls events are lost.
+    renderer.domElement.style.display = "block";
     mountRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
@@ -211,11 +214,17 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       if (!mountRef.current) return;
       const w2 = mountRef.current.clientWidth;
       const h2 = mountRef.current.clientHeight;
+      if (!w2 || !h2) return;
       camera.aspect = w2 / h2;
       camera.updateProjectionMatrix();
       renderer.setSize(w2, h2);
     };
     window.addEventListener("resize", onResize);
+
+    // ResizeObserver keeps the canvas in sync when the container changes size
+    // without a window resize event (e.g. sidebar expanding, dynamic layout).
+    const ro = new ResizeObserver(onResize);
+    ro.observe(mountRef.current);
 
     const onLoadFile = (e: Event) => {
       const file = (e as CustomEvent<File>).detail;
@@ -227,6 +236,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       cancelAnimationFrame(frameRef.current);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("split3r:load-file", onLoadFile);
+      ro.disconnect();
       renderer.dispose();
       if (mountRef.current?.contains(renderer.domElement)) {
         mountRef.current.removeChild(renderer.domElement);
@@ -247,6 +257,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
     geo.computeBoundingBox();
     geo.center();
+    geo.computeVertexNormals();
 
     if (meshRef.current) {
       sceneRef.current.remove(meshRef.current);
@@ -255,6 +266,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
     const mat = new THREE.MeshPhongMaterial({
       color: 0xd0d8e8, specular: 0x222244, shininess: 30,
+      side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geo, mat);
     sceneRef.current.add(mesh);
