@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
+import { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHandle } from "react";
 import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
@@ -14,7 +14,7 @@ export interface MeshInfo {
   fileSizeMB: number;
   triangleCount: number;
   boundingBox: { x: number; y: number; z: number };
-  format: "stl" | "obj";
+  format: "stl" | "obj" | "3mf";
 }
 
 export interface CutPlane {
@@ -92,6 +92,8 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
   const splitMeshesRef  = useRef<THREE.Mesh[]>([]);
   const planeHelpersRef = useRef<THREE.Object3D[]>([]);
+
+  const [hasMesh, setHasMesh] = useState(false);
 
   // ── Imperative handle ───────────────────────────────────────────────────────
 
@@ -257,6 +259,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     const mesh = new THREE.Mesh(geo, mat);
     sceneRef.current.add(mesh);
     meshRef.current = mesh;
+    setHasMesh(true);
 
     const bb = new THREE.Box3().setFromObject(mesh);
     bbRef.current = bb;
@@ -300,6 +303,28 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         const obj   = loader.parse(text);
         const child = obj.children.find((c) => c instanceof THREE.Mesh) as THREE.Mesh | undefined;
         if (child) loadGeometry(child.geometry, file.name, mb, "obj");
+      });
+    } else if (ext === "3mf") {
+      file.arrayBuffer().then(async (buf) => {
+        const { ThreeMFLoader } = await import("three/examples/jsm/loaders/3MFLoader.js");
+        const group = new ThreeMFLoader().parse(buf);
+        const geos: THREE.BufferGeometry[] = [];
+        group.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            const g = child.geometry.clone();
+            child.updateWorldMatrix(true, false);
+            g.applyMatrix4(child.matrixWorld);
+            geos.push(g);
+          }
+        });
+        if (geos.length === 0) return;
+        if (geos.length === 1) {
+          loadGeometry(geos[0], file.name, mb, "3mf");
+        } else {
+          const { mergeGeometries } = await import("three/examples/jsm/utils/BufferGeometryUtils.js");
+          const merged = mergeGeometries(geos);
+          if (merged) loadGeometry(merged, file.name, mb, "3mf");
+        }
       });
     }
   }, [loadGeometry]);
@@ -431,16 +456,16 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     >
       <div ref={mountRef} className="w-full h-full" />
 
-      {!meshRef.current && (
+      {!hasMesh && (
         <label className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer gap-4 bg-background/60 backdrop-blur-sm">
           <div className="rounded-2xl border-2 border-dashed border-accent/40 p-12 flex flex-col items-center gap-3 hover:border-accent/80 transition-colors">
             <Upload className="h-10 w-10 text-accent" />
-            <p className="text-sm font-medium text-foreground">Drop STL or OBJ file here</p>
+            <p className="text-sm font-medium text-foreground">Drop STL, OBJ, or 3MF file here</p>
             <p className="text-xs text-muted-foreground">or click to browse · up to 250 MB</p>
           </div>
           <input
             type="file"
-            accept=".stl,.obj"
+            accept=".stl,.obj,.3mf"
             className="hidden"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
           />

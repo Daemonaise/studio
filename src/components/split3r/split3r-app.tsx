@@ -7,6 +7,7 @@ import {
   ChevronDown, ChevronRight, Plus, Minus, Download,
   RotateCcw, Info, AlertTriangle, CheckCircle2, Loader2,
   Maximize2, Link2, Eye, ZapOff, Zap, Keyboard, X,
+  Target, Scale, Send,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +53,17 @@ interface AnalysisResult {
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+
+const MATERIAL_DENSITIES = [
+  { id: "pla",   label: "PLA",          density: 1.24 },
+  { id: "petg",  label: "PETG",         density: 1.27 },
+  { id: "abs",   label: "ABS",          density: 1.05 },
+  { id: "asa",   label: "ASA",          density: 1.07 },
+  { id: "tpu",   label: "TPU",          density: 1.21 },
+  { id: "nylon", label: "Nylon (PA12)", density: 1.15 },
+  { id: "resin", label: "Resin (std)",  density: 1.10 },
+  { id: "cf",    label: "Carbon Fiber", density: 1.30 },
+];
 
 const AXIS_COLORS: Record<string, string> = {
   x: "text-red-400",
@@ -129,6 +141,10 @@ export function Split3rApp() {
   const [splitProgress, setSplitProgress] = useState(0);
   const [splitMessage, setSplitMessage] = useState("");
   const [selectedPartIndex, setSelectedPartIndex] = useState<number | undefined>(undefined);
+
+  // ── Export ──────────────────────────────────────────────────────────────────
+  const [exportFormat, setExportFormat] = useState<"stl" | "obj">("stl");
+  const [materialDensityId, setMaterialDensityId] = useState("pla");
 
   // ── View state ──────────────────────────────────────────────────────────────
   const [explodeAmount, setExplodeAmount] = useState(0);
@@ -276,27 +292,55 @@ export function Split3rApp() {
   };
 
   // ── Export ────────────────────────────────────────────────────────────────────
+  const getBase = () => meshInfo?.fileName.replace(/\.(stl|obj|3mf)$/i, "") ?? "model";
+
   const handleDownloadPart = async (i: number) => {
-    const { geometryToSTLBuffer, downloadBlob } = await import("./stl-utils");
-    const buf  = geometryToSTLBuffer(splitParts[i].geometry);
-    const base = meshInfo?.fileName.replace(/\.(stl|obj)$/i, "") ?? "model";
-    downloadBlob(buf, `${base}_part${i + 1}.stl`);
+    const base = getBase();
+    if (exportFormat === "obj") {
+      const { geometryToOBJString, downloadText } = await import("./stl-utils");
+      downloadText(
+        geometryToOBJString(splitParts[i].geometry, `${base}_part${i + 1}`),
+        `${base}_part${i + 1}.obj`,
+        "model/obj"
+      );
+    } else {
+      const { geometryToSTLBuffer, downloadBlob } = await import("./stl-utils");
+      downloadBlob(geometryToSTLBuffer(splitParts[i].geometry), `${base}_part${i + 1}.stl`);
+    }
   };
 
   const handleDownloadZip = async () => {
-    const { geometryToSTLBuffer } = await import("./stl-utils");
+    const { geometryToSTLBuffer, geometryToOBJString } = await import("./stl-utils");
     const JSZip = (await import("jszip")).default;
     const zip   = new JSZip();
-    const base  = meshInfo?.fileName.replace(/\.(stl|obj)$/i, "") ?? "model";
+    const base  = getBase();
     for (let i = 0; i < splitParts.length; i++) {
-      zip.file(`${base}_part${i + 1}.stl`, geometryToSTLBuffer(splitParts[i].geometry));
+      if (exportFormat === "obj") {
+        zip.file(`${base}_part${i + 1}.obj`, geometryToOBJString(splitParts[i].geometry, `${base}_part${i + 1}`));
+      } else {
+        zip.file(`${base}_part${i + 1}.stl`, geometryToSTLBuffer(splitParts[i].geometry));
+      }
     }
     const blob = await zip.generateAsync({ type: "blob" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href = url; a.download = `${base}_split3r.zip`; a.click();
     URL.revokeObjectURL(url);
-    toast({ title: "ZIP downloaded", description: `${splitParts.length} STL files.` });
+    toast({ title: "ZIP downloaded", description: `${splitParts.length} ${exportFormat.toUpperCase()} files.` });
+  };
+
+  const handleSendToQuote = async () => {
+    const { geometryToSTLBuffer } = await import("./stl-utils");
+    const base = getBase();
+    const parts = splitParts.map((part, i) => {
+      const buf   = geometryToSTLBuffer(part.geometry);
+      const bytes = new Uint8Array(buf);
+      let binary  = "";
+      for (let j = 0; j < bytes.byteLength; j++) binary += String.fromCharCode(bytes[j]);
+      return { name: `${base}_part${i + 1}.stl`, stlBase64: btoa(binary), dims: part.bbox, volumeMM3: part.volumeMM3 };
+    });
+    sessionStorage.setItem("split3r_quote_parts", JSON.stringify(parts));
+    window.location.href = "/automotive?from=split3r";
   };
 
   // ── Derived ───────────────────────────────────────────────────────────────────
@@ -360,12 +404,12 @@ export function Split3rApp() {
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Upload className="h-3.5 w-3.5" />
-                  {meshInfo ? "Load New File" : "Upload STL / OBJ"}
+                  {meshInfo ? "Load New File" : "Upload STL / OBJ / 3MF"}
                 </Button>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".stl,.obj"
+                  accept=".stl,.obj,.3mf"
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
@@ -598,6 +642,13 @@ export function Split3rApp() {
                           {plane.axis.toUpperCase()}-axis
                         </span>
                         <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => updatePlane(i, { position: 0.5 })}
+                            className="text-muted-foreground hover:text-accent transition-colors"
+                            title="Snap to center"
+                          >
+                            <Target className="h-3 w-3" />
+                          </button>
                           <Switch
                             checked={plane.enabled}
                             onCheckedChange={(v) => updatePlane(i, { enabled: v })}
@@ -801,6 +852,24 @@ export function Split3rApp() {
                 </div>
               ) : (
                 <>
+                  {/* Format selector */}
+                  <div className="flex items-center gap-1 rounded-md border border-border p-1">
+                    {(["stl", "obj"] as const).map((fmt) => (
+                      <button
+                        key={fmt}
+                        onClick={() => setExportFormat(fmt)}
+                        className={cn(
+                          "flex-1 rounded py-1 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                          exportFormat === fmt
+                            ? "bg-accent text-accent-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        {fmt}
+                      </button>
+                    ))}
+                  </div>
+
                   <Button
                     size="sm"
                     className="w-full gap-2"
@@ -808,8 +877,58 @@ export function Split3rApp() {
                     onClick={handleDownloadZip}
                   >
                     <Package className="h-3.5 w-3.5" />
-                    Download All as ZIP ({splitParts.length} files)
+                    Download All as ZIP ({splitParts.length} {exportFormat.toUpperCase()} files)
                   </Button>
+
+                  <Button
+                    size="sm" variant="outline" className="w-full gap-2"
+                    onClick={handleSendToQuote}
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    Send Parts to Quote
+                  </Button>
+
+                  <Separator />
+
+                  {/* Weight estimate */}
+                  <div className="rounded-md bg-muted/40 p-2 space-y-2">
+                    <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <Scale className="h-3 w-3" /> Weight Estimate
+                    </div>
+                    <Select value={materialDensityId} onValueChange={setMaterialDensityId}>
+                      <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {MATERIAL_DENSITIES.map((m) => (
+                          <SelectItem key={m.id} value={m.id} className="text-xs">
+                            {m.label} ({m.density} g/cm³)
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <div className="text-[10px] space-y-0.5">
+                      {splitParts.map((part, i) => {
+                        const density = MATERIAL_DENSITIES.find((m) => m.id === materialDensityId)?.density ?? 1.24;
+                        const weightG = ((part.volumeMM3 / 1000) * density).toFixed(1);
+                        return (
+                          <div key={i} className="flex justify-between text-muted-foreground">
+                            <span>{part.label}</span>
+                            <span className="font-mono">{weightG} g</span>
+                          </div>
+                        );
+                      })}
+                      {splitParts.length > 1 && (
+                        <div className="flex justify-between pt-1 border-t border-border font-medium text-foreground">
+                          <span>Total</span>
+                          <span className="font-mono">
+                            {splitParts.reduce((sum, p) => {
+                              const density = MATERIAL_DENSITIES.find((m) => m.id === materialDensityId)?.density ?? 1.24;
+                              return sum + (p.volumeMM3 / 1000) * density;
+                            }, 0).toFixed(1)} g
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
                   <Separator />
 
@@ -826,7 +945,7 @@ export function Split3rApp() {
                           className="h-6 text-[10px] px-2 gap-1"
                           onClick={() => handleDownloadPart(i)}
                         >
-                          <Download className="h-2.5 w-2.5" /> STL
+                          <Download className="h-2.5 w-2.5" /> {exportFormat.toUpperCase()}
                         </Button>
                       </div>
                       <p className="text-[10px] text-muted-foreground">

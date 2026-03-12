@@ -10,6 +10,7 @@ export interface SplitPart {
   geometry: THREE.BufferGeometry;
   label: string;
   triangleCount: number;
+  volumeMM3: number;
   bbox: { x: number; y: number; z: number };
 }
 
@@ -213,6 +214,7 @@ export async function splitMesh(
       geometry,
       label: `Part ${i + 1}`,
       triangleCount: mesh.triVerts.length / 3,
+      volumeMM3: parseFloat(computeGeometryVolume(geometry).toFixed(2)),
       bbox: {
         x: parseFloat(size.x.toFixed(1)),
         y: parseFloat(size.y.toFixed(1)),
@@ -226,4 +228,20 @@ export async function splitMesh(
 
 function yieldToUI(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Signed-volume divergence theorem on an indexed BufferGeometry. */
+function computeGeometryVolume(geo: THREE.BufferGeometry): number {
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const idx = geo.index;
+  if (!idx) return 0;
+  let vol = 0;
+  for (let t = 0; t < idx.count; t += 3) {
+    const ai = idx.getX(t), bi = idx.getX(t + 1), ci = idx.getX(t + 2);
+    const ax = pos.getX(ai), ay = pos.getY(ai), az = pos.getZ(ai);
+    const bx = pos.getX(bi), by = pos.getY(bi), bz = pos.getZ(bi);
+    const cx = pos.getX(ci), cy = pos.getY(ci), cz = pos.getZ(ci);
+    vol += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6;
+  }
+  return Math.abs(vol);
 }

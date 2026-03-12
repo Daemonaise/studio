@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useRef, Suspense } from "react";
+import { useState, useRef, Suspense, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { Upload, Loader2, Wand2, Info, Clock, AlertTriangle, CheckCircle2, CreditCard, MapPin, Phone, Mail, User, Building2, FileBox, Layers, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -126,6 +126,22 @@ function AutomotiveQuoteWizardInner() {
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-load first part when arriving from Split3r
+  useEffect(() => {
+    if (searchParams.get("from") !== "split3r") return;
+    const raw = sessionStorage.getItem("split3r_quote_parts");
+    if (!raw) return;
+    try {
+      const parts = JSON.parse(raw) as Array<{ name: string; stlBase64: string }>;
+      if (parts.length === 0) return;
+      const bytes = Uint8Array.from(atob(parts[0].stlBase64), (c) => c.charCodeAt(0));
+      const f = new File([bytes], parts[0].name, { type: "model/stl" });
+      if (f.size <= 50 * 1024 * 1024) setFile(f);
+      sessionStorage.removeItem("split3r_quote_parts");
+    } catch { /* ignore malformed data */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Checkout dialog state
   const [showCheckout, setShowCheckout] = useState(false);

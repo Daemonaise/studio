@@ -61,6 +61,52 @@ export function downloadBlob(buf: ArrayBuffer, fileName: string, mime = "model/s
   URL.revokeObjectURL(url);
 }
 
+// ─── OBJ Export ───────────────────────────────────────────────────────────────
+
+/**
+ * Serialise a BufferGeometry to a Wavefront OBJ string.
+ * Each vertex has a paired normal; faces use v//vn syntax (no UV).
+ */
+export function geometryToOBJString(geo: THREE.BufferGeometry, name = "model"): string {
+  const g = geo.index ? geo.toNonIndexed() : geo.clone();
+  g.computeVertexNormals();
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const nrm = g.attributes.normal as THREE.BufferAttribute;
+  const triCount = pos.count / 3;
+
+  const lines: string[] = [
+    "# Split3r export — karasawalabs.com",
+    `o ${name}`,
+    "",
+  ];
+
+  for (let i = 0; i < pos.count; i++) {
+    lines.push(`v ${pos.getX(i).toFixed(6)} ${pos.getY(i).toFixed(6)} ${pos.getZ(i).toFixed(6)}`);
+  }
+  if (nrm) {
+    for (let i = 0; i < nrm.count; i++) {
+      lines.push(`vn ${nrm.getX(i).toFixed(6)} ${nrm.getY(i).toFixed(6)} ${nrm.getZ(i).toFixed(6)}`);
+    }
+  }
+  lines.push("");
+  for (let t = 0; t < triCount; t++) {
+    const a = t * 3 + 1;
+    lines.push(`f ${a}//${a} ${a + 1}//${a + 1} ${a + 2}//${a + 2}`);
+  }
+
+  return lines.join("\n");
+}
+
+export function downloadText(text: string, fileName: string, mime = "text/plain") {
+  const blob = new Blob([text], { type: mime });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Mesh Analysis ────────────────────────────────────────────────────────────
 
 export interface MeshAnalysisResult {
