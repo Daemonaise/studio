@@ -169,8 +169,6 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
   useEffect(() => {
     if (!mountRef.current) return;
-    const w = mountRef.current.clientWidth;
-    const h = mountRef.current.clientHeight;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0d0d12);
@@ -185,20 +183,26 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     dir2.position.set(-5, -3, -5);
     scene.add(dir2);
 
-    const camera = new THREE.PerspectiveCamera(50, (w || 800) / (h || 600), 0.1, 10000);
+    // Use a safe initial aspect ratio; ResizeObserver will correct it on first fire.
+    const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 10000);
     camera.position.set(200, 160, 200);
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(w || 800, h || 600);
-    // display:block removes the inline baseline gap that would otherwise leave
-    // a dead zone at the bottom of the canvas where OrbitControls events are lost.
-    renderer.domElement.style.display = "block";
-    mountRef.current.appendChild(renderer.domElement);
+    // Initialize to 1×1; CSS controls the visual size and ResizeObserver
+    // updates the resolution.  Using setSize with updateStyle=false means
+    // Three.js won't override the CSS 100% × 100% we set below.
+    renderer.setSize(1, 1, false);
+    const canvas = renderer.domElement;
+    canvas.style.display  = "block";
+    canvas.style.width    = "100%";
+    canvas.style.height   = "100%";
+    canvas.style.outline  = "none";
+    mountRef.current.appendChild(canvas);
     rendererRef.current = renderer;
 
-    const controls = new OrbitControls(camera, renderer.domElement);
+    const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controlsRef.current = controls;
@@ -210,19 +214,21 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     };
     animate();
 
+    // Single resize handler used by both window resize and ResizeObserver.
     const onResize = () => {
       if (!mountRef.current) return;
-      const w2 = mountRef.current.clientWidth;
-      const h2 = mountRef.current.clientHeight;
-      if (!w2 || !h2) return;
-      camera.aspect = w2 / h2;
+      const w = mountRef.current.clientWidth;
+      const h = mountRef.current.clientHeight;
+      if (!w || !h) return;
+      camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      renderer.setSize(w2, h2);
+      // false = don't touch CSS style (it stays 100% × 100%)
+      renderer.setSize(w, h, false);
     };
     window.addEventListener("resize", onResize);
 
-    // ResizeObserver keeps the canvas in sync when the container changes size
-    // without a window resize event (e.g. sidebar expanding, dynamic layout).
+    // ResizeObserver fires immediately on first observe, ensuring the canvas
+    // resolution is correct before the first user interaction or file load.
     const ro = new ResizeObserver(onResize);
     ro.observe(mountRef.current);
 
@@ -238,8 +244,8 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       window.removeEventListener("split3r:load-file", onLoadFile);
       ro.disconnect();
       renderer.dispose();
-      if (mountRef.current?.contains(renderer.domElement)) {
-        mountRef.current.removeChild(renderer.domElement);
+      if (mountRef.current?.contains(canvas)) {
+        mountRef.current.removeChild(canvas);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -251,7 +257,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     geo: THREE.BufferGeometry,
     fileName: string,
     fileSizeMB: number,
-    format: "stl" | "obj"
+    format: "stl" | "obj" | "3mf"
   ) => {
     if (!sceneRef.current || !cameraRef.current || !controlsRef.current) return;
 

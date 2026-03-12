@@ -33,6 +33,7 @@
   { "id": "qidi-x-max3",      "name": "Qidi X-MAX 3",               "brand": "Qidi",         "x": 325, "y": 315, "z": 315 },
   { "id": "sovol-sv08",       "name": "Sovol SV08",                 "brand": "Sovol",        "x": 350, "y": 350, "z": 400 },
   { "id": "bambu-h2d",        "name": "Bambu Lab H2D",              "brand": "Bambu Lab",    "x": 350, "y": 320, "z": 325 },
+  { "id": "bambu-h2s",        "name": "Bambu Lab H2S",              "brand": "Bambu Lab",    "x": 350, "y": 320, "z": 325 },
   { "id": "bambu-x1e",        "name": "Bambu Lab X1E",              "brand": "Bambu Lab",    "x": 256, "y": 256, "z": 256 },
   { "id": "cr-m4",            "name": "Creality CR-M4",             "brand": "Creality",     "x": 450, "y": 450, "z": 470 },
   { "id": "raise3d-pro3",     "name": "Raise3D Pro3",               "brand": "Raise3D",      "x": 300, "y": 300, "z": 300 },
