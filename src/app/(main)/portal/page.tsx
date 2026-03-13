@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 import {
   Package,
   Truck,
@@ -15,6 +16,12 @@ import {
   MapPin,
   Phone,
   Mail,
+  FileBox,
+  Download,
+  Trash2,
+  Loader2,
+  Upload,
+  Scissors,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +31,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  listKarasliceFiles,
+  getKarasliceDownloadUrl,
+  deleteKarasliceFile,
+  type KarasliceFile,
+} from "@/app/actions/storage-actions";
 
 interface Order {
   orderNumber: string;
@@ -180,13 +193,69 @@ function OrderCard({ order }: { order: Order }) {
 }
 
 export default function PortalPage() {
+  const { data: session } = useSession();
   const [orders, setOrders] = useState<Order[]>([]);
   const [customer, setCustomer] = useState<Customer | null>(null);
+  const [files, setFiles] = useState<KarasliceFile[]>([]);
+  const [filesLoading, setFilesLoading] = useState(true);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const loadFiles = useCallback(async () => {
+    try {
+      setFilesLoading(true);
+      const list = await listKarasliceFiles();
+      setFiles(list);
+    } catch {
+      // silent — user may not have any files yet
+    } finally {
+      setFilesLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     setOrders(safeParseJSON<Order[]>("kl_orders", []));
-    setCustomer(safeParseJSON<Customer | null>("kl_customer", null));
-  }, []);
+    // Merge session user data with any localStorage profile
+    const stored = safeParseJSON<Customer | null>("kl_customer", null);
+    if (session?.user) {
+      setCustomer({
+        ...stored,
+        name: session.user.name ?? stored?.name,
+        email: session.user.email ?? stored?.email,
+      });
+      loadFiles();
+    } else {
+      setCustomer(stored);
+    }
+  }, [session, loadFiles]);
+
+  const handleDownload = async (file: KarasliceFile) => {
+    setDownloading(file.path);
+    try {
+      const url = await getKarasliceDownloadUrl(file.path);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.originalName || file.name;
+      a.click();
+    } catch {
+      // silent
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  const handleDelete = async (file: KarasliceFile) => {
+    if (!confirm(`Delete "${file.originalName}"?`)) return;
+    setDeleting(file.path);
+    try {
+      await deleteKarasliceFile(file.path);
+      setFiles((prev) => prev.filter((f) => f.path !== file.path));
+    } catch {
+      // silent
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   const stats = useMemo(
     () => ({
@@ -288,6 +357,133 @@ export default function PortalPage() {
             <div className="space-y-3">
               {orders.map((order) => (
                 <OrderCard key={order.orderNumber} order={order} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Karaslice Files */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileBox className="h-5 w-5 text-accent" />
+              <h2 className="text-lg font-semibold">Karaslice Files</h2>
+            </div>
+            {files.length > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {files.length} file{files.length !== 1 ? "s" : ""}
+              </span>
+            )}
+          </div>
+
+          {filesLoading ? (
+            <Card className="teal-frame">
+              <CardContent className="flex items-center justify-center py-12">
+                <Loader2 className="h-5 w-5 animate-spin text-accent" />
+              </CardContent>
+            </Card>
+          ) : files.length === 0 ? (
+            <div className="group relative rounded-lg">
+              <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-accent/20 to-primary/10 opacity-20 blur-xl" />
+              <Card className="relative teal-frame">
+                <CardContent className="flex flex-col items-center justify-center text-center py-16 space-y-4">
+                  <div className="rounded-full bg-accent/10 border border-accent/20 p-5">
+                    <Scissors className="h-10 w-10 text-accent/50" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="font-semibold text-lg">No files yet</h3>
+                    <p className="text-sm text-muted-foreground max-w-xs">
+                      Upload and split 3D models in Karaslice — your files will appear here.
+                    </p>
+                  </div>
+                  <Button asChild style={accentBtn}>
+                    <Link href="/karaslice">
+                      Open Karaslice
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </Link>
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {files.map((file) => (
+                <div key={file.path} className="group relative rounded-lg">
+                  <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/40 via-accent/40 to-secondary/40 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-60" />
+                  <Card className="relative teal-frame transition-shadow duration-200 group-hover:shadow-lg">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
+                          {file.subfolder === "uploads" ? (
+                            <Upload className="h-4 w-4" />
+                          ) : (
+                            <Scissors className="h-4 w-4" />
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {file.originalName}
+                          </p>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <Badge
+                              variant="outline"
+                              className={
+                                file.subfolder === "uploads"
+                                  ? "bg-blue-500/10 text-blue-400 border-blue-500/30"
+                                  : "bg-green-500/10 text-green-400 border-green-500/30"
+                              }
+                            >
+                              {file.subfolder === "uploads" ? "Upload" : "Export"}
+                            </Badge>
+                            <span>{(file.size / 1024 / 1024).toFixed(1)} MB</span>
+                            <span>·</span>
+                            <span>
+                              {file.uploadedAt
+                                ? new Date(file.uploadedAt).toLocaleDateString("en-US", {
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                  })
+                                : ""}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-accent hover:text-accent"
+                            disabled={downloading === file.path}
+                            onClick={() => handleDownload(file)}
+                            title="Download"
+                          >
+                            {downloading === file.path ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Download className="h-4 w-4" />
+                            )}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                            disabled={deleting === file.path}
+                            onClick={() => handleDelete(file)}
+                            title="Delete"
+                          >
+                            {deleting === file.path ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
               ))}
             </div>
           )}
