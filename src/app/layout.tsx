@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ClientOverlays } from "@/components/layout/client-overlays";
+import { AuthProvider } from "@/components/auth-provider";
 
 const fontInter = Inter({
   subsets: ["latin"],
@@ -64,20 +65,22 @@ export default function RootLayout({
             __html: `(function(){var d=document.createElement('div');d.id='kl-splash-init';d.style.cssText='position:fixed;inset:0;z-index:9999;background:hsl(240,6%,7%)';document.body.appendChild(d)})()`,
           }}
         />
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="dark"
-          forcedTheme="dark"
-          disableTransitionOnChange
-        >
-          <div className="relative flex min-h-screen flex-col">
-            {children}
-          </div>
-          <Toaster />
-          {/* ClientOverlays last so ssr:false dynamic imports don't shift React useId
-              counters for Radix components (Sheet, Dialog, Popover) rendered earlier */}
-          <ClientOverlays />
-        </ThemeProvider>
+        <AuthProvider>
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="dark"
+            forcedTheme="dark"
+            disableTransitionOnChange
+          >
+            <div className="relative flex min-h-screen flex-col">
+              {children}
+            </div>
+            <Toaster />
+            {/* ClientOverlays last so ssr:false dynamic imports don't shift React useId
+                counters for Radix components (Sheet, Dialog, Popover) rendered earlier */}
+            <ClientOverlays />
+          </ThemeProvider>
+        </AuthProvider>
       </body>
     </html>
   );
