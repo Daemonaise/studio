@@ -622,6 +622,7 @@ export async function quadricSimplify(
   geo: THREE.BufferGeometry,
   targetTriangles: number,
   onProgress?: VoxelProgressCallback,
+  boundaryPenalty = 1.0,
 ): Promise<THREE.BufferGeometry> {
   const g = geo.index ? geo.toNonIndexed() : geo;
   const srcPos = g.attributes.position.array as Float32Array;
@@ -718,10 +719,21 @@ export async function quadricSimplify(
   // Edge → collapse cost (use min-heap via sorted array rebuilt periodically)
   type EdgeEntry = { v0: number; v1: number; cost: number; mx: number; my: number; mz: number };
   const edgeSet = new Set<string>();
+  // Track edge adjacency count to detect boundary edges (1 tri = boundary)
+  const edgeTriCount = new Map<string, number>();
   let edges: EdgeEntry[] = [];
 
   function edgeKey(a: number, b: number): string {
     return a < b ? `${a},${b}` : `${b},${a}`;
+  }
+
+  // Pre-compute edge adjacency counts for boundary detection
+  for (let t = 0; t < srcTriCount; t++) {
+    if (!alive[t]) continue;
+    const i0 = tris[t * 3], i1 = tris[t * 3 + 1], i2 = tris[t * 3 + 2];
+    for (const ek of [edgeKey(i0, i1), edgeKey(i1, i2), edgeKey(i2, i0)]) {
+      edgeTriCount.set(ek, (edgeTriCount.get(ek) ?? 0) + 1);
+    }
   }
 
   // 3×3 determinant — used by Cramer's rule below
@@ -772,7 +784,16 @@ export async function quadricSimplify(
       s7*mz*mz + 2*s8*mz +
       s9;
 
-    return { v0: a, v1: b, cost: Math.abs(cost), mx, my, mz };
+    let finalCost = Math.abs(cost);
+    // Penalise boundary edges so the simplifier avoids collapsing them.
+    // Boundary edges (1 adjacent tri) are at mesh openings (windows, holes).
+    if (boundaryPenalty > 1.0) {
+      const ek = edgeKey(a, b);
+      if ((edgeTriCount.get(ek) ?? 2) < 2) {
+        finalCost *= boundaryPenalty;
+      }
+    }
+    return { v0: a, v1: b, cost: finalCost, mx, my, mz };
   }
 
   for (let t = 0; t < srcTriCount; t++) {
@@ -935,6 +956,10 @@ export async function quadricSimplify(
 export interface PostProcessParams {
   smoothingIterations: number;
   simplifyTarget: number;
+  /** Taubin smoothing intensity per pass (0.1-0.8, default 0.5). Lower = preserve edges. */
+  smoothingLambda?: number;
+  /** QEM boundary edge penalty (1-10, default 1). High values protect openings during simplification. */
+  boundaryPenalty?: number;
 }
 
 /**
@@ -955,16 +980,20 @@ export async function postProcessVoxelOutput(
   // Step 1: Quadric simplification (reduce bloated voxel output FIRST —
   // voxelization over-tessellates 4-8×, running smoothing on millions of
   // triangles is what causes browser hang/crash)
-  const currentTris = Math.floor((result.attributes.position.array as Float32Array).length / 9);
+  const currentTris = result.index
+    ? Math.floor(result.index.count / 3)
+    : Math.floor((result.attributes.position.array as Float32Array).length / 9);
   if (params.simplifyTarget > 0 && currentTris > params.simplifyTarget) {
     if (onProgress) onProgress(0, 2, "Simplifying mesh…");
-    result = await quadricSimplify(result, params.simplifyTarget, onProgress);
+    result = await quadricSimplify(result, params.simplifyTarget, onProgress, params.boundaryPenalty ?? 1.0);
   }
 
   // Step 2: Taubin smoothing (runs on the reduced mesh — much faster)
   if (params.smoothingIterations > 0) {
     if (onProgress) onProgress(1, 2, "Smoothing surface…");
-    await taubinSmooth(result, params.smoothingIterations, onProgress);
+    const lambda = params.smoothingLambda ?? 0.5;
+    const mu = -(lambda + 0.03); // Taubin's formula: mu should be slightly more negative than -lambda
+    await taubinSmooth(result, params.smoothingIterations, onProgress, lambda, mu);
   }
 
   return result;

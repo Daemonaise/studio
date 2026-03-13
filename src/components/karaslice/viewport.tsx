@@ -50,6 +50,7 @@ export interface ViewportHandle {
 interface ViewportProps {
   onMeshLoaded: (info: MeshInfo) => void;
   onLoadStart?: () => void;
+  onFileSelected?: (file: File) => void;
   cutPlanes: CutPlane[];
   printerVolume: { x: number; y: number; z: number } | null;
   transforms?: TransformState;
@@ -75,6 +76,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   {
     onMeshLoaded,
     onLoadStart,
+    onFileSelected,
     cutPlanes,
     printerVolume,
     transforms,
@@ -97,6 +99,10 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   const frameRef    = useRef<number>(0);
 
   const splitMeshesRef  = useRef<THREE.Mesh[]>([]);
+  const batchMatRef     = useRef<THREE.MeshStandardMaterial | null>(null);
+  const selMeshRef      = useRef<THREE.Mesh | null>(null);
+  const splitCentersRef = useRef<{ centers: THREE.Vector3[]; overall: THREE.Vector3 }>({ centers: [], overall: new THREE.Vector3() });
+  const invalidateRef   = useRef<() => void>(() => {});
   const planeHelpersRef = useRef<THREE.Object3D[]>([]);
   const gridRef         = useRef<THREE.GridHelper | null>(null);
 
@@ -159,6 +165,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       sceneRef.current!.add(line);
       planeHelpersRef.current.push(line);
     });
+    invalidateRef.current();
   }, [cutPlanes]);
 
   // ── Three.js scene init ─────────────────────────────────────────────────────
@@ -226,10 +233,20 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     controls.panSpeed         = 0.8;
     controlsRef.current = controls;
 
+    // Demand-driven render loop: only call renderer.render() when the camera
+    // moves or the scene changes.  Saves GPU when viewport is idle.
+    let renderNeeded = true;
+    const requestRender = () => { renderNeeded = true; };
+    controls.addEventListener("change", requestRender);
+    invalidateRef.current = requestRender;
+
     const animate = () => {
       frameRef.current = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
+      controls.update(); // must run every frame for damping (fires "change" while settling)
+      if (renderNeeded) {
+        renderer.render(scene, camera);
+        renderNeeded = false;
+      }
     };
     animate();
 
@@ -289,12 +306,12 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   ) => {
     if (!sceneRef.current || !cameraRef.current || !controlsRef.current) return;
 
-    geo.computeBoundingBox();
-    geo.center();  // XZ centered, but then lift so bottom face sits on Y=0 (build plate)
-    geo.computeBoundingBox();
+    geo.center();  // XZ centered (internally calls computeBoundingBox)
+    geo.computeBoundingBox(); // recompute after centering
     const liftY = -geo.boundingBox!.min.y;
     geo.translate(0, liftY, 0);
-    geo.computeVertexNormals();
+    geo.computeBoundingBox(); // final bounds after lift
+    if (!geo.attributes.normal) geo.computeVertexNormals();
 
     if (meshRef.current) {
       sceneRef.current.remove(meshRef.current);
@@ -357,10 +374,12 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     });
 
     rebuildPlanes();
+    invalidateRef.current();
   }, [onMeshLoaded, rebuildPlanes]);
 
   const handleFile = useCallback((file: File) => {
     onLoadStart?.();
+    onFileSelected?.(file);
     const ext = file.name.split(".").pop()?.toLowerCase();
     const mb  = parseFloat((file.size / 1024 / 1024).toFixed(2));
 
@@ -397,7 +416,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         }
       });
     }
-  }, [loadGeometry, onLoadStart]);
+  }, [loadGeometry, onLoadStart, onFileSelected]);
 
   // ── Imperative handle ───────────────────────────────────────────────────────
 
@@ -463,41 +482,42 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   // Track triangle-to-part mapping for raycasting into the merged batch mesh.
   const partTriRangesRef = useRef<{ start: number; count: number }[]>([]);
 
+  // ── Effect 1: Build batch geometry (only when parts or explode change) ──
   useEffect(() => {
     if (!sceneRef.current) return;
 
-    // Remove old split meshes
+    // Remove old batch mesh (not selection overlay — that's managed separately)
     splitMeshesRef.current.forEach((m) => {
       sceneRef.current!.remove(m);
       m.geometry.dispose();
       (Array.isArray(m.material) ? m.material : [m.material]).forEach((mt) => mt.dispose());
     });
     splitMeshesRef.current = [];
+    batchMatRef.current = null;
     partTriRangesRef.current = [];
 
     if (!splitParts || splitParts.length === 0) {
       if (meshRef.current) meshRef.current.visible = true;
+      splitCentersRef.current = { centers: [], overall: new THREE.Vector3() };
       return;
     }
 
     // Hide original mesh
     if (meshRef.current) meshRef.current.visible = false;
 
-    // Compute per-part centers for explode direction
+    // Compute per-part centers for explode direction (cached for selection effect)
     const centers: THREE.Vector3[] = splitParts.map((part) => {
       const bb = new THREE.Box3().setFromBufferAttribute(
         part.geometry.attributes.position as THREE.BufferAttribute
       );
       return bb.getCenter(new THREE.Vector3());
     });
-
     const overallCenter = centers
       .reduce((acc, c) => acc.add(c), new THREE.Vector3())
       .divideScalar(centers.length);
+    splitCentersRef.current = { centers, overall: overallCenter };
 
-    // ── Batched rendering: merge all parts into ≤2 draw calls ────────────
-    // Each part gets vertex colors baked in.  Explode offsets are baked into
-    // vertex positions.  This reduces 90+ draw calls to just 1–2.
+    // ── Batched rendering: merge all parts into 1 draw call ──────────────
     const batchGeos: THREE.BufferGeometry[] = [];
     const triRanges: { start: number; count: number }[] = [];
     let triOffset = 0;
@@ -506,12 +526,12 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       const part = splitParts[i];
       const color = new THREE.Color(PART_COLORS[i % PART_COLORS.length]);
 
-      // Clone so we can add vertex colors + bake explode without mutating source
-      const g = part.geometry.toNonIndexed(); // flatten for vertex colors
+      // Clone geometry, keeping index buffer (no toNonIndexed — 3× fewer vertices for GPU)
+      const g = part.geometry.clone();
       const posAttr = g.attributes.position as THREE.BufferAttribute;
       const vertCount = posAttr.count;
 
-      // Bake per-vertex color
+      // Bake per-vertex color (works on indexed geometry — each vertex belongs to one part)
       const colors = new Float32Array(vertCount * 3);
       for (let v = 0; v < vertCount; v++) {
         colors[v * 3]     = color.r;
@@ -533,20 +553,17 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         }
       }
 
-      const triCount = vertCount / 3;
+      const triCount = g.index ? Math.floor(g.index.count / 3) : Math.floor(vertCount / 3);
       triRanges.push({ start: triOffset, count: triCount });
       triOffset += triCount;
-
       batchGeos.push(g);
     }
 
     partTriRangesRef.current = triRanges;
 
-    // Merge all parts into a single geometry → 1 draw call
     if (batchGeos.length > 0) {
       const { mergeGeometries } = require("three/examples/jsm/utils/BufferGeometryUtils.js");
       const merged = mergeGeometries(batchGeos, false);
-      // Dispose individual clones
       batchGeos.forEach((g) => g.dispose());
 
       if (merged) {
@@ -558,44 +575,80 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
           opacity: ghostMode ? 0.28 : 1.0,
           wireframe,
         });
+        batchMatRef.current = batchMat;
         const batchMesh = new THREE.Mesh(merged, batchMat);
         batchMesh.userData.isBatch = true;
         sceneRef.current!.add(batchMesh);
         splitMeshesRef.current.push(batchMesh);
       }
     }
-
-    // If a part is selected, add a highlight overlay mesh on top
-    if (selectedPartIndex != null && selectedPartIndex >= 0 && selectedPartIndex < splitParts.length) {
-      const selPart = splitParts[selectedPartIndex];
-      const selGeo = selPart.geometry.clone();
-
-      if (explodeAmount > 0) {
-        const dir = centers[selectedPartIndex].clone().sub(overallCenter);
-        if (dir.length() < 0.001) dir.set(0, 1, 0);
-        dir.normalize().multiplyScalar(explodeAmount * 60);
-        const posArr = (selGeo.attributes.position as THREE.BufferAttribute).array as Float32Array;
-        for (let v = 0; v < posArr.length; v += 3) {
-          posArr[v] += dir.x; posArr[v + 1] += dir.y; posArr[v + 2] += dir.z;
-        }
-      }
-
-      const selMat = new THREE.MeshStandardMaterial({
-        color: PART_COLORS[selectedPartIndex % PART_COLORS.length],
-        roughness: 0.5,
-        metalness: 0.1,
-        emissive: new THREE.Color(0x1a2a3a),
-        emissiveIntensity: 1.0,
-        wireframe,
-      });
-      const selMesh = new THREE.Mesh(selGeo, selMat);
-      selMesh.userData.partIndex = selectedPartIndex;
-      selMesh.renderOrder = 1; // draw on top of batch
-      sceneRef.current!.add(selMesh);
-      splitMeshesRef.current.push(selMesh);
-    }
+    invalidateRef.current();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [splitParts, explodeAmount, ghostMode, wireframe, selectedPartIndex]);
+  }, [splitParts, explodeAmount]);
+
+  // ── Effect 2: Update material props in-place (no geometry rebuild) ─────
+  useEffect(() => {
+    const mat = batchMatRef.current;
+    if (!mat) return;
+    mat.wireframe = wireframe;
+    mat.transparent = ghostMode;
+    mat.opacity = ghostMode ? 0.28 : 1.0;
+    mat.needsUpdate = true;
+    // Also update selection overlay material
+    if (selMeshRef.current) {
+      const selMat = selMeshRef.current.material as THREE.MeshStandardMaterial;
+      selMat.wireframe = wireframe;
+      selMat.needsUpdate = true;
+    }
+    invalidateRef.current();
+  }, [ghostMode, wireframe]);
+
+  // ── Effect 3: Selection highlight overlay ──────────────────────────────
+  useEffect(() => {
+    if (!sceneRef.current) return;
+
+    // Remove old selection mesh
+    if (selMeshRef.current) {
+      sceneRef.current.remove(selMeshRef.current);
+      selMeshRef.current.geometry.dispose();
+      (selMeshRef.current.material as THREE.Material).dispose();
+      selMeshRef.current = null;
+    }
+
+    if (selectedPartIndex == null || selectedPartIndex < 0 || !splitParts || selectedPartIndex >= splitParts.length) return;
+
+    const { centers, overall: overallCenter } = splitCentersRef.current;
+    if (centers.length === 0) return;
+
+    const selPart = splitParts[selectedPartIndex];
+    const selGeo = selPart.geometry.clone();
+
+    if (explodeAmount > 0) {
+      const dir = centers[selectedPartIndex].clone().sub(overallCenter);
+      if (dir.length() < 0.001) dir.set(0, 1, 0);
+      dir.normalize().multiplyScalar(explodeAmount * 60);
+      const posArr = (selGeo.attributes.position as THREE.BufferAttribute).array as Float32Array;
+      for (let v = 0; v < posArr.length; v += 3) {
+        posArr[v] += dir.x; posArr[v + 1] += dir.y; posArr[v + 2] += dir.z;
+      }
+    }
+
+    const selMat = new THREE.MeshStandardMaterial({
+      color: PART_COLORS[selectedPartIndex % PART_COLORS.length],
+      roughness: 0.5,
+      metalness: 0.1,
+      emissive: new THREE.Color(0x1a2a3a),
+      emissiveIntensity: 1.0,
+      wireframe,
+    });
+    const selMesh = new THREE.Mesh(selGeo, selMat);
+    selMesh.userData.partIndex = selectedPartIndex;
+    selMesh.renderOrder = 1;
+    sceneRef.current.add(selMesh);
+    selMeshRef.current = selMesh;
+    invalidateRef.current();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPartIndex, splitParts, explodeAmount]);
 
   // ── Part selection raycasting ───────────────────────────────────────────────
 
@@ -660,7 +713,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
           </div>
           <input
             type="file"
-            accept=".stl,.obj,.3mf,model/stl,model/obj,model/3mf,application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
+            accept="*/*"
             className="sr-only"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
           />
@@ -668,7 +721,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       )}
 
       <div className="absolute bottom-3 left-3 text-[10px] font-mono text-muted-foreground/40 select-none pointer-events-none">
-        SPLIT3R VIEWPORT
+        KARASLICE VIEWPORT
       </div>
     </div>
   );

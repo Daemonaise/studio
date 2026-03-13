@@ -24,6 +24,7 @@ import type { MeshInfo, CutPlane, TransformState, SplitPartVisual, ViewportHandl
 import type { SplitPart } from "./manifold-engine";
 import printerProfiles from "@/app/data/printer-profiles.json";
 import { cn } from "@/lib/utils";
+import { uploadToKaraslice, batchUploadJob, type BatchUploadEntry } from "@/app/actions/storage-actions";
 
 // Only load Three.js viewport client-side
 const Viewport = dynamic(
@@ -147,6 +148,8 @@ export function KarasliceApp() {
   const router = useRouter();
   const viewportRef = useRef<ViewportHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pendingUploadFile = useRef<File | null>(null);
+  const currentJobId = useRef<string>("");
 
   // ── Core state ──────────────────────────────────────────────────────────────
   const [meshInfo, setMeshInfo] = useState<MeshInfo | null>(null);
@@ -172,6 +175,7 @@ export function KarasliceApp() {
   const [reconstructMessage, setReconstructMessage] = useState("");
   const [reconstructResolutionMM, setReconstructResolutionMM] = useState(5);
   const [reconstructResult, setReconstructResult] = useState<import("./voxel-reconstruct").VoxelReconstructResult | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
 
   // ── Post-processing (smoothing + simplification) ────────────────────────────
   const [smoothingIterations, setSmoothingIterations] = useState(3);
@@ -220,7 +224,7 @@ export function KarasliceApp() {
 
   // ── Sections ────────────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState({
-    fileInfo: true, repair: true, analysis: true,
+    fileInfo: true, repair: true, basicRepair: false, analysis: true,
     voxelReconstruct: false,
     scale: true, rotate: true,
     printer: true, cutPlanes: true, tenon: false,
@@ -264,6 +268,21 @@ export function KarasliceApp() {
       const floor = minSafeResolution(info.boundingBox);
       setReconstructResolutionMM(Math.round(Math.max(auto, floor) * 2) / 2);
     });
+    // Generate a job ID for this session — groups original + all exports
+    const jobTs = new Date().toISOString().replace(/[T:\-]/g, "").slice(0, 14);
+    const jobRand = Math.random().toString(36).slice(2, 6);
+    currentJobId.current = `${jobTs}_${jobRand}`;
+
+    // Upload original file to Cloud Storage (fire-and-forget)
+    const file = pendingUploadFile.current;
+    if (file) {
+      pendingUploadFile.current = null;
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("subfolder", "original");
+      fd.append("jobId", currentJobId.current);
+      uploadToKaraslice(fd).catch(() => {}); // silent — don't block user
+    }
   }, []);
 
   // ── Analysis ────────────────────────────────────────────────────────────────
@@ -310,17 +329,26 @@ export function KarasliceApp() {
 
       setAiAnalysis(aiResult);
 
-      // Auto-select mode, open the relevant repair section, and apply repair plan params
-      if (aiResult.repairStrategy === "shell_voxel") setReconstructMode("shell_voxel");
-      else if (aiResult.repairStrategy === "solid_voxel") setReconstructMode("solid_voxel");
-      else if (aiResult.repairStrategy === "point_cloud") setReconstructMode("point_cloud");
-
-      // Auto-open the recommended repair section (only when there are real defects)
+      // Auto-select mode, open the relevant repair section, and apply repair plan params.
+      // Smart routing: override AI recommendation for near-perfect meshes so users
+      // see basic repair first instead of always defaulting to complex reconstruction.
       const hasDefects = basicResult.openEdgeCount > 0 || basicResult.nonManifoldEdgeCount > 0;
-      if (aiResult.repairStrategy === "solid_voxel" || aiResult.repairStrategy === "shell_voxel" || aiResult.repairStrategy === "point_cloud") {
-        setOpenSections((s) => ({ ...s, voxelReconstruct: true }));
-      } else if (aiResult.repairStrategy === "topology_repair" && hasDefects) {
+      const approxTotalEdges = basicResult.triangleCount * 1.5; // ~3 edges per tri, each shared by 2
+      const openEdgePct = approxTotalEdges > 0 ? (basicResult.openEdgeCount / approxTotalEdges) * 100 : 0;
+      const isNearPerfect = openEdgePct < 1 && basicResult.nonManifoldEdgeCount < 5;
+
+      if (!hasDefects) {
+        // Mesh is clean — no repair section opened
+        toast({ title: "Mesh is clean", description: "No defects detected — ready for slicing." });
+      } else if (isNearPerfect || aiResult.repairStrategy === "topology_repair") {
+        // Minor defects — route to basic topology repair, even if AI suggested complex
         setOpenSections((s) => ({ ...s, repair: true }));
+      } else {
+        // Significant defects — use AI-recommended complex reconstruction
+        if (aiResult.repairStrategy === "shell_voxel") setReconstructMode("shell_voxel");
+        else if (aiResult.repairStrategy === "solid_voxel") setReconstructMode("solid_voxel");
+        else if (aiResult.repairStrategy === "point_cloud") setReconstructMode("point_cloud");
+        setOpenSections((s) => ({ ...s, voxelReconstruct: true }));
       }
 
       if (aiResult.repairPlan?.params.pointCloud) {
@@ -424,102 +452,208 @@ export function KarasliceApp() {
     }
   };
 
-  // ── Voxel Reconstruction ──────────────────────────────────────────────────────
+  // ── Voxel Reconstruction (with auto-retry) ───────────────────────────────────
+
+  const MAX_RECONSTRUCT_RETRIES = 3;
+
+  /** Run a single reconstruction attempt and return result. */
+  const runSingleReconstruction = async (
+    geo: import("three").BufferGeometry,
+    currentMode: "solid_voxel" | "shell_voxel" | "point_cloud",
+    params: {
+      voxel?: import("@/app/actions/mesh-analysis-actions").VoxelRepairParams | null;
+      pointCloud?: import("@/app/actions/mesh-analysis-actions").PointCloudRepairParams | null;
+      postProcess?: import("@/app/actions/mesh-analysis-actions").PostProcessParams | null;
+    },
+    inputTriCount: number,
+  ): Promise<import("./voxel-reconstruct").VoxelReconstructResult> => {
+    let result: import("./voxel-reconstruct").VoxelReconstructResult;
+
+    if (currentMode === "point_cloud") {
+      const pc = params.pointCloud;
+      const pp = params.postProcess;
+      const useResolution = pc?.resolution ?? reconstructResolutionMM;
+      const useSmoothing = pp?.smoothingIterations ?? pc?.smoothingIterations ?? smoothingIterations;
+      const useSimplifyTarget = simplifyEnabled
+        ? (pp?.simplifyTarget ?? pc?.simplifyTarget ?? Math.round(inputTriCount * 1.5))
+        : 0;
+      const useLambda = pp?.smoothingLambda ?? pc?.smoothingLambda ?? 0.5;
+      const useBoundaryPenalty = pp?.boundaryPenalty ?? pc?.boundaryPenalty ?? 1.0;
+
+      const { pointCloudReconstruct } = await import("./poisson-reconstruct");
+      result = await pointCloudReconstruct(geo, (_step, _total, msg) => {
+        setReconstructMessage(msg);
+      }, {
+        resolution: useResolution,
+        radiusMultiplier: pc?.radiusMultiplier ?? 2,
+        sdfSharpness: pc?.sdfSharpness,
+        gapBridgingFactor: pc?.gapBridgingFactor,
+      });
+
+      if (useSmoothing > 0 || useSimplifyTarget > 0) {
+        const { postProcessVoxelOutput } = await import("./voxel-reconstruct");
+        setReconstructMessage("Post-processing…");
+        const processed = await postProcessVoxelOutput(
+          result.geometry,
+          { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget, smoothingLambda: useLambda, boundaryPenalty: useBoundaryPenalty },
+          (_step, _total, msg) => setReconstructMessage(msg),
+        );
+        const finalTris = processed.index
+          ? Math.floor(processed.index.count / 3)
+          : Math.floor((processed.attributes.position.array as Float32Array).length / 9);
+        result.geometry = processed;
+        result.outputTriangles = finalTris;
+      }
+    } else {
+      const vp = params.voxel;
+      const pp = params.postProcess;
+      const useResolution = Math.max(vp?.resolution ?? reconstructResolutionMM, minSafeRes);
+      const useDilation = vp?.dilationVoxels;
+      const useSmoothing = pp?.smoothingIterations ?? vp?.smoothingIterations ?? smoothingIterations;
+      const useSimplifyTarget = simplifyEnabled
+        ? (pp?.simplifyTarget ?? vp?.simplifyTarget ?? Math.round(inputTriCount * 0.8))
+        : 0;
+      const useLambda = pp?.smoothingLambda ?? vp?.smoothingLambda ?? 0.5;
+      const useBoundaryPenalty = pp?.boundaryPenalty ?? vp?.boundaryPenalty ?? 1.0;
+
+      const { voxelReconstruct, shellVoxelReconstruct, postProcessVoxelOutput } = await import("./voxel-reconstruct");
+      const fn = currentMode === "shell_voxel" ? shellVoxelReconstruct : voxelReconstruct;
+      result = await fn(geo, (_step, _total, msg) => {
+        setReconstructMessage(msg);
+      }, useResolution, ...(currentMode === "shell_voxel" && useDilation !== undefined ? [useDilation] : []));
+
+      if (useSmoothing > 0 || useSimplifyTarget > 0) {
+        setReconstructMessage("Post-processing…");
+        const processed = await postProcessVoxelOutput(
+          result.geometry,
+          { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget, smoothingLambda: useLambda, boundaryPenalty: useBoundaryPenalty },
+          (_step, _total, msg) => setReconstructMessage(msg),
+        );
+        const finalTris = processed.index
+          ? Math.floor(processed.index.count / 3)
+          : Math.floor((processed.attributes.position.array as Float32Array).length / 9);
+        result.geometry = processed;
+        result.outputTriangles = finalTris;
+      }
+    }
+
+    return result;
+  };
+
   const handleVoxelReconstruct = async () => {
     if (!viewportRef.current || !meshInfo) return;
     setReconstructing(true);
     setReconstructResult(null);
-    setReconstructMessage("Starting voxel reconstruction…");
+    setRetryAttempt(0);
+    setReconstructMessage("Starting reconstruction…");
     try {
       const geo = viewportRef.current.getRawGeometry();
       if (!geo) return;
 
-      // Use AI repair plan params if available, otherwise use UI controls
       const plan = aiAnalysis?.repairPlan;
-      // Clamp AI resolution to grid safety floor (minSafeRes)
-      // Determine pipeline mode
-      const mode = plan?.pipeline === "shell_voxel" || plan?.pipeline === "solid_voxel" || plan?.pipeline === "point_cloud"
-        ? plan.pipeline : reconstructMode;
+      let currentMode: "solid_voxel" | "shell_voxel" | "point_cloud" =
+        plan?.pipeline === "shell_voxel" || plan?.pipeline === "solid_voxel" || plan?.pipeline === "point_cloud"
+          ? plan.pipeline : reconstructMode;
 
       const inputTriCount = meshInfo.triangleCount;
-      let result: import("./voxel-reconstruct").VoxelReconstructResult;
 
-      if (mode === "point_cloud") {
-        // ── Point cloud / MLS reconstruction ──────────────────────────────
-        const pcParams = plan?.params.pointCloud;
-        const useResolution = pcParams?.resolution ?? reconstructResolutionMM;
-        const useSmoothing = pcParams?.smoothingIterations ?? smoothingIterations;
-        const useSimplifyTarget = simplifyEnabled
-          ? (pcParams?.simplifyTarget ?? Math.round(inputTriCount * 1.5))
-          : 0;
-        const useRadiusMult = pcParams?.radiusMultiplier ?? 2;
+      // Build initial params from AI plan + UI controls
+      let currentParams: {
+        voxel?: import("@/app/actions/mesh-analysis-actions").VoxelRepairParams | null;
+        pointCloud?: import("@/app/actions/mesh-analysis-actions").PointCloudRepairParams | null;
+        postProcess?: import("@/app/actions/mesh-analysis-actions").PostProcessParams | null;
+      } = {
+        voxel: plan?.params.voxel ?? null,
+        pointCloud: plan?.params.pointCloud ?? null,
+        postProcess: plan?.params.postProcess ?? null,
+      };
 
-        const { pointCloudReconstruct } = await import("./poisson-reconstruct");
-        result = await pointCloudReconstruct(geo, (_step, _total, msg) => {
-          setReconstructMessage(msg);
-        }, { resolution: useResolution, radiusMultiplier: useRadiusMult });
+      let result: import("./voxel-reconstruct").VoxelReconstructResult | null = null;
+      let lastValidation: import("./validate-reconstruction").ValidationResult | null = null;
 
-        // Post-processing (smoothing + simplification)
-        if (useSmoothing > 0 || useSimplifyTarget > 0) {
-          const { postProcessVoxelOutput } = await import("./voxel-reconstruct");
-          setReconstructMessage("Post-processing…");
-          const processed = await postProcessVoxelOutput(
-            result.geometry,
-            { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget },
-            (_step, _total, msg) => setReconstructMessage(msg),
-          );
-          const finalTris = Math.floor((processed.attributes.position.array as Float32Array).length / 9);
-          result.geometry = processed;
-          result.outputTriangles = finalTris;
+      for (let attempt = 1; attempt <= MAX_RECONSTRUCT_RETRIES + 1; attempt++) {
+        if (attempt > 1) {
+          setRetryAttempt(attempt - 1);
+          setReconstructMessage(`Retry ${attempt - 1}/${MAX_RECONSTRUCT_RETRIES}: running with adjusted parameters…`);
         }
-      } else {
-        // ── Voxel reconstruction (solid or shell) ─────────────────────────
-        const useResolution = Math.max(
-          plan?.params.voxel?.resolution ?? reconstructResolutionMM,
-          minSafeRes,
-        );
-        const useDilation = plan?.params.voxel?.dilationVoxels;
-        const useSmoothing = plan?.params.voxel?.smoothingIterations ?? smoothingIterations;
-        const useSimplifyTarget = simplifyEnabled
-          ? (plan?.params.voxel?.simplifyTarget ?? Math.round(inputTriCount * 0.8))
-          : 0;
 
-        const { voxelReconstruct, shellVoxelReconstruct, postProcessVoxelOutput } = await import("./voxel-reconstruct");
+        // Run reconstruction + post-processing
+        result = await runSingleReconstruction(geo, currentMode, currentParams, inputTriCount);
 
-        const fn = mode === "shell_voxel" ? shellVoxelReconstruct : voxelReconstruct;
-        result = await fn(geo, (_step, _total, msg) => {
-          setReconstructMessage(msg);
-        }, useResolution, ...(mode === "shell_voxel" && useDilation !== undefined ? [useDilation] : []));
+        // Validate output
+        setReconstructMessage("Validating reconstruction output…");
+        const { validateReconstructionOutput } = await import("./validate-reconstruction");
+        lastValidation = validateReconstructionOutput(result.geometry);
 
-        // Post-processing (smoothing + simplification)
-        if (useSmoothing > 0 || useSimplifyTarget > 0) {
-          setReconstructMessage("Post-processing…");
-          const processed = await postProcessVoxelOutput(
-            result.geometry,
-            { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget },
-            (_step, _total, msg) => setReconstructMessage(msg),
-          );
-          const finalTris = Math.floor((processed.attributes.position.array as Float32Array).length / 9);
-          result.geometry = processed;
-          result.outputTriangles = finalTris;
+        if (lastValidation.passed) break; // Success!
+
+        if (attempt > MAX_RECONSTRUCT_RETRIES) {
+          // Accept with warnings — show what failed
+          const warnings = lastValidation.failures.map((f) => f.detail).join("; ");
+          toast({
+            title: "Reconstruction completed with warnings",
+            description: warnings,
+            variant: "destructive",
+          });
+          break;
         }
+
+        // Diagnose failure and get adjusted params from AI
+        setReconstructMessage(`Attempt ${attempt} had issues — consulting AI for adjustments…`);
+        const { diagnoseReconstructionFailure } = await import("@/app/actions/mesh-analysis-actions");
+        const recommendation = await diagnoseReconstructionFailure({
+          pipeline: currentMode,
+          attempt,
+          maxAttempts: MAX_RECONSTRUCT_RETRIES + 1,
+          validationFailures: lastValidation.failures,
+          currentParams,
+          inputStats: {
+            triangles: meshInfo.triangleCount,
+            vertices: meshInfo.triangleCount * 3,
+            boundingBox: meshInfo.boundingBox,
+          },
+          outputStats: {
+            triangles: lastValidation.metrics.triangleCount,
+            vertices: lastValidation.metrics.vertexCount,
+            nanVertices: lastValidation.metrics.nanVertices,
+            degenerateTriangles: lastValidation.metrics.degenerateTriangles,
+            nonManifoldEdges: lastValidation.metrics.nonManifoldEdges,
+            boundaryEdges: lastValidation.metrics.boundaryEdges,
+          },
+        });
+
+        // Apply adjusted params for next attempt
+        currentParams = recommendation.adjustedParams;
+        if (recommendation.switchPipeline) {
+          currentMode = recommendation.switchPipeline;
+        }
+
+        // Free memory from failed attempt
+        result.geometry.dispose();
+        result = null;
       }
 
-      const modeLabel = mode === "point_cloud" ? "Point cloud" : mode === "shell_voxel" ? "Shell" : "Solid";
+      if (!result) return;
+
+      const modeLabel = currentMode === "point_cloud" ? "Point cloud" : currentMode === "shell_voxel" ? "Shell" : "Solid";
       setReconstructResult(result);
       viewportRef.current.loadRepairedGeometry(result.geometry, meshInfo.fileName);
-      setAnalysisResult(null); // invalidate stale analysis
-      setAiAnalysis(null);     // analysis refers to old geometry
-      toast({
-        title: `${modeLabel} reconstruction complete`,
-        description: `${result.outputTriangles.toLocaleString()} triangles · ${result.resolution} mm resolution · mesh is watertight`,
-      });
+      setAnalysisResult(null);
+      setAiAnalysis(null);
+
+      if (lastValidation?.passed) {
+        toast({
+          title: `${modeLabel} reconstruction complete`,
+          description: `${result.outputTriangles.toLocaleString()} triangles · ${result.resolution} mm resolution · mesh is watertight`,
+        });
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       toast({ title: "Reconstruction failed", description: msg, variant: "destructive" });
     } finally {
       setReconstructing(false);
       setReconstructMessage("");
+      setRetryAttempt(0);
     }
   };
 
@@ -615,19 +749,42 @@ export function KarasliceApp() {
   // ── Export ────────────────────────────────────────────────────────────────────
   const getBase = () => meshInfo?.fileName.replace(/\.(stl|obj|3mf)$/i, "") ?? "model";
 
+  /** Build a descriptive filename for a part: base_part03_120x80x45mm_12450tri.stl */
+  const partFileName = (base: string, i: number, ext: string) => {
+    const part = splitParts[i];
+    const padded = String(i + 1).padStart(String(splitParts.length).length, "0");
+    const dims = `${Math.round(part.bbox.x)}x${Math.round(part.bbox.y)}x${Math.round(part.bbox.z)}mm`;
+    const tris = `${Math.round(part.triangleCount)}tri`;
+    return `${base}_part${padded}_${dims}_${tris}.${ext}`;
+  };
+
   const handleDownloadPart = async (i: number) => {
     const base = getBase();
+    const name = partFileName(base, i, exportFormat);
     if (exportFormat === "obj") {
       const { geometryToOBJString, downloadText } = await import("./stl-utils");
-      downloadText(
-        geometryToOBJString(splitParts[i].geometry, `${base}_part${i + 1}`),
-        `${base}_part${i + 1}.obj`,
-        "model/obj"
-      );
+      const objStr = geometryToOBJString(splitParts[i].geometry, `${base}_part${i + 1}`);
+      downloadText(objStr, name, "model/obj");
     } else {
       const { geometryToSTLBuffer, downloadBlob } = await import("./stl-utils");
-      downloadBlob(geometryToSTLBuffer(splitParts[i].geometry), `${base}_part${i + 1}.stl`);
+      const buf = geometryToSTLBuffer(splitParts[i].geometry);
+      downloadBlob(buf, name);
     }
+    // Single-part upload (fire-and-forget)
+    const fd = new FormData();
+    const part = splitParts[i];
+    if (exportFormat === "obj") {
+      const { geometryToOBJString } = await import("./stl-utils");
+      const objStr = geometryToOBJString(part.geometry, `${base}_part${i + 1}`);
+      fd.append("file", new File([objStr], name, { type: "model/obj" }));
+    } else {
+      const { geometryToSTLBuffer } = await import("./stl-utils");
+      const buf = geometryToSTLBuffer(part.geometry);
+      fd.append("file", new File([buf], name, { type: "model/stl" }));
+    }
+    fd.append("subfolder", "parts");
+    fd.append("jobId", currentJobId.current);
+    uploadToKaraslice(fd).catch(() => {});
   };
 
   const handleDownloadZip = async () => {
@@ -635,19 +792,56 @@ export function KarasliceApp() {
     const JSZip = (await import("jszip")).default;
     const zip   = new JSZip();
     const base  = getBase();
+    const mime  = exportFormat === "obj" ? "model/obj" : "model/stl";
+
+    // Build ZIP + batch upload entries simultaneously
+    const batchEntries: BatchUploadEntry[] = [];
     for (let i = 0; i < splitParts.length; i++) {
+      const name = partFileName(base, i, exportFormat);
+      const part = splitParts[i];
+      let bytes: Uint8Array;
       if (exportFormat === "obj") {
-        zip.file(`${base}_part${i + 1}.obj`, geometryToOBJString(splitParts[i].geometry, `${base}_part${i + 1}`));
+        const objStr = geometryToOBJString(part.geometry, `${base}_part${i + 1}`);
+        zip.file(name, objStr);
+        bytes = new TextEncoder().encode(objStr);
       } else {
-        zip.file(`${base}_part${i + 1}.stl`, geometryToSTLBuffer(splitParts[i].geometry));
+        const buf = geometryToSTLBuffer(part.geometry);
+        zip.file(name, buf);
+        bytes = new Uint8Array(buf);
       }
+      // Convert to base64 for batch upload
+      let binary = "";
+      for (let b = 0; b < bytes.length; b++) binary += String.fromCharCode(bytes[b]);
+      batchEntries.push({
+        fileName: name,
+        base64: btoa(binary),
+        mimeType: mime,
+        partMeta: {
+          partIndex: i,
+          label: part.label,
+          triangleCount: part.triangleCount,
+          volumeMM3: part.volumeMM3,
+          bboxX: part.bbox.x,
+          bboxY: part.bbox.y,
+          bboxZ: part.bbox.z,
+        },
+      });
     }
+
+    // Download ZIP
     const blob = await zip.generateAsync({ type: "blob" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href = url; a.download = `${base}_karaslice.zip`; a.click();
     URL.revokeObjectURL(url);
     toast({ title: "ZIP downloaded", description: `${splitParts.length} ${exportFormat.toUpperCase()} files.` });
+
+    // Batch upload all parts to storage (fire-and-forget, throttled server-side)
+    batchUploadJob(null, batchEntries, currentJobId.current).then((result) => {
+      if (result.failed > 0) {
+        console.warn(`Storage: ${result.uploaded}/${result.uploaded + result.failed} parts uploaded`, result.errors);
+      }
+    }).catch(() => {});
   };
 
   const handleSendToQuote = async () => {
@@ -656,7 +850,8 @@ export function KarasliceApp() {
     const base = getBase();
     karasliceTransfer.set(splitParts.map((part, i) => {
       const buf  = geometryToSTLBuffer(part.geometry);
-      const file = new File([buf], `${base}_part${i + 1}.stl`, { type: "model/stl" });
+      const name = partFileName(base, i, "stl");
+      const file = new File([buf], name, { type: "model/stl" });
       return { name: file.name, file, bbox: part.bbox, volumeMM3: part.volumeMM3, triangleCount: part.triangleCount };
     }));
     // router.push keeps the JS context alive so the module-level store persists
@@ -721,11 +916,12 @@ export function KarasliceApp() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".stl,.obj,.3mf,model/stl,model/obj,model/3mf,application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
+        accept="*/*"
         className="sr-only"
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (!file) return;
+          pendingUploadFile.current = file;
           setFileLoading(true);
           window.dispatchEvent(new CustomEvent("karaslice:load-file", { detail: file }));
           e.target.value = "";
@@ -958,6 +1154,34 @@ export function KarasliceApp() {
                             <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
                           </p>
                         ))}
+                        {/* Model identification */}
+                        {aiAnalysis.modelId && (
+                          <div className="rounded bg-muted/30 px-2 py-1.5 space-y-0.5">
+                            <p className="text-[10px] font-semibold text-foreground/80">
+                              Identified: <span className="text-accent">{aiAnalysis.modelId.description}</span>
+                            </p>
+                            {aiAnalysis.modelId.expectedFeatures.length > 0 && (
+                              <p className="text-[10px] text-muted-foreground">
+                                Features: {aiAnalysis.modelId.expectedFeatures.join(", ")}
+                              </p>
+                            )}
+                            <p className="text-[10px] text-muted-foreground">
+                              {aiAnalysis.modelId.geometryClass} · {aiAnalysis.modelId.estimatedWallCharacter.replace(/_/g, " ")}
+                              {aiAnalysis.modelId.hasIntentionalOpenings && " · has intentional openings"}
+                            </p>
+                          </div>
+                        )}
+                        {/* Repair guidance */}
+                        {aiAnalysis.repairGuidance && (
+                          <div className="space-y-0.5">
+                            <p className="text-[10px] text-muted-foreground italic">{aiAnalysis.repairGuidance.strategyRationale}</p>
+                            {aiAnalysis.repairGuidance.risks.map((r, i) => (
+                              <p key={i} className="text-[10px] text-yellow-400/80 flex gap-1">
+                                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{r}
+                              </p>
+                            ))}
+                          </div>
+                        )}
                         {aiAnalysis.heuristic && !aiAnalysis.error && (
                           <p className="text-[10px] text-muted-foreground">
                             Heuristic analysis — add ANTHROPIC_API_KEY for AI classification.
@@ -986,6 +1210,61 @@ export function KarasliceApp() {
               {meshInfo && (
                 <>
                   <Separator className="my-1" />
+
+                  {/* BASIC MESH REPAIR — always available */}
+                  <SectionHeader icon={Wrench} label="Basic Mesh Repair" open={openSections.basicRepair} onToggle={() => toggleSection("basicRepair")} />
+                  {openSections.basicRepair && (
+                    <div className="px-3 pb-3 space-y-2">
+                      <p className="text-[10px] text-muted-foreground">
+                        Fix topology issues: degenerate triangles, duplicate faces, inconsistent winding, inverted normals, and small holes.
+                      </p>
+                      <Button
+                        size="sm" className="w-full gap-2"
+                        style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                        disabled={repairing || reconstructing}
+                        onClick={handleRepair}
+                      >
+                        {repairing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                        {repairing ? repairMessage || "Repairing…" : "Repair Mesh"}
+                      </Button>
+
+                      {repairResult && (
+                        <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
+                          <div className="flex items-center gap-1.5">
+                            {repairResult.isWatertight
+                              ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                              : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
+                            <span className="font-medium">
+                              {repairResult.isWatertight ? "Mesh is watertight" : "Partial repair"}
+                            </span>
+                          </div>
+                          <div className="pl-5 space-y-0.5 text-muted-foreground">
+                            {repairResult.degeneratesRemoved > 0 && (
+                              <p className="text-green-400">Removed {repairResult.degeneratesRemoved} degenerate tri{repairResult.degeneratesRemoved !== 1 ? "s" : ""}</p>
+                            )}
+                            {repairResult.duplicatesRemoved > 0 && (
+                              <p className="text-green-400">Removed {repairResult.duplicatesRemoved} duplicate tri{repairResult.duplicatesRemoved !== 1 ? "s" : ""}</p>
+                            )}
+                            {repairResult.windingFixed > 0 && (
+                              <p className="text-green-400">Fixed winding on {repairResult.windingFixed} tri{repairResult.windingFixed !== 1 ? "s" : ""}</p>
+                            )}
+                            {repairResult.invertedNormalsFixed && (
+                              <p className="text-green-400">Corrected inverted normals</p>
+                            )}
+                            {repairResult.holesFilled > 0 && (
+                              <p className="text-green-400">Filled {repairResult.holesFilled} hole{repairResult.holesFilled !== 1 ? "s" : ""}</p>
+                            )}
+                            {repairResult.weldToleranceMM > 1e-3 && (
+                              <p className="text-muted-foreground">Welded vertices ±{repairResult.weldToleranceMM.toFixed(repairResult.weldToleranceMM < 0.01 ? 4 : 2)} mm</p>
+                            )}
+                            {!repairResult.isWatertight && (
+                              <p className="text-yellow-400">Some issues remain — try reconstruction below</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* TOPOLOGY REPAIR — shown when AI recommends topology_repair AND mesh has defects */}
                   {aiAnalysis?.repairStrategy === "topology_repair" && analysisResult &&
@@ -1182,7 +1461,10 @@ export function KarasliceApp() {
                           {reconstructing && reconstructMessage && (
                             <div className="space-y-1">
                               <Progress value={
-                                reconstructMessage.includes("Simplif") ? 70
+                                reconstructMessage.includes("Validating") ? 90
+                                : reconstructMessage.includes("consulting AI") || reconstructMessage.includes("Consulting") ? 95
+                                : reconstructMessage.includes("Retry") ? 5
+                                : reconstructMessage.includes("Simplif") ? 70
                                 : reconstructMessage.includes("Smooth") ? 85
                                 : reconstructMessage.includes("Extract") || reconstructMessage.includes("Marching") ? 50
                                 : reconstructMessage.includes("Flood") ? 30
@@ -1193,7 +1475,10 @@ export function KarasliceApp() {
                                 : reconstructMessage.includes("Finaliz") ? 95
                                 : 10
                               } className="h-1" />
-                              <p className="text-[10px] text-muted-foreground text-center">{reconstructMessage}</p>
+                              <p className="text-[10px] text-muted-foreground text-center">
+                                {retryAttempt > 0 && <span className="font-semibold text-amber-500">Attempt {retryAttempt + 1}/{MAX_RECONSTRUCT_RETRIES + 1} · </span>}
+                                {reconstructMessage}
+                              </p>
                             </div>
                           )}
 
@@ -1817,6 +2102,7 @@ export function KarasliceApp() {
           ref={viewportRef}
           onMeshLoaded={handleMeshLoaded}
           onLoadStart={() => setFileLoading(true)}
+          onFileSelected={(file) => { pendingUploadFile.current = file; }}
           cutPlanes={cutPlanes}
           printerVolume={effectivePrinter
             ? { x: effectivePrinter.x, y: effectivePrinter.y, z: effectivePrinter.z }

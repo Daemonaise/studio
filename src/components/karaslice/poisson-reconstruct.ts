@@ -21,6 +21,51 @@ async function yieldToUI(): Promise<void> {
   await new Promise<void>((r) => setTimeout(r, 0));
 }
 
+// ─── Ring-buffer queue (O(1) push/shift) ─────────────────────────────────────
+
+class RingQueue {
+  private buf: Int32Array;
+  private head = 0;
+  private tail = 0;
+  private mask: number;
+
+  constructor(capacity: number) {
+    // Round up to next power of 2
+    let n = 1;
+    while (n < capacity) n <<= 1;
+    this.buf = new Int32Array(n);
+    this.mask = n - 1;
+  }
+
+  push(val: number): void {
+    this.buf[this.tail & this.mask] = val;
+    this.tail++;
+  }
+
+  shift(): number {
+    return this.buf[this.head++ & this.mask];
+  }
+
+  get length(): number {
+    return this.tail - this.head;
+  }
+}
+
+// ─── BitArray (1 bit per flag, 8× less memory than Uint8Array) ───────────────
+
+class BitArray {
+  private data: Uint32Array;
+  constructor(size: number) {
+    this.data = new Uint32Array(Math.ceil(size / 32));
+  }
+  get(i: number): boolean {
+    return (this.data[i >>> 5] & (1 << (i & 31))) !== 0;
+  }
+  set(i: number): void {
+    this.data[i >>> 5] |= 1 << (i & 31);
+  }
+}
+
 // ─── Step 1: Extract oriented point cloud ────────────────────────────────────
 
 interface PointCloud {
@@ -32,10 +77,14 @@ interface PointCloud {
 function extractPointCloud(geo: THREE.BufferGeometry): PointCloud {
   const pos = geo.attributes.position.array as Float32Array;
   const triCount = Math.floor(pos.length / 9);
-  const maxPts = triCount;
+  // Centroids (always unique) + deduplicated vertices
+  const maxPts = triCount * 4;
   const points = new Float64Array(maxPts * 3);
   const normals = new Float64Array(maxPts * 3);
   let count = 0;
+
+  // Vertex dedup via quantized position key
+  const vertexMap = new Map<string, number>();
 
   for (let f = 0; f < triCount; f++) {
     const b = f * 9;
@@ -53,15 +102,33 @@ function extractPointCloud(geo: THREE.BufferGeometry): PointCloud {
     if (len < 1e-10) continue; // degenerate
     nx /= len; ny /= len; nz /= len;
 
-    // Centroid
+    // Add centroid (always unique)
     const cx = (p0x + p1x + p2x) / 3;
     const cy = (p0y + p1y + p2y) / 3;
     const cz = (p0z + p1z + p2z) / 3;
-
-    const i = count * 3;
-    points[i] = cx; points[i + 1] = cy; points[i + 2] = cz;
-    normals[i] = nx; normals[i + 1] = ny; normals[i + 2] = nz;
+    let idx = count * 3;
+    points[idx] = cx; points[idx + 1] = cy; points[idx + 2] = cz;
+    normals[idx] = nx; normals[idx + 1] = ny; normals[idx + 2] = nz;
     count++;
+
+    // Add vertices (deduplicated — last-write-wins for normal, orientNormals fixes consistency)
+    const verts = [p0x, p0y, p0z, p1x, p1y, p1z, p2x, p2y, p2z];
+    for (let v = 0; v < 3; v++) {
+      const vx = verts[v * 3], vy = verts[v * 3 + 1], vz = verts[v * 3 + 2];
+      const key = `${(vx * 1000) | 0},${(vy * 1000) | 0},${(vz * 1000) | 0}`;
+      const existing = vertexMap.get(key);
+      if (existing !== undefined) {
+        // Update normal of existing vertex
+        const ei = existing * 3;
+        normals[ei] = nx; normals[ei + 1] = ny; normals[ei + 2] = nz;
+        continue;
+      }
+      vertexMap.set(key, count);
+      idx = count * 3;
+      points[idx] = vx; points[idx + 1] = vy; points[idx + 2] = vz;
+      normals[idx] = nx; normals[idx + 1] = ny; normals[idx + 2] = nz;
+      count++;
+    }
   }
 
   return {
@@ -121,6 +188,133 @@ class SpatialHash {
       }
     }
     return result;
+  }
+}
+
+// ─── Step 2b: Orient normals consistently ────────────────────────────────────
+
+function orientNormals(
+  points: Float64Array,
+  normals: Float64Array,
+  count: number,
+  hash: SpatialHash,
+  radius: number,
+): void {
+  const visited = new Uint8Array(count);
+  const queue = new RingQueue(count);
+
+  // ── Pass 1: Find best seed — point with highest neighbor normal agreement ──
+  let bestSeed = 0;
+  let bestScore = -1;
+  const sampleStep = Math.max(1, Math.floor(count / 1000));
+  for (let i = 0; i < count; i += sampleStep) {
+    const neighbors = hash.queryRadius(
+      points[i * 3], points[i * 3 + 1], points[i * 3 + 2],
+      radius, points,
+    );
+    let agree = 0;
+    const nix = normals[i * 3], niy = normals[i * 3 + 1], niz = normals[i * 3 + 2];
+    for (const j of neighbors) {
+      if (j === i) continue;
+      const dot = nix * normals[j * 3] + niy * normals[j * 3 + 1] + niz * normals[j * 3 + 2];
+      if (dot > 0) agree++;
+    }
+    if (agree > bestScore) {
+      bestScore = agree;
+      bestSeed = i;
+    }
+  }
+
+  // ── Pass 2: BFS from seed, propagating orientation ──
+  queue.push(bestSeed);
+  visited[bestSeed] = 1;
+
+  while (queue.length > 0) {
+    const idx = queue.shift();
+    const nix = normals[idx * 3], niy = normals[idx * 3 + 1], niz = normals[idx * 3 + 2];
+
+    const neighbors = hash.queryRadius(
+      points[idx * 3], points[idx * 3 + 1], points[idx * 3 + 2],
+      radius, points,
+    );
+
+    for (const j of neighbors) {
+      if (visited[j]) continue;
+      visited[j] = 1;
+
+      const dot = nix * normals[j * 3] + niy * normals[j * 3 + 1] + niz * normals[j * 3 + 2];
+      if (dot < 0) {
+        normals[j * 3] = -normals[j * 3];
+        normals[j * 3 + 1] = -normals[j * 3 + 1];
+        normals[j * 3 + 2] = -normals[j * 3 + 2];
+      }
+
+      queue.push(j);
+    }
+  }
+
+  // ── Pass 3: Handle disconnected regions — orient by nearest visited neighbor ──
+  for (let i = 0; i < count; i++) {
+    if (visited[i]) continue;
+    visited[i] = 1;
+
+    const neighbors = hash.queryRadius(
+      points[i * 3], points[i * 3 + 1], points[i * 3 + 2],
+      radius * 2, points,
+    );
+
+    let nearestVisited = -1;
+    let nearestDist = Infinity;
+    for (const j of neighbors) {
+      if (!visited[j] || j === i) continue;
+      const dx = points[i * 3] - points[j * 3];
+      const dy = points[i * 3 + 1] - points[j * 3 + 1];
+      const dz = points[i * 3 + 2] - points[j * 3 + 2];
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < nearestDist) { nearestDist = d; nearestVisited = j; }
+    }
+
+    if (nearestVisited >= 0) {
+      const dot = normals[i * 3] * normals[nearestVisited * 3] +
+        normals[i * 3 + 1] * normals[nearestVisited * 3 + 1] +
+        normals[i * 3 + 2] * normals[nearestVisited * 3 + 2];
+      if (dot < 0) {
+        normals[i * 3] = -normals[i * 3];
+        normals[i * 3 + 1] = -normals[i * 3 + 1];
+        normals[i * 3 + 2] = -normals[i * 3 + 2];
+      }
+    }
+  }
+
+  // ── Pass 4: Global orientation — ensure normals point outward ──
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < count; i++) {
+    cx += points[i * 3]; cy += points[i * 3 + 1]; cz += points[i * 3 + 2];
+  }
+  cx /= count; cy /= count; cz /= count;
+
+  let farthestIdx = 0;
+  let farthestDist = 0;
+  for (let i = 0; i < count; i++) {
+    const dx = points[i * 3] - cx;
+    const dy = points[i * 3 + 1] - cy;
+    const dz = points[i * 3 + 2] - cz;
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d > farthestDist) { farthestDist = d; farthestIdx = i; }
+  }
+
+  const dx = points[farthestIdx * 3] - cx;
+  const dy = points[farthestIdx * 3 + 1] - cy;
+  const dz = points[farthestIdx * 3 + 2] - cz;
+  const dot = dx * normals[farthestIdx * 3] +
+    dy * normals[farthestIdx * 3 + 1] +
+    dz * normals[farthestIdx * 3 + 2];
+
+  if (dot < 0) {
+    // All normals pointing inward — flip all
+    for (let i = 0; i < count * 3; i++) {
+      normals[i] = -normals[i];
+    }
   }
 }
 
@@ -465,19 +659,19 @@ const CORNER_OFFSETS: readonly [number, number, number][] = [
 // ─── Marching cubes on SDF ───────────────────────────────────────────────────
 
 function marchingCubesOnSDF(
-  sdf: Float32Array,
+  sdfGet: (idx: number) => number,
   nx: number, ny: number, nz: number,
   ox: number, oy: number, oz: number,
   resolution: number,
   onProgress?: VoxelProgressCallback,
-): { positions: Float32Array; triCount: number } {
+): { positions: Float32Array; indices: Uint32Array; triCount: number; vertexCount: number } {
   const edgeVertexMap = new Map<number, number>();
   const positionsList: number[] = [];
   let vertexCount = 0;
 
   function sdfAt(x: number, y: number, z: number): number {
     if (x < 0 || x >= nx || y < 0 || y >= ny || z < 0 || z >= nz) return 1.0;
-    return sdf[(z * ny + y) * nx + x];
+    return sdfGet((z * ny + y) * nx + x);
   }
 
   // Compact edge key using grid coordinates (avoids string hashing)
@@ -564,23 +758,11 @@ function marchingCubesOnSDF(
     }
   }
 
-  // Build non-indexed position array (same format as voxel-reconstruct output)
+  // Return indexed geometry directly (Bug 6 fix — avoids 3× vertex expansion)
   const triCount = Math.floor(indices.length / 3);
-  const positions = new Float32Array(triCount * 9);
-  for (let t = 0; t < triCount; t++) {
-    const i0 = indices[t * 3], i1 = indices[t * 3 + 1], i2 = indices[t * 3 + 2];
-    positions[t * 9]     = positionsList[i0 * 3];
-    positions[t * 9 + 1] = positionsList[i0 * 3 + 1];
-    positions[t * 9 + 2] = positionsList[i0 * 3 + 2];
-    positions[t * 9 + 3] = positionsList[i1 * 3];
-    positions[t * 9 + 4] = positionsList[i1 * 3 + 1];
-    positions[t * 9 + 5] = positionsList[i1 * 3 + 2];
-    positions[t * 9 + 6] = positionsList[i2 * 3];
-    positions[t * 9 + 7] = positionsList[i2 * 3 + 1];
-    positions[t * 9 + 8] = positionsList[i2 * 3 + 2];
-  }
+  const positions = new Float32Array(positionsList);
 
-  return { positions, triCount };
+  return { positions, indices: new Uint32Array(indices), triCount, vertexCount };
 }
 
 // ─── Main pipeline ───────────────────────────────────────────────────────────
@@ -590,8 +772,12 @@ const MAX_GRID_CELLS = 200_000_000;
 export interface PointCloudReconstructParams {
   /** Grid resolution in mm. Smaller = finer detail, more memory. */
   resolution?: number;
-  /** Multiplier for the smoothing / neighbor-query radius. Default 3. */
+  /** Multiplier for the smoothing / neighbor-query radius. Default 2. */
   radiusMultiplier?: number;
+  /** SDF sharpness: 0.0 = smooth/blobby, 1.0 = sharp edges. Default 0.5. */
+  sdfSharpness?: number;
+  /** Eval radius multiplier: 1.0 = standard, 2.0+ bridges wider gaps. Default 1.0. */
+  gapBridgingFactor?: number;
 }
 
 /**
@@ -638,9 +824,11 @@ export async function pointCloudReconstruct(
     autoResolution({ x: bbSize.x, y: bbSize.y, z: bbSize.z });
   const radiusMult = params?.radiusMultiplier ?? 2;
   const smoothingRadius = resolution * radiusMult;
+  const sdfSharpness = Math.max(0, Math.min(1, params?.sdfSharpness ?? 0.5));
+  const gapBridgingFactor = Math.max(1, Math.min(3, params?.gapBridgingFactor ?? 1.0));
 
   // ── Step 1: Extract point cloud ──────────────────────────────────────────
-  onProgress(0, 5, "Extracting point cloud…");
+  onProgress(0, 6, "Extracting point cloud…");
   await yieldToUI();
 
   const pc = extractPointCloud(g);
@@ -650,7 +838,7 @@ export async function pointCloudReconstruct(
   }
 
   // ── Step 2: Build spatial hash ───────────────────────────────────────────
-  onProgress(1, 5, `Building spatial index (${pc.count.toLocaleString()} points)…`);
+  onProgress(1, 6, `Building spatial index (${pc.count.toLocaleString()} points)…`);
   await yieldToUI();
 
   const hash = new SpatialHash(smoothingRadius);
@@ -658,8 +846,14 @@ export async function pointCloudReconstruct(
     hash.insert(i, pc.points[i * 3], pc.points[i * 3 + 1], pc.points[i * 3 + 2]);
   }
 
+  // ── Step 2b: Orient normals consistently ───────────────────────────────
+  onProgress(2, 6, "Orienting normals…");
+  await yieldToUI();
+
+  orientNormals(pc.points, pc.normals, pc.count, hash, smoothingRadius);
+
   // ── Step 3: Evaluate SDF on grid near geometry ───────────────────────────
-  onProgress(2, 5, "Evaluating signed distance field…");
+  onProgress(3, 6, "Evaluating signed distance field…");
   await yieldToUI();
 
   const pad = resolution * 3;
@@ -677,13 +871,21 @@ export async function pointCloudReconstruct(
     );
   }
 
-  // SDF grid: default to +1 (outside)
-  const sdf = new Float32Array(totalCells).fill(1.0);
-  const evaluated = new Uint8Array(totalCells);
+  // Sparse SDF: only store cells that are actually evaluated.
+  // Unevaluated cells return +1.0 (outside). For thin shells, typically <10%
+  // of the grid is near the surface, so this saves 90%+ memory vs dense array.
+  // e.g. 80M cells × 4 bytes = 320MB dense → ~5M entries × ~40 bytes = ~200MB sparse,
+  // but more importantly avoids the upfront 320MB allocation that can crash the tab.
+  const sdf = new Map<number, number>();
+  const sdfGet = (idx: number) => sdf.get(idx) ?? 1.0;
 
   // Evaluate SDF only in cells near input points
-  const evalRadius = Math.ceil(smoothingRadius / resolution) + 1;
-  const h = smoothingRadius * 0.5; // Gaussian sigma for SDF weighting
+  // gapBridgingFactor widens the eval radius to bridge larger gaps (at compute cost)
+  const baseEvalRadius = Math.ceil(smoothingRadius / resolution) + 1;
+  const evalRadius = Math.ceil(baseEvalRadius * gapBridgingFactor);
+  // sdfSharpness controls Gaussian sigma: sharp = tight kernel (local), smooth = wide kernel
+  // sharpness 0.0 → h = smoothingRadius (very smooth), 1.0 → h = smoothingRadius * 0.3 (very sharp)
+  const h = smoothingRadius * (1.0 - sdfSharpness * 0.7);
   let lastYieldAt = Date.now();
   let evaluatedCount = 0;
 
@@ -704,8 +906,7 @@ export async function pointCloudReconstruct(
           if (ix < 0 || ix >= nx) continue;
 
           const cellIdx = (iz * ny + iy) * nx + ix;
-          if (evaluated[cellIdx]) continue;
-          evaluated[cellIdx] = 1;
+          if (sdf.has(cellIdx)) continue;
           evaluatedCount++;
 
           const qx = ox + ix * resolution;
@@ -713,34 +914,36 @@ export async function pointCloudReconstruct(
           const qz = oz + iz * resolution;
 
           const neighbors = hash.queryRadius(qx, qy, qz, smoothingRadius, pc.points);
-          sdf[cellIdx] = evaluateSDF(qx, qy, qz, neighbors, pc.points, pc.normals, h);
+          sdf.set(cellIdx, evaluateSDF(qx, qy, qz, neighbors, pc.points, pc.normals, h));
         }
       }
     }
 
     if (pi % 2000 === 0 && Date.now() - lastYieldAt > 50) {
       const pct = Math.round((pi / pc.count) * 100);
-      onProgress(2, 5, `Evaluating SDF… ${pct}% (${evaluatedCount.toLocaleString()} cells)`);
+      onProgress(3, 6, `Evaluating SDF… ${pct}% (${evaluatedCount.toLocaleString()} cells)`);
       await yieldToUI();
       lastYieldAt = Date.now();
     }
   }
 
-  onProgress(3, 5, `SDF complete: ${evaluatedCount.toLocaleString()} / ${totalCells.toLocaleString()} cells evaluated`);
+  const sparsePct = totalCells > 0 ? Math.round((evaluatedCount / totalCells) * 100) : 0;
+  onProgress(4, 6, `SDF complete: ${evaluatedCount.toLocaleString()} / ${totalCells.toLocaleString()} cells evaluated (${sparsePct}% sparse)`);
   await yieldToUI();
 
   // ── Step 4: Marching cubes ───────────────────────────────────────────────
-  onProgress(4, 5, "Running marching cubes…");
+  onProgress(5, 6, "Running marching cubes…");
   await yieldToUI();
 
-  const mc = marchingCubesOnSDF(sdf, nx, ny, nz, ox, oy, oz, resolution, onProgress);
+  const mc = marchingCubesOnSDF(sdfGet, nx, ny, nz, ox, oy, oz, resolution, onProgress);
 
-  // ── Build output geometry ────────────────────────────────────────────────
-  onProgress(5, 5, "Finalizing geometry…");
+  // ── Build output geometry (indexed — saves ~3× memory) ─────────────────
+  onProgress(6, 6, "Finalizing geometry…");
   await yieldToUI();
 
   const outGeo = new THREE.BufferGeometry();
   outGeo.setAttribute("position", new THREE.BufferAttribute(mc.positions, 3));
+  outGeo.setIndex(new THREE.BufferAttribute(mc.indices, 1));
   outGeo.computeVertexNormals();
 
   g.dispose();
