@@ -42,3 +42,23 @@ env:
     value: "+14086588582"
   - variable: SHIPPO_FROM_EMAIL
     value: info@karasawalabs.com
+
+  # NextAuth
+  - variable: AUTH_SECRET
+    secret: AUTH_SECRET
+  - variable: AUTH_TRUST_HOST
+    value: "true"
+  - variable: NEXTAUTH_URL
+    value: https://karasawalabs.com
+
+  # Google OAuth
+  - variable: GOOGLE_CLIENT_ID
+    secret: GOOGLE_CLIENT_ID
+  - variable: GOOGLE_CLIENT_SECRET
+    secret: GOOGLE_CLIENT_SECRET
+
+  # Apple OAuth
+  - variable: APPLE_CLIENT_ID
+    secret: APPLE_CLIENT_ID
+  - variable: APPLE_CLIENT_SECRET
+    secret: APPLE_CLIENT_SECRET
