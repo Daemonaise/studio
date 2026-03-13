@@ -1,29 +1,29 @@
-
 "use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { Menu } from "lucide-react";
+import { useState, useEffect } from "react";
+import { useSession, signOut } from "next-auth/react";
+import { Menu, LogOut } from "lucide-react";
 import { Logo } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
 const navItems = [
+  { href: "/theater", label: "😊" },
   { href: "/automotive", label: "Automotive" },
   { href: "/materials", label: "Materials" },
-  { href: "/karaslice", label: "Karaslice" },
+  { href: "/karaslice", label: "Karaslice ✨" },
 ];
 
 export function Header() {
   const pathname = usePathname();
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const { data: session } = useSession();
   const [mobileOpen, setMobileOpen] = useState(false);
-
-  useEffect(() => {
-    setIsLoggedIn(localStorage.getItem("kl_logged_in") === "true");
-  }, [pathname]);
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
+  const isLoggedIn = hydrated && !!session?.user;
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -87,16 +87,24 @@ export function Header() {
                   </Link>
                 ))}
                 {isLoggedIn && (
-                  <Link
-                    href="/portal"
-                    onClick={() => setMobileOpen(false)}
-                    className={cn(
-                      "transition-colors hover:text-foreground/80",
-                      pathname === "/portal" ? "text-foreground" : "text-foreground/60"
-                    )}
-                  >
-                    My Portal
-                  </Link>
+                  <>
+                    <Link
+                      href="/portal"
+                      onClick={() => setMobileOpen(false)}
+                      className={cn(
+                        "transition-colors hover:text-foreground/80",
+                        pathname === "/portal" ? "text-foreground" : "text-foreground/60"
+                      )}
+                    >
+                      My Portal
+                    </Link>
+                    <button
+                      onClick={() => { setMobileOpen(false); signOut({ callbackUrl: "/" }); }}
+                      className="text-left text-foreground/60 transition-colors hover:text-foreground/80"
+                    >
+                      Sign Out
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -106,12 +114,32 @@ export function Header() {
         <div className="flex flex-1 items-center justify-end space-x-2">
           <nav className="flex items-center space-x-2">
             {isLoggedIn ? (
-              <Button asChild variant="ghost">
-                <Link href="/portal">My Portal</Link>
-              </Button>
+              <div className="flex items-center gap-2">
+                {session.user?.image && (
+                  <img
+                    src={session.user.image}
+                    alt=""
+                    className="h-7 w-7 rounded-full border border-border"
+                    referrerPolicy="no-referrer"
+                  />
+                )}
+                <Button asChild variant="ghost">
+                  <Link href="/portal">
+                    {session.user?.name?.split(" ")[0] ?? "Portal"}
+                  </Link>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => signOut({ callbackUrl: "/" })}
+                  title="Sign out"
+                >
+                  <LogOut className="h-4 w-4" />
+                </Button>
+              </div>
             ) : (
               <Button asChild variant="ghost">
-                <Link href="/login">Login</Link>
+                <Link href="/login">Sign In</Link>
               </Button>
             )}
             <Button asChild style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}>
