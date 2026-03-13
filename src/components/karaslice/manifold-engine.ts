@@ -1,6 +1,7 @@
 // manifold-engine.ts — manifold-3d lazy loader and mesh splitting engine
-// All operations run on the main thread with setTimeout(0) yields between
-// heavy steps so the UI spinner can render.
+// All operations run on the main thread with time-sliced yields (every ~50 ms)
+// using scheduler.yield() (or setTimeout fallback) so the browser never shows
+// its "page unresponsive" dialog, even on multi-million-triangle meshes.
 
 import * as THREE from "three";
 
@@ -174,14 +175,14 @@ export async function splitMesh(
 
   /** Run all repair steps on an indexed geometry and attempt Manifold construction. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function tryBuild(g: THREE.BufferGeometry): any | null {
-    const g1 = removeDegenerates(g);
-    const g2 = deduplicateTris(g1);
-    const g3 = fixWinding(g2);
+  async function tryBuild(g: THREE.BufferGeometry): Promise<any | null> {
+    const g1 = await removeDegenerates(g);
+    const g2 = await deduplicateTris(g1);
+    const g3 = await fixWinding(g2);
     // fixWinding makes winding CONSISTENT within each component but doesn't know
     // which direction is "outward".  If the BFS seed was an inverted triangle the
     // whole component ends up inside-out → manifold returns isEmpty()=true.
-    const g4 = ensureOutwardNormals(g3);
+    const g4 = await ensureOutwardNormals(g3);
     const { vertProperties, triVerts } = geometryToArrays(g4);
     try {
       const c = new Manifold(new Mesh({ numProp: 3, vertProperties, triVerts }));
@@ -199,7 +200,7 @@ export async function splitMesh(
   await yieldToUI();
 
   const tightMerged = mergeVertices(nonIndexed, 1e-4);
-  const dx = diagnoseMesh(tightMerged);
+  const dx = await diagnoseMesh(tightMerged);
 
   if (dx.openEdges > 0) {
     const gapStr = dx.maxGapMM > 0 ? `, max gap ${dx.maxGapMM.toFixed(2)} mm` : "";
@@ -227,7 +228,7 @@ export async function splitMesh(
     }
     const merged = mergeVertices(nonIndexed, tol);
     lastCleaned = merged;
-    rootManifold = tryBuild(merged);
+    rootManifold = await tryBuild(merged);
     if (rootManifold) break;
   }
 
@@ -236,12 +237,12 @@ export async function splitMesh(
     onProgress(0, planes.length, "Repairing mesh — filling open holes…");
     await yieldToUI();
 
-    const filled = fillHoles(lastCleaned);
+    const filled = await fillHoles(lastCleaned);
     if (filled !== lastCleaned) {
       const niFilled = filled.index ? filled.toNonIndexed() : filled;
       for (const tol of orderedTols) {
         const merged = mergeVertices(niFilled, tol);
-        rootManifold = tryBuild(merged);
+        rootManifold = await tryBuild(merged);
         if (rootManifold) break;
       }
     }
@@ -282,7 +283,11 @@ export async function splitMesh(
       const negHalf = region.trimByPlane(negNormal, -originOffset);
 
       if (!posHalf.isEmpty()) nextRegions.push(posHalf);
+      else if (posHalf.delete) posHalf.delete(); // free WASM memory
       if (!negHalf.isEmpty()) nextRegions.push(negHalf);
+      else if (negHalf.delete) negHalf.delete();
+      // Free the parent region's WASM memory — it's been split and is no longer needed.
+      if (region.delete) region.delete();
     }
 
     regions = nextRegions;
@@ -295,20 +300,27 @@ export async function splitMesh(
   // toCreasedNormals splits vertices at sharp edges (cap↔surface boundary)
   // so normals don't get averaged across the cut seam → eliminates jagged edges.
   const CREASE_ANGLE = Math.PI / 6; // 30° — sharp cap edges split, smooth surfaces preserved
-  const parts: SplitPart[] = regions.map((region, i) => {
-    const mesh = region.getMesh();
+  const parts: SplitPart[] = [];
+  for (let i = 0; i < regions.length; i++) {
+    onProgress(planes.length, planes.length, `Converting part ${i + 1} of ${regions.length}…`);
+    await yieldToUI();
+
+    const mesh = regions[i].getMesh();
     const rawGeo = meshToGeometry(mesh);
+    // Free WASM memory for this region — we've extracted the mesh data.
+    if (regions[i].delete) regions[i].delete();
     // Compute volume on indexed geometry BEFORE toCreasedNormals (which produces non-indexed)
     const vol = computeGeometryVolume(rawGeo);
     // toCreasedNormals → non-indexed; mergeVertices re-indexes for GPU efficiency
     // while preserving split normals at crease edges (same pos + different normal = kept separate)
     const geometry = mergeVertices(toCreasedNormals(rawGeo, CREASE_ANGLE));
+    rawGeo.dispose(); // free intermediate
     geometry.computeBoundingBox();
     const bb = geometry.boundingBox!;
     const size = new THREE.Vector3();
     bb.getSize(size);
 
-    return {
+    parts.push({
       geometry,
       label: `Part ${i + 1}`,
       triangleCount: mesh.triVerts.length / 3,
@@ -318,14 +330,38 @@ export async function splitMesh(
         y: parseFloat(size.y.toFixed(1)),
         z: parseFloat(size.z.toFixed(1)),
       },
-    };
-  });
+    });
+  }
 
   return parts;
 }
 
+let _lastYield = 0;
+const YIELD_INTERVAL = 50; // ms — yield at most every 50 ms
+
+/**
+ * Yield to the browser event loop so the page stays responsive.
+ * Uses `scheduler.yield()` when available (Chrome 129+, Firefox 129+,
+ * Safari 18.4+) which specifically prevents the "page unresponsive" dialog.
+ * Falls back to setTimeout(0) for older browsers.
+ */
 function yieldToUI(): Promise<void> {
+  _lastYield = performance.now();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const s = (globalThis as any).scheduler;
+  if (s?.yield) return s.yield();
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Yield only when YIELD_INTERVAL ms have elapsed since the last yield.
+ * Insert this in tight loops to keep the main thread responsive without
+ * yielding on every single iteration (which would destroy throughput).
+ */
+async function yieldIfNeeded(): Promise<void> {
+  if (performance.now() - _lastYield >= YIELD_INTERVAL) {
+    await yieldToUI();
+  }
 }
 
 // ─── Direct plane-clipping fallback (works on any mesh) ──────────────────────
@@ -343,13 +379,13 @@ function yieldToUI(): Promise<void> {
  * key and receive the identical vertex index — one vertex, not two nearly-
  * identical copies.  No post-hoc weld needed to close the cut boundary.
  */
-function clipByPlane(
+async function clipByPlane(
   geo: THREE.BufferGeometry,
   n: THREE.Vector3,
   offset: number,
-): [THREE.BufferGeometry | null, THREE.BufferGeometry | null] {
+): Promise<[THREE.BufferGeometry | null, THREE.BufferGeometry | null]> {
   // Ensure indexed so every vertex has a stable index for edge-key lookup.
-  const src  = geo.index ? geo : exactMergeVertices(geo);
+  const src  = geo.index ? geo : await exactMergeVertices(geo);
   const pos  = src.attributes.position as THREE.BufferAttribute;
   const idx  = src.index!;
   const nV   = pos.count;
@@ -398,6 +434,7 @@ function clipByPlane(
   const posIdx: number[] = [], negIdx: number[] = [];
 
   for (let t = 0; t < nTris; t++) {
+    if ((t & 0xFFFF) === 0) await yieldIfNeeded();
     const ai = idx.getX(t * 3), bi = idx.getX(t * 3 + 1), ci = idx.getX(t * 3 + 2);
     const da = dist[ai], db = dist[bi], dc = dist[ci];
     const sa = da >= 0, sb = db >= 0, sc = dc >= 0;
@@ -433,21 +470,34 @@ function clipByPlane(
     if (i1 !== Q  && Q !== P  && P !== i1) other.push(i1, Q,  P);
   }
 
-  // Build the shared Float32Array from the position pool once.
-  const posF32 = new Float32Array(px.length * 3);
-  for (let i = 0; i < px.length; i++) {
-    posF32[i * 3] = px[i]; posF32[i * 3 + 1] = py[i]; posF32[i * 3 + 2] = pz[i];
-  }
-
-  const make = (tris: number[]): THREE.BufferGeometry | null => {
+  // Build compact geometries that only include vertices actually referenced
+  // by each half.  Without this, every clipped half would carry a full copy of
+  // ALL vertices (original + intersections), which causes memory to blow up
+  // exponentially as 2^N halves accumulate across N cut planes.
+  const makeCompact = (tris: number[]): THREE.BufferGeometry | null => {
     if (tris.length < 3) return null;
+    // Map old vertex index → new compact index
+    const usedMap = new Map<number, number>();
+    let nextIdx = 0;
+    for (const vi of tris) {
+      if (!usedMap.has(vi)) usedMap.set(vi, nextIdx++);
+    }
+    const compactPos = new Float32Array(nextIdx * 3);
+    for (const [oldIdx, newIdx] of usedMap) {
+      compactPos[newIdx * 3]     = px[oldIdx];
+      compactPos[newIdx * 3 + 1] = py[oldIdx];
+      compactPos[newIdx * 3 + 2] = pz[oldIdx];
+    }
+    const compactTris = new Uint32Array(tris.length);
+    for (let i = 0; i < tris.length; i++) {
+      compactTris[i] = usedMap.get(tris[i])!;
+    }
     const g = new THREE.BufferGeometry();
-    // Each half gets its own Float32Array view so they can be disposed independently.
-    g.setAttribute("position", new THREE.BufferAttribute(posF32.slice(), 3));
-    g.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1));
+    g.setAttribute("position", new THREE.BufferAttribute(compactPos, 3));
+    g.setIndex(new THREE.BufferAttribute(compactTris, 1));
     return g;
   };
-  return [make(posIdx), make(negIdx)];
+  return [makeCompact(posIdx), makeCompact(negIdx)];
 }
 
 /** Split geo using direct triangle-plane clipping — no manifold required. */
@@ -459,7 +509,7 @@ async function splitMeshByClipping(
   // Pre-index with exact vertex dedup so clipByPlane's edge-cache keys are
   // reliable: two adjacent triangles sharing edge (V1,V2) get the same vertex
   // indices and therefore the same cache key → identical intersection vertex.
-  let halves: THREE.BufferGeometry[] = [geo.index ? geo : exactMergeVertices(geo)];
+  let halves: THREE.BufferGeometry[] = [geo.index ? geo : await exactMergeVertices(geo)];
 
   for (let pi = 0; pi < planes.length; pi++) {
     const { normal, originOffset } = planes[pi];
@@ -468,9 +518,12 @@ async function splitMeshByClipping(
 
     const next: THREE.BufferGeometry[] = [];
     for (const half of halves) {
-      const [pos, neg] = clipByPlane(half, new THREE.Vector3(...normal), originOffset);
+      const [pos, neg] = await clipByPlane(half, new THREE.Vector3(...normal), originOffset);
       if (pos) next.push(pos);
       if (neg) next.push(neg);
+      // Dispose the intermediate geometry to free memory immediately —
+      // without this, 2^N intermediate copies accumulate and cause OOM.
+      half.dispose();
     }
     halves = next;
   }
@@ -485,11 +538,16 @@ async function splitMeshByClipping(
 
   const parts: SplitPart[] = [];
   for (let i = 0; i < halves.length; i++) {
-    const capped = fillHoles(halves[i]);
+    onProgress(planes.length, planes.length, `Converting part ${i + 1} of ${halves.length}…`);
+    await yieldToUI();
+    const capped = await fillHoles(halves[i]);
+    // Free the pre-capped half — fillHoles returns a new geometry when holes exist.
+    if (capped !== halves[i]) halves[i].dispose();
     // Compute volume on indexed geometry BEFORE toCreasedNormals (which produces non-indexed)
     const vol = computeGeometryVolume(capped);
     // toCreasedNormals → non-indexed; mergeVertices re-indexes for GPU efficiency
     const geometry = mergeVerts(toCreased(capped, CREASE_ANGLE));
+    capped.dispose(); // free intermediate
     geometry.computeBoundingBox();
     const bb = geometry.boundingBox!;
     const size = new THREE.Vector3();
@@ -531,7 +589,7 @@ interface MeshDiagnosis {
  * Gap measurement samples up to 500 boundary vertices so it stays O(250 k)
  * even on million-triangle meshes.
  */
-function diagnoseMesh(geo: THREE.BufferGeometry): MeshDiagnosis {
+async function diagnoseMesh(geo: THREE.BufferGeometry): Promise<MeshDiagnosis> {
   const none: MeshDiagnosis = {
     openEdges: 0, nonManifoldEdges: 0, degenerateTris: 0, duplicateTris: 0,
     maxGapMM: 0, recommendedTol: 1e-4,
@@ -546,6 +604,7 @@ function diagnoseMesh(geo: THREE.BufferGeometry): MeshDiagnosis {
   // ── Edge frequency (undirected) ──────────────────────────────────────────
   const edgeFreq = new Map<number, number>();
   for (let t = 0; t < nTris; t++) {
+    if ((t & 0xFFFF) === 0) await yieldIfNeeded();
     const a = idx.getX(t * 3), b = idx.getX(t * 3 + 1), c = idx.getX(t * 3 + 2);
     for (const [u, v] of [[a, b], [b, c], [c, a]] as [number, number][]) {
       const key = Math.min(u, v) * nVerts + Math.max(u, v);
@@ -632,7 +691,7 @@ function diagnoseMesh(geo: THREE.BufferGeometry): MeshDiagnosis {
  * every triangle so normals face outward.  This corrects meshes that become
  * globally inside-out after fixWinding() picks an inverted seed triangle.
  */
-function ensureOutwardNormals(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+async function ensureOutwardNormals(geo: THREE.BufferGeometry): Promise<THREE.BufferGeometry> {
   if (!geo.index) return geo;
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const idx = geo.index;
@@ -658,7 +717,7 @@ function ensureOutwardNormals(geo: THREE.BufferGeometry): THREE.BufferGeometry {
 }
 
 /** Remove triangles whose 3 vertex indices are identical to a previously seen triangle. */
-function deduplicateTris(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+async function deduplicateTris(geo: THREE.BufferGeometry): Promise<THREE.BufferGeometry> {
   if (!geo.index) return geo;
   const idx = geo.index;
   const seen = new Set<number>();
@@ -666,6 +725,7 @@ function deduplicateTris(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   let changed = false;
 
   for (let t = 0; t < idx.count; t += 3) {
+    if ((t & 0x3FFFC) === 0) await yieldIfNeeded();
     const a = idx.getX(t), b = idx.getX(t + 1), c = idx.getX(t + 2);
     // Canonical key independent of rotation: sort the three indices
     const s = [a, b, c].sort((x, y) => x - y);
@@ -692,7 +752,7 @@ function deduplicateTris(geo: THREE.BufferGeometry): THREE.BufferGeometry {
  * inconsistent winding (one is flipped); we flip it so all triangles in the
  * component face the same way.  Skips non-manifold edges (shared by 3+ tris).
  */
-function fixWinding(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+async function fixWinding(geo: THREE.BufferGeometry): Promise<THREE.BufferGeometry> {
   if (!geo.index) return geo;
 
   const idx    = geo.index;
@@ -705,6 +765,7 @@ function fixWinding(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   const edgeMap = new Map<number, EdgeEntry[]>();
 
   for (let t = 0; t < nTris; t++) {
+    if ((t & 0xFFFF) === 0) await yieldIfNeeded();
     const verts = [idx.getX(t * 3), idx.getX(t * 3 + 1), idx.getX(t * 3 + 2)];
     for (let e = 0; e < 3; e++) {
       const u = verts[e], v = verts[(e + 1) % 3];
@@ -719,6 +780,7 @@ function fixWinding(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   // Build per-triangle edge key list for BFS traversal
   const triEdgeKeys: number[][] = new Array(nTris);
   for (let t = 0; t < nTris; t++) {
+    if ((t & 0xFFFF) === 0) await yieldIfNeeded();
     const verts = [idx.getX(t * 3), idx.getX(t * 3 + 1), idx.getX(t * 3 + 2)];
     triEdgeKeys[t] = verts.map((u, e) => {
       const v = verts[(e + 1) % 3];
@@ -895,7 +957,7 @@ function triangulatePlanar(loop: number[], pos: THREE.BufferAttribute): number[]
  * so the boundary loop is CW from outside.  Fill triangles are output reversed
  * (CCW from outside) so patch normals point outward consistently.
  */
-function fillHoles(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+async function fillHoles(geo: THREE.BufferGeometry): Promise<THREE.BufferGeometry> {
   if (!geo.index) return geo;
 
   const pos   = geo.attributes.position as THREE.BufferAttribute;
@@ -906,6 +968,7 @@ function fillHoles(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   // (safe up to ~94 M verts which is well beyond any realistic STL)
   const halfEdgeSet = new Set<number>();
   for (let t = 0; t < idx.count; t += 3) {
+    if ((t & 0x3FFFC) === 0) await yieldIfNeeded();
     const a = idx.getX(t), b = idx.getX(t + 1), c = idx.getX(t + 2);
     halfEdgeSet.add(a * nVerts + b);
     halfEdgeSet.add(b * nVerts + c);
@@ -960,16 +1023,20 @@ function fillHoles(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   }
   if (loops.length === 0) return geo;
 
-  // Build new position array and index array with fill patches appended
+  // Collect fill triangles and any new centroid vertices needed.
+  // We avoid copying the entire position array into a JS number[] — instead we
+  // only allocate space for the (small number of) centroid vertices added by
+  // the fan fallback, then concatenate typed arrays at the end.
   const oldPos = pos.array as Float32Array;
-  const newPos: number[] = Array.from(oldPos);
-  const newIdx: number[] = Array.from(idx.array as Uint32Array);
+  const fillIdx: number[] = [];
+  const extraPos: number[] = []; // only centroid vertices (very few)
+  let extraBase = nVerts; // first new-vertex index
 
   for (const loop of loops) {
     // Prefer proper 2D triangulation — correct for non-convex cross-sections.
     const tris = triangulatePlanar(loop, pos);
     if (tris.length > 0) {
-      for (const vi of tris) newIdx.push(vi);
+      for (const vi of tris) fillIdx.push(vi);
     } else {
       // Centroid fan fallback (degenerate or oversized loops)
       let cx = 0, cy = 0, cz = 0;
@@ -977,18 +1044,30 @@ function fillHoles(geo: THREE.BufferGeometry): THREE.BufferGeometry {
         cx += oldPos[vi * 3]; cy += oldPos[vi * 3 + 1]; cz += oldPos[vi * 3 + 2];
       }
       cx /= loop.length; cy /= loop.length; cz /= loop.length;
-      const centroidIdx = newPos.length / 3;
-      newPos.push(cx, cy, cz);
+      const centroidIdx = extraBase + extraPos.length / 3;
+      extraPos.push(cx, cy, cz);
       for (let i = 0; i < loop.length; i++) {
         const a = loop[i], b = loop[(i + 1) % loop.length];
-        newIdx.push(b, a, centroidIdx);
+        fillIdx.push(b, a, centroidIdx);
       }
     }
   }
 
+  // Build output: concatenate old positions + centroid extras (if any)
+  const totalVerts = nVerts + extraPos.length / 3;
+  const finalPos = new Float32Array(totalVerts * 3);
+  finalPos.set(oldPos);
+  for (let i = 0; i < extraPos.length; i++) finalPos[nVerts * 3 + i] = extraPos[i];
+
+  // Concatenate old index array + fill triangles
+  const oldIdxArr = idx.array as Uint32Array;
+  const finalIdx = new Uint32Array(oldIdxArr.length + fillIdx.length);
+  finalIdx.set(oldIdxArr);
+  for (let i = 0; i < fillIdx.length; i++) finalIdx[oldIdxArr.length + i] = fillIdx[i];
+
   const out = new THREE.BufferGeometry();
-  out.setAttribute("position", new THREE.BufferAttribute(new Float32Array(newPos), 3));
-  out.setIndex(new THREE.BufferAttribute(new Uint32Array(newIdx), 1));
+  out.setAttribute("position", new THREE.BufferAttribute(finalPos, 3));
+  out.setIndex(new THREE.BufferAttribute(finalIdx, 1));
   return out;
 }
 
@@ -1011,7 +1090,7 @@ function fillHoles(geo: THREE.BufferGeometry): THREE.BufferGeometry {
  * If the original file intended them to be the same vertex, they'll have the
  * same bits."
  */
-function exactMergeVertices(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+async function exactMergeVertices(geo: THREE.BufferGeometry): Promise<THREE.BufferGeometry> {
   if (geo.index) return geo; // already indexed — caller must toNonIndexed() first
 
   const pos    = geo.attributes.position as THREE.BufferAttribute;
@@ -1031,6 +1110,7 @@ function exactMergeVertices(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   const indices = new Uint32Array(nVerts);
 
   for (let i = 0; i < nVerts; i++) {
+    if ((i & 0xFFFF) === 0) await yieldIfNeeded();
     const a = u32[i * 3], b = u32[i * 3 + 1], c = u32[i * 3 + 2];
     const h = hash3(a, b, c);
 
@@ -1060,13 +1140,14 @@ function exactMergeVertices(geo: THREE.BufferGeometry): THREE.BufferGeometry {
 }
 
 /** Remove zero-area (degenerate) triangles from an indexed geometry. */
-function removeDegenerates(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+async function removeDegenerates(geo: THREE.BufferGeometry): Promise<THREE.BufferGeometry> {
   if (!geo.index) return geo;
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const idx = geo.index;
   const goodTris: number[] = [];
   const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
   for (let t = 0; t < idx.count; t += 3) {
+    if ((t & 0x3FFFC) === 0) await yieldIfNeeded(); // every ~65K indices
     const ai = idx.getX(t), bi = idx.getX(t + 1), ci = idx.getX(t + 2);
     if (ai === bi || bi === ci || ci === ai) continue; // collapsed triangle
     vA.fromBufferAttribute(pos, ai);
@@ -1136,8 +1217,8 @@ export async function repairMesh(
   // distinct features.  Epsilon welding is used ONLY as a fallback for meshes
   // with genuine positional seams (e.g. two bodies snapped together in CAD).
   const nonIndexed = geo.index ? geo.toNonIndexed() : geo;
-  const exact = exactMergeVertices(nonIndexed);
-  const dxExact = diagnoseMesh(exact);
+  const exact = await exactMergeVertices(nonIndexed);
+  const dxExact = await diagnoseMesh(exact);
 
   let g: THREE.BufferGeometry;
   let weldTol: number;
@@ -1160,7 +1241,7 @@ export async function repairMesh(
   await yieldToUI();
 
   const beforeDegen = g.index ? g.index.count / 3 : 0;
-  g = removeDegenerates(g);
+  g = await removeDegenerates(g);
   const afterDegen = g.index ? g.index.count / 3 : 0;
   stats.degeneratesRemoved = beforeDegen - afterDegen;
 
@@ -1169,7 +1250,7 @@ export async function repairMesh(
   await yieldToUI();
 
   const beforeDup = g.index ? g.index.count / 3 : 0;
-  g = deduplicateTris(g);
+  g = await deduplicateTris(g);
   const afterDup = g.index ? g.index.count / 3 : 0;
   stats.duplicatesRemoved = beforeDup - afterDup;
 
@@ -1178,7 +1259,7 @@ export async function repairMesh(
   await yieldToUI();
 
   const beforeWinding = g.index ? new Uint32Array(g.index.array) : null;
-  g = fixWinding(g);
+  g = await fixWinding(g);
   if (beforeWinding && g.index) {
     let diffs = 0;
     for (let i = 0; i < beforeWinding.length; i += 3) {
@@ -1189,22 +1270,93 @@ export async function repairMesh(
 
   // Step 5: Outward normals
   const gInward = g;
-  g = ensureOutwardNormals(g);
+  g = await ensureOutwardNormals(g);
   stats.invertedNormalsFixed = g !== gInward;
 
   // Step 6: Fill holes
   onProgress(5, 6, "Filling holes…");
   await yieldToUI();
 
-  const diagBefore = diagnoseMesh(g);
-  const gFilled = fillHoles(g);
-  const diagAfter = diagnoseMesh(gFilled);
+  const diagBefore = await diagnoseMesh(g);
+  const gFilled = await fillHoles(g);
+  const diagAfter = await diagnoseMesh(gFilled);
   stats.holesFilled = diagBefore.openEdges - diagAfter.openEdges;
   g = gFilled;
 
   stats.isWatertight = diagAfter.openEdges === 0 && diagAfter.nonManifoldEdges === 0;
 
   onProgress(6, 6, "Done");
+  await yieldToUI();
+
+  g.computeVertexNormals();
+  return { geometry: g, stats };
+}
+
+/**
+ * Lightweight repair for parts that have already been through the split pipeline.
+ *
+ * Split parts already have correct topology (capped holes, consistent winding,
+ * proper normals from toCreasedNormals + mergeVertices).  The full repairMesh()
+ * pipeline destroys them because:
+ *   - toNonIndexed → epsilon weld collapses vertices that toCreasedNormals
+ *     intentionally split at the cap↔surface crease boundary
+ *   - fixWinding BFS can flip cap triangles relative to the surface
+ *   - fillHoles then patches the damage with jagged fan triangles
+ *
+ * This function only does safe, non-destructive cleanup:
+ *   1. Exact vertex dedup (bit-identical only, no epsilon)
+ *   2. Remove degenerate (zero-area) triangles
+ *   3. Remove duplicate triangles
+ *   4. Recompute vertex normals
+ */
+export async function repairSplitPart(
+  geo: THREE.BufferGeometry,
+  onProgress: ProgressCallback,
+): Promise<{ geometry: THREE.BufferGeometry; stats: RepairStats }> {
+  const stats: RepairStats = {
+    degeneratesRemoved: 0,
+    duplicatesRemoved: 0,
+    windingFixed: 0,
+    invertedNormalsFixed: false,
+    weldToleranceMM: 0,
+    holesFilled: 0,
+    isWatertight: false,
+  };
+
+  onProgress(0, 3, "Deduplicating vertices…");
+  await yieldToUI();
+
+  // Step 1: Exact vertex dedup only — no epsilon, preserves crease-edge splits
+  let g: THREE.BufferGeometry;
+  if (geo.index) {
+    g = geo.clone();
+  } else {
+    g = await exactMergeVertices(geo);
+  }
+
+  // Step 2: Remove degenerates
+  onProgress(1, 3, "Removing degenerate triangles…");
+  await yieldToUI();
+
+  const beforeDegen = g.index ? g.index.count / 3 : 0;
+  g = await removeDegenerates(g);
+  const afterDegen = g.index ? g.index.count / 3 : 0;
+  stats.degeneratesRemoved = beforeDegen - afterDegen;
+
+  // Step 3: Remove duplicates
+  onProgress(2, 3, "Removing duplicate triangles…");
+  await yieldToUI();
+
+  const beforeDup = g.index ? g.index.count / 3 : 0;
+  g = await deduplicateTris(g);
+  const afterDup = g.index ? g.index.count / 3 : 0;
+  stats.duplicatesRemoved = beforeDup - afterDup;
+
+  // Check watertightness
+  const dx = await diagnoseMesh(g);
+  stats.isWatertight = dx.openEdges === 0 && dx.nonManifoldEdges === 0;
+
+  onProgress(3, 3, "Done");
   await yieldToUI();
 
   g.computeVertexNormals();

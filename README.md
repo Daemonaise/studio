@@ -8,7 +8,7 @@ Precision 3D printing and automotive manufacturing platform — from rapid proto
 |---|---|
 | Framework | Next.js 15.5 (App Router) |
 | UI | React 19, Tailwind CSS v3, shadcn/ui |
-| AI | Google Genkit + Gemini 2.5 Flash |
+| AI | Google Genkit + Gemini 2.5 Pro |
 | Payments | Stripe Checkout |
 | Shipping | Shippo REST API |
 | 3D Engine | Three.js + manifold-3d (WASM) |
@@ -17,7 +17,7 @@ Precision 3D printing and automotive manufacturing platform — from rapid proto
 ## Key Features
 
 - **AI Quote Wizard** — Upload STL/OBJ/3MF, pick a material and nozzle size, receive an AI-generated cost breakdown and lead time estimate
-- **Split3r** — In-browser 3D model slicer: mesh repair, boolean splits via manifold-3d, OBJ/STL/ZIP export, unit conversion (mm/cm/in), custom printer volume input, and send-to-quote integration
+- **Karaslice** — In-browser 3D mesh slicer and analyzer: mesh repair, voxel reconstruction, boolean splits via manifold-3d, OBJ/STL/ZIP export, unit conversion (mm/cm/in), custom printer volume input, and send-to-quote integration
 - **Stripe Checkout** — Full payment flow with shipping info collected pre-checkout; metadata forwarded to fulfilment
 - **Shippo Integration** — Automatic shipment creation and label purchase on order success; tracking info surfaced in the customer portal
 - **Customer Portal** — Order history, status badges, and shipment tracking stored client-side (localStorage)
@@ -45,28 +45,30 @@ src/
 │   │   ├── portal/           # Customer order portal
 │   │   └── quote/
 │   ├── (tools)/              # Tool pages (bare layout, no site header)
-│   │   └── split3r/          # Split3r page (shell + dynamic client)
+│   │   └── karaslice/        # Karaslice page (shell + dynamic client)
 │   ├── actions/
-│   │   ├── checkout-actions.ts   # Stripe + Shippo server actions
-│   │   ├── quote-actions.ts
-│   │   └── assistant-actions.ts
+│   │   ├── assistant-actions.ts      # AI assistant server action
+│   │   ├── checkout-actions.ts       # Stripe + Shippo server actions
+│   │   ├── mesh-analysis-actions.ts  # Mesh file analysis server action
+│   │   └── quote-actions.ts          # Quote generation server action
 │   ├── data/
 │   │   ├── materials.ts
 │   │   ├── pricing-matrix.json
-│   │   └── printer-profiles.json # Printer build volumes for Split3r
+│   │   └── printer-profiles.json     # Printer build volumes for Karaslice
 │   ├── globals.css
 │   ├── icon.svg              # Favicon (auto-detected by Next.js)
 │   ├── layout.tsx
 │   └── opengraph-image.tsx   # Dynamic OG image 1200x630
 ├── components/
 │   ├── assistant/            # Floating chat bubble and interface
+│   ├── karaslice/            # Karaslice 3D slicer (see below)
 │   ├── layout/               # Header, footer, splash screen, page transition
 │   ├── quote/                # AutomotiveQuoteWizard
-│   ├── split3r/              # Split3r 3D slicer (see below)
 │   └── ui/                   # shadcn/ui primitives
 ├── hooks/
 └── lib/
-    ├── split3r-transfer.ts   # Module-level store for passing split parts to quote
+    ├── karaslice-transfer.ts # Module-level store for passing split parts to quote
+    ├── mesh-analyzer.ts      # Mesh file parsing and metrics (STL, OBJ, 3MF, AMF)
     └── utils.ts
 
 public/
@@ -75,18 +77,21 @@ public/
 ├── images/
 │   └── logo.svg              # Full Karasawa Labs wordmark SVG
 └── index.html                # Firebase Hosting static fallback
+
+docs/                         # Internal architecture and debug notes
 ```
 
-## Split3r Architecture
+## Karaslice Architecture
 
-Split3r is a fully client-side 3D model slicer at `/split3r`. All geometry processing runs in the browser — no server round-trips, no file uploads.
+Karaslice is a fully client-side 3D mesh slicer and analyzer at `/karaslice`. All geometry processing runs in the browser — no server round-trips, no file uploads.
 
 ```
-src/components/split3r/
-├── split3r-app.tsx       # Main UI component (sidebar tabs + state)
+src/components/karaslice/
+├── karaslice-app.tsx     # Main UI component (sidebar tabs + state)
 ├── viewport.tsx          # Three.js WebGL viewport (forwardRef, OrbitControls)
 ├── manifold-engine.ts    # Core geometry engine
-└── stl-utils.ts          # Binary STL / OBJ export, mesh analysis
+├── stl-utils.ts          # Binary STL / OBJ export, mesh analysis
+└── voxel-reconstruct.ts  # Voxel-based mesh reconstruction
 ```
 
 ### Geometry Pipeline
@@ -106,12 +111,13 @@ File (STL / OBJ / 3MF)
                           └─► SplitPart[] → STL / OBJ / ZIP export
 ```
 
-### Split3r UI Features
+### Karaslice UI Features
 
 - **Unit selector** — Global mm / cm / in toggle; all dimensions, volumes, and surface areas convert in real-time
 - **Custom printer volume** — Preset / Custom toggle in Pre-Split tab; manual X/Y/Z input in the current display unit, stored internally as mm
 - **Auto-calculate cuts** — Compares mesh bounding box to printer volume and places cut planes where needed
 - **Weight estimate** — Material density selector (PLA, PETG, ABS, ASA, TPU, Nylon, Resin, CF) with per-part and total weight
+- **Voxel reconstruction** — Shell-based voxel approach for non-manifold mesh recovery
 
 ### manifold-engine exports
 
@@ -204,12 +210,12 @@ npm run dev        # starts on http://localhost:9002
 6. Order saved to `localStorage` key `kl_orders` for the customer portal
 7. Customer profile (name, email) saved to `localStorage` key `kl_customer`
 
-## Split3r → Quote Flow
+## Karaslice → Quote Flow
 
-1. User splits a model in Split3r
-2. **Send Parts to Quote** serialises each part to binary STL and stores it in `split3rTransfer` (module-level store in `src/lib/split3r-transfer.ts`)
-3. Router navigates to `/quote?from=split3r`
-4. The Quote Wizard detects the `from=split3r` param and pre-loads the transferred files
+1. User splits a model in Karaslice
+2. **Send Parts to Quote** serialises each part to binary STL and stores it in `karasliceTransfer` (module-level store in `src/lib/karaslice-transfer.ts`)
+3. Router navigates to `/quote?from=karaslice`
+4. The Quote Wizard detects the `from=karaslice` param and pre-loads the transferred files
 5. The module-level store survives the client-side navigation (no page reload) and is cleared after pickup
 
 ## Deployment

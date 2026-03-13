@@ -2,18 +2,18 @@
 
 import dynamic from "next/dynamic";
 
-const Split3rApp = dynamic(
-  () => import("@/components/split3r/split3r-app").then((m) => m.Split3rApp),
+const KarasliceApp = dynamic(
+  () => import("@/components/karaslice/karaslice-app").then((m) => m.KarasliceApp),
   {
     ssr: false,
     loading: () => (
       <div className="flex h-screen items-center justify-center bg-background text-muted-foreground text-sm">
-        Loading Split3r…
+        Loading Karaslice…
       </div>
     ),
   }
 );
 
-export function Split3rClient() {
-  return <Split3rApp />;
+export function KarasliceClient() {
+  return <KarasliceApp />;
 }

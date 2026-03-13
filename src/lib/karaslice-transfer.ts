@@ -1,21 +1,22 @@
 /**
- * In-memory transfer store for passing Split3r parts to the quote wizard.
+ * In-memory transfer store for passing Karaslice parts to the quote wizard.
  * Module-level state survives Next.js client-side navigation (router.push),
  * which is intentional — we use router.push instead of window.location.href
  * specifically to avoid a full page reload that would clear this state.
  */
 
-export interface Split3rPartTransfer {
+export interface KaraslicePartTransfer {
   name: string;
   file: File;
   bbox: { x: number; y: number; z: number };
   volumeMM3: number;
+  triangleCount: number;
 }
 
-let _pending: Split3rPartTransfer[] = [];
+let _pending: KaraslicePartTransfer[] = [];
 
-export const split3rTransfer = {
-  set(parts: Split3rPartTransfer[]) { _pending = parts; },
-  get(): Split3rPartTransfer[] { return _pending; },
+export const karasliceTransfer = {
+  set(parts: KaraslicePartTransfer[]) { _pending = parts; },
+  get(): KaraslicePartTransfer[] { return _pending; },
   clear() { _pending = []; },
 };

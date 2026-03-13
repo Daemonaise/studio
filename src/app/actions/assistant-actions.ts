@@ -7,11 +7,12 @@ interface AssistantActionInput {
     query: string;
     fileName?: string;
     fileDataUri?: string;
+    history?: { role: 'user' | 'assistant'; content: string }[];
 }
 
 export async function getAssistantResponse(input: AssistantActionInput) {
-    const { query, fileName, fileDataUri } = input;
-    
+    const { query, fileName, fileDataUri, history } = input;
+
     let metrics: MeshMetrics | undefined = undefined;
 
     if (fileDataUri && fileName) {
@@ -24,13 +25,13 @@ export async function getAssistantResponse(input: AssistantActionInput) {
             metrics = await analyzeMeshFile({ fileName, buffer });
         } catch (error) {
             console.error("Failed to analyze mesh for assistant:", error);
-            // Don't block the request if analysis fails, just proceed without metrics
         }
     }
 
     const assistantResponse = await aiEngineeringAssistant({
         query,
         metrics,
+        history,
     });
 
     return assistantResponse;

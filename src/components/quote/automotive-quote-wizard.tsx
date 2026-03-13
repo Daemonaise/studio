@@ -3,7 +3,7 @@
 
 import { useState, useRef, Suspense, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import type { Split3rPartTransfer } from "@/lib/split3r-transfer";
+import type { KaraslicePartTransfer } from "@/lib/karaslice-transfer";
 import { Upload, Loader2, Wand2, Info, Clock, AlertTriangle, CheckCircle2, CreditCard, MapPin, Phone, Mail, User, Building2, FileBox, Layers, Zap, Package, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,7 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { QuoteOutput } from "@/ai/flows/quote-generator-flow";
-import { generateQuoteFromModel } from "@/app/actions/quote-actions";
+import { generateQuoteFromModel, generateQuoteFromMetrics } from "@/app/actions/quote-actions";
 import { createCheckoutSession, ShippingInfo } from "@/app/actions/checkout-actions";
 import { materials } from "@/app/data/materials";
 import pricingMatrix from "@/app/data/pricing-matrix.json";
@@ -128,22 +128,22 @@ function AutomotiveQuoteWizardInner() {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ── Multi-part state (Split3r) ──────────────────────────────────────────────
-  const [multiParts, setMultiParts] = useState<Split3rPartTransfer[]>([]);
+  // ── Multi-part state (Karaslice) ────────────────────────────────────────────
+  const [multiParts, setMultiParts] = useState<KaraslicePartTransfer[]>([]);
   const [partQuotes, setPartQuotes] = useState<(QuoteOutput | null)[]>([]);
   const [activePartIndex, setActivePartIndex] = useState(0);
   const [quotingIndex, setQuotingIndex] = useState<number | null>(null); // which part is being quoted
   const isMultiMode = multiParts.length > 0;
 
-  // Load parts from the transfer store when arriving from Split3r
+  // Load parts from the transfer store when arriving from Karaslice
   useEffect(() => {
-    if (searchParams.get("from") !== "split3r") return;
-    import("@/lib/split3r-transfer").then(({ split3rTransfer }) => {
-      const parts = split3rTransfer.get();
+    if (searchParams.get("from") !== "karaslice") return;
+    import("@/lib/karaslice-transfer").then(({ karasliceTransfer }) => {
+      const parts = karasliceTransfer.get();
       if (parts.length > 0) {
         setMultiParts(parts);
         setPartQuotes(new Array(parts.length).fill(null));
-        split3rTransfer.clear();
+        karasliceTransfer.clear();
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -236,29 +236,42 @@ function AutomotiveQuoteWizardInner() {
     }
   };
 
-  // Quote all Split3r parts in succession
+  // Quote all Karaslice parts — uses pre-computed metrics (no file re-analysis).
+  // Fires requests in batches of 6 for parallelism without overwhelming the server.
   const handleQuoteAll = useCallback(async () => {
     if (multiParts.length === 0) return;
     setIsLoading(true);
     setError(null);
     const results: (QuoteOutput | null)[] = new Array(multiParts.length).fill(null);
-    for (let i = 0; i < multiParts.length; i++) {
-      setQuotingIndex(i);
-      setActivePartIndex(i);
+    const BATCH = 6; // concurrent requests per batch
+
+    for (let start = 0; start < multiParts.length; start += BATCH) {
+      const end = Math.min(start + BATCH, multiParts.length);
+      setQuotingIndex(start);
+      setActivePartIndex(start);
+
+      const batchPromises = [];
+      for (let i = start; i < end; i++) {
+        const part = multiParts[i];
+        batchPromises.push(
+          generateQuoteFromMetrics({
+            bbox_mm: part.bbox,
+            volumeMM3: part.volumeMM3,
+            triangleCount: part.triangleCount,
+            material,
+            nozzleSize,
+            autoPrinterSelection,
+            selectedPrinterKey: userSelectedPrinter,
+          }).then((result) => { results[i] = result; })
+            .catch((e: any) => { throw new Error(`Part ${i + 1} failed: ${e.message ?? "Unknown error"}`); })
+        );
+      }
+
       try {
-        const fileDataUri = await toDataURL(multiParts[i].file);
-        const result = await generateQuoteFromModel({
-          fileName: multiParts[i].name,
-          fileDataUri,
-          material,
-          nozzleSize,
-          autoPrinterSelection,
-          selectedPrinterKey: userSelectedPrinter,
-        });
-        results[i] = result;
-        setPartQuotes([...results]);
+        await Promise.all(batchPromises);
+        setPartQuotes([...results]); // single state update per batch
       } catch (e: any) {
-        setError(`Part ${i + 1} failed: ${e.message ?? "Unknown error"}`);
+        setError(e.message);
         break;
       }
     }
@@ -303,7 +316,7 @@ function AutomotiveQuoteWizardInner() {
             : representativeQuote.estimatedHours,
           selectedPrinterKey: representativeQuote.selectedPrinterKey,
           fileName: isMultiMode
-            ? `${multiParts.length} parts (Split3r)`
+            ? `${multiParts.length} parts (Karaslice)`
             : (file?.name || "3D Model"),
         },
         shipping
@@ -350,12 +363,12 @@ function AutomotiveQuoteWizardInner() {
             </CardHeader>
 
             <CardContent className="space-y-5 flex-grow">
-              {/* Multi-part list (Split3r mode) OR single file upload */}
+              {/* Multi-part list (Karaslice mode) OR single file upload */}
               {isMultiMode ? (
                 <div className="space-y-2">
                   <Label className="flex items-center gap-1.5">
                     <Package className="h-3.5 w-3.5 text-muted-foreground" />
-                    {multiParts.length} Parts from Split3r
+                    {multiParts.length} Parts from Karaslice
                   </Label>
                   <div className="rounded-lg border border-border divide-y divide-border max-h-44 overflow-y-auto">
                     {multiParts.map((part, i) => {

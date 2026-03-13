@@ -20,7 +20,7 @@ export function geometryToSTLBuffer(geo: THREE.BufferGeometry): ArrayBuffer {
   const view = new DataView(buf);
 
   // 80-byte ASCII header
-  const header = "Split3r export — karasawalabs.com";
+  const header = "Karaslice export — karasawalabs.com";
   for (let i = 0; i < Math.min(header.length, 80); i++) {
     view.setUint8(i, header.charCodeAt(i));
   }
@@ -75,7 +75,7 @@ export function geometryToOBJString(geo: THREE.BufferGeometry, name = "model"): 
   const triCount = pos.count / 3;
 
   const lines: string[] = [
-    "# Split3r export — karasawalabs.com",
+    "# Karaslice export — karasawalabs.com",
     `o ${name}`,
     "",
   ];

@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { href: "/automotive", label: "Automotive" },
   { href: "/materials", label: "Materials" },
-  { href: "/split3r", label: "Split3r" },
+  { href: "/karaslice", label: "Karaslice" },
 ];
 
 export function Header() {
