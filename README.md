@@ -78,7 +78,19 @@ public/
 │   └── logo.svg              # Full Karasawa Labs wordmark SVG
 └── index.html                # Firebase Hosting static fallback
 
-docs/                         # Internal architecture and debug notes
+docs/
+├── ai-repair-plan.md              # AI-driven executable repair plan spec
+├── blueprint.md                   # Original project blueprint
+├── flipped-faces-nonmanifold-fix.md # Flipped face and non-manifold edge fixes
+├── grid-overflow-fix.md           # Emergency grid overflow guard documentation
+├── karaslice-architecture.md      # Karaslice webapp architecture overview
+├── mesh-pipeline.md               # Mesh processing pipeline architecture
+├── performance-analysis.md        # Performance profiling and analysis
+├── post-mc-processing.md          # Post marching-cubes processing pipeline
+├── shell-reconstruction.md        # Shell reconstruction and AI analysis
+├── slicer-debugging.md            # Slicer debug instructions
+├── slicer-fix.md                  # Slicer fix instructions
+└── voxel-reconstruction.md        # Voxel reconstruction architecture
 ```
 
 ## Karaslice Architecture

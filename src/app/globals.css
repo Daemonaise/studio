@@ -105,9 +105,14 @@
 
 /* ── Splash screen & page-transition animations ─────────────────────── */
 
-@keyframes kl-scan-progress {
-  0%   { left: -65%; }
-  100% { left: 110%; }
+@keyframes kl-bar-fill {
+  0%   { width: 0%; }
+  15%  { width: 12%; }
+  35%  { width: 38%; }
+  55%  { width: 58%; }
+  75%  { width: 78%; }
+  90%  { width: 92%; }
+  100% { width: 100%; }
 }
 
 @keyframes kl-scan-h {
@@ -124,17 +129,15 @@
   100% { transform: translateX(110%);  opacity: 0;   }
 }
 
-.kl-scan-progress {
+.kl-bar-fill {
   position: absolute;
-  inset-y: 0;
-  width: 60%;
-  background: linear-gradient(
-    to right,
-    transparent,
-    hsl(183 91% 43% / 0.9),
-    transparent
-  );
-  animation: kl-scan-progress 1.5s ease-in-out infinite;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: hsl(183 91% 43% / 0.85);
+  box-shadow: 0 0 8px hsl(183 91% 43% / 0.6), 0 0 2px hsl(183 91% 43%);
+  border-radius: inherit;
+  animation: kl-bar-fill 2.2s cubic-bezier(0.25, 0.1, 0.25, 1) forwards;
 }
 
 .kl-scan-h {

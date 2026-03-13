@@ -41,16 +41,164 @@ export function autoVoxelResolution(bboxMM: {
   return Math.max(1, Math.min(maxDim / 500, 20));
 }
 
-/** Rough estimate of output triangle count (upper bound for UI display). */
+/**
+ * Rough estimate of output triangle count for UI display.
+ *
+ * Returns the *intermediate* block-mesh count.  If a `simplifyTarget` is
+ * provided (from the AI repair plan), the final output will be capped to
+ * that value — so the UI should show `Math.min(estimate, simplifyTarget)`.
+ */
 export function estimateOutputTriangles(
   bboxMM: { x: number; y: number; z: number },
-  resolutionMM: number
+  resolutionMM: number,
+  simplifyTarget?: number,
 ): number {
   const gx = Math.ceil(bboxMM.x / resolutionMM) + 2;
   const gy = Math.ceil(bboxMM.y / resolutionMM) + 2;
   const gz = Math.ceil(bboxMM.z / resolutionMM) + 2;
   // 2 triangles per face × 2 sides × 3 axis pairs
-  return 4 * (gx * gy + gy * gz + gz * gx);
+  const raw = 4 * (gx * gy + gy * gz + gz * gx);
+  return simplifyTarget && simplifyTarget > 0 ? Math.min(raw, simplifyTarget) : raw;
+}
+
+// ─── Grid overflow guards ─────────────────────────────────────────────────────
+
+const MAX_VOXELS_PER_AXIS = 1000;
+const MAX_TOTAL_VOXELS = 200_000_000;   // 200M ≈ 200 MB as Uint8Array
+const MAX_BBOX_DIMENSION_MM = 100_000;  // 100 meters
+
+/**
+ * Minimum resolution (mm) that keeps the grid within safe limits.
+ * Use this to clamp the UI slider so users can't pick values that will fail.
+ */
+export function minSafeResolution(
+  bboxMM: { x: number; y: number; z: number },
+  padding = 2,
+): number {
+  const maxDim = Math.max(bboxMM.x, bboxMM.y, bboxMM.z);
+  // Per-axis constraint: (maxDim / res) + padding <= MAX_VOXELS_PER_AXIS
+  const fromAxis = maxDim / (MAX_VOXELS_PER_AXIS - padding);
+  // Total-voxel constraint (cubic approximation for worst case)
+  const vol = bboxMM.x * bboxMM.y * bboxMM.z;
+  const fromTotal = Math.cbrt(vol / MAX_TOTAL_VOXELS);
+  // Return the binding constraint, rounded up to nearest 0.5mm
+  const raw = Math.max(fromAxis, fromTotal, 0.5);
+  return Math.ceil(raw * 2) / 2; // round up to 0.5 step
+}
+
+/** Guard 1: Validate bounding box before voxelization. */
+function validateBBox(bbSize: THREE.Vector3, bbMin: THREE.Vector3): void {
+  const vals = [bbMin.x, bbMin.y, bbMin.z, bbSize.x, bbSize.y, bbSize.z];
+  for (const v of vals) {
+    if (!Number.isFinite(v)) {
+      throw new Error(`BBox contains non-finite value: ${v}`);
+    }
+  }
+  if (bbSize.x <= 0 || bbSize.y <= 0 || bbSize.z <= 0) {
+    throw new Error(
+      `BBox has zero/negative dimension: ${bbSize.x.toFixed(1)} × ${bbSize.y.toFixed(1)} × ${bbSize.z.toFixed(1)}`
+    );
+  }
+  if (bbSize.x > MAX_BBOX_DIMENSION_MM || bbSize.y > MAX_BBOX_DIMENSION_MM || bbSize.z > MAX_BBOX_DIMENSION_MM) {
+    throw new Error(
+      `BBox suspiciously large: ${bbSize.x.toFixed(1)} × ${bbSize.y.toFixed(1)} × ${bbSize.z.toFixed(1)} mm (max ${MAX_BBOX_DIMENSION_MM} mm per axis)`
+    );
+  }
+}
+
+/** Guard 2: Validate grid dimensions before allocating. */
+function validateGridDims(
+  gx: number, gy: number, gz: number, resolution: number,
+): void {
+  if (gx > MAX_VOXELS_PER_AXIS || gy > MAX_VOXELS_PER_AXIS || gz > MAX_VOXELS_PER_AXIS) {
+    const maxDim = Math.max(gx, gy, gz);
+    const minRes = (maxDim * resolution / MAX_VOXELS_PER_AXIS);
+    throw new Error(
+      `Grid too large: ${gx} × ${gy} × ${gz} (max ${MAX_VOXELS_PER_AXIS}/axis). ` +
+      `Increase resolution to at least ${minRes.toFixed(1)} mm.`
+    );
+  }
+  const totalVoxels = gx * gy * gz;
+  const memoryMB = Math.round(totalVoxels / 1_000_000);
+  if (totalVoxels > MAX_TOTAL_VOXELS) {
+    throw new Error(
+      `Grid requires ~${memoryMB} MB (${totalVoxels.toLocaleString()} voxels, max ${MAX_TOTAL_VOXELS.toLocaleString()}). Increase resolution.`
+    );
+  }
+}
+
+/**
+ * Guard 3: Validate output positions are finite and within expected bounds.
+ * Samples up to 1000 evenly-spaced vertices instead of scanning every one —
+ * the overflow bug is systematic (wrong origin/resolution), so if any sample
+ * is bad they'll all be bad.
+ */
+function validateOutputPositions(
+  positions: Float32Array,
+  bbMin: THREE.Vector3, bbMax: THREE.Vector3,
+  resolution: number,
+): void {
+  const vertCount = Math.floor(positions.length / 3);
+  if (vertCount === 0) return;
+
+  const margin = resolution * 5;
+  const minX = bbMin.x - margin, maxX = bbMax.x + margin;
+  const minY = bbMin.y - margin, maxY = bbMax.y + margin;
+  const minZ = bbMin.z - margin, maxZ = bbMax.z + margin;
+
+  // Sample up to 1000 vertices: first, last, and evenly spaced
+  const MAX_SAMPLES = 1000;
+  const step = Math.max(1, Math.floor(vertCount / MAX_SAMPLES));
+
+  for (let vi = 0; vi < vertCount; vi += step) {
+    const i = vi * 3;
+    const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      throw new Error(`Output contains NaN/Infinity at vertex ${vi}: (${x}, ${y}, ${z})`);
+    }
+    if (x < minX || x > maxX || y < minY || y > maxY || z < minZ || z > maxZ) {
+      throw new Error(
+        `Output vertex ${vi} outside expected bounds: ` +
+        `(${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)}) vs bbox ` +
+        `(${bbMin.x.toFixed(1)}..${bbMax.x.toFixed(1)}, ${bbMin.y.toFixed(1)}..${bbMax.y.toFixed(1)}, ${bbMin.z.toFixed(1)}..${bbMax.z.toFixed(1)})`
+      );
+    }
+  }
+
+  // Always check the very last vertex too
+  const lastI = (vertCount - 1) * 3;
+  const lx = positions[lastI], ly = positions[lastI + 1], lz = positions[lastI + 2];
+  if (!Number.isFinite(lx) || !Number.isFinite(ly) || !Number.isFinite(lz)) {
+    throw new Error(`Output contains NaN/Infinity at last vertex ${vertCount - 1}: (${lx}, ${ly}, ${lz})`);
+  }
+}
+
+/**
+ * Guard 4: Pre-flight check on intermediate triangle count.
+ *
+ * The *intermediate* block-mesh / MC output can be large — the post-processing
+ * pipeline (Taubin smooth + QEM simplify) will reduce it.  What matters is
+ * whether the Float32Array allocation for positions will exceed the browser's
+ * ArrayBuffer limit (~2 GB).  Each triangle = 9 floats × 4 bytes = 36 bytes.
+ * 50M triangles ≈ 1.8 GB — use that as the hard ceiling.
+ */
+const MAX_INTERMEDIATE_TRIANGLES = 50_000_000;
+
+function validateEstimatedTriangles(gx: number, gy: number, gz: number): void {
+  const surfaceCubes = 2 * (gx * gy + gy * gz + gx * gz);
+  const estimate = surfaceCubes * 2;
+  if (estimate > MAX_INTERMEDIATE_TRIANGLES) {
+    throw new Error(
+      `Estimated ${estimate.toLocaleString()} intermediate triangles would exceed memory limit. Increase resolution.`
+    );
+  }
+}
+
+/** Validate that resolution is a finite positive number. */
+function validateResolution(resolution: number): void {
+  if (typeof resolution !== "number" || !Number.isFinite(resolution) || resolution <= 0) {
+    throw new Error(`Invalid resolution: ${resolution} (must be a finite positive number)`);
+  }
 }
 
 /**
@@ -113,12 +261,19 @@ export async function voxelReconstruct(
   const resolution =
     resolutionMM ?? autoVoxelResolution({ x: bbSize.x, y: bbSize.y, z: bbSize.z });
 
+  // ── Guards ──────────────────────────────────────────────────────────────────
+  validateResolution(resolution);
+  validateBBox(bbSize, bb.min);
+
   // 1-voxel padding on all sides guarantees the BFS corner is always exterior.
   const PAD = 1;
   const gx = Math.ceil(bbSize.x / resolution) + 2 * PAD;
   const gy = Math.ceil(bbSize.y / resolution) + 2 * PAD;
   const gz = Math.ceil(bbSize.z / resolution) + 2 * PAD;
   const dims: [number, number, number] = [gx, gy, gz];
+
+  validateGridDims(gx, gy, gz, resolution);
+  validateEstimatedTriangles(gx, gy, gz);
 
   // World position of voxel (0, 0, 0)'s corner.
   const ox = bb.min.x - PAD * resolution;
@@ -298,6 +453,10 @@ export async function voxelReconstruct(
 
   const outGeo = new THREE.BufferGeometry();
   const posFloat = new Float32Array(posOut);
+
+  // Guard 3: validate output positions
+  validateOutputPositions(posFloat, bb.min, bb.max, resolution);
+
   outGeo.setAttribute("position", new THREE.BufferAttribute(posFloat, 3));
   outGeo.computeVertexNormals();
 
@@ -559,10 +718,19 @@ export async function quadricSimplify(
   // Edge → collapse cost (use min-heap via sorted array rebuilt periodically)
   type EdgeEntry = { v0: number; v1: number; cost: number; mx: number; my: number; mz: number };
   const edgeSet = new Set<string>();
-  const edges: EdgeEntry[] = [];
+  let edges: EdgeEntry[] = [];
 
   function edgeKey(a: number, b: number): string {
     return a < b ? `${a},${b}` : `${b},${a}`;
+  }
+
+  // 3×3 determinant — used by Cramer's rule below
+  function d3(
+    a: number, b: number, c: number,
+    d: number, e: number, f: number,
+    g: number, h: number, i: number,
+  ): number {
+    return a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
   }
 
   function computeEdgeCost(a: number, b: number): EdgeEntry {
@@ -573,27 +741,28 @@ export async function quadricSimplify(
     const s7 = Q[qa+7]+Q[qb+7], s8 = Q[qa+8]+Q[qb+8];
     const s9 = Q[qa+9]+Q[qb+9];
 
-    // Try to find optimal position by solving the 3×3 system
-    // [s0 s1 s2] [x]   [-s3]
-    // [s1 s4 s5] [y] = [-s6]
-    // [s2 s5 s7] [z]   [-s8]
-    const det =
-      s0*(s4*s7 - s5*s5) -
-      s1*(s1*s7 - s5*s2) +
-      s2*(s1*s5 - s4*s2);
+    // Midpoint fallback
+    const midX = (vx[a] + vx[b]) * 0.5;
+    const midY = (vy[a] + vy[b]) * 0.5;
+    const midZ = (vz[a] + vz[b]) * 0.5;
+    let mx = midX, my = midY, mz = midZ;
 
-    let mx: number, my: number, mz: number;
-    if (Math.abs(det) > 1e-15) {
+    // Solve Ax = b via Cramer's rule using det3x3 helper
+    // A = [[s0,s1,s2],[s1,s4,s5],[s2,s5,s7]], b = [-s3,-s6,-s8]
+    const det = d3(s0,s1,s2, s1,s4,s5, s2,s5,s7);
+
+    if (Math.abs(det) > 1e-10) {
       const idet = 1 / det;
-      mx = idet * ((-s3)*(s4*s7 - s5*s5) - s1*(-s6*s7 + s5*s8) + s2*(-s6*s5 + s4*s8));
-      // Actually let's use the simpler formula; we'll just pick midpoint if det is small
-      my = idet * (s0*(-s6*s7 + s5*s8) - (-s3)*(s1*s7 - s5*s2) + s2*(s1*s8 - (-s6)*s2));
-      mz = idet * (s0*(s4*s8 - (-s6)*s5) - s1*(s1*s8 - (-s6)*s2) + (-s3)*(s1*s5 - s4*s2));
-    } else {
-      // Fallback: use midpoint
-      mx = (vx[a] + vx[b]) * 0.5;
-      my = (vy[a] + vy[b]) * 0.5;
-      mz = (vz[a] + vz[b]) * 0.5;
+      const cx = idet * d3(-s3,s1,s2, -s6,s4,s5, -s8,s5,s7);
+      const cy = idet * d3(s0,-s3,s2, s1,-s6,s5, s2,-s8,s7);
+      const cz = idet * d3(s0,s1,-s3, s1,s4,-s6, s2,s5,-s8);
+
+      // Validate: optimal position must be near the edge (within 2× edge length)
+      const edgeLenSq = (vx[b]-vx[a])**2 + (vy[b]-vy[a])**2 + (vz[b]-vz[a])**2;
+      const distSq = (cx-midX)**2 + (cy-midY)**2 + (cz-midZ)**2;
+      if (distSq < edgeLenSq * 4) {
+        mx = cx; my = cy; mz = cz;
+      }
     }
 
     // Cost = v^T Q v  (using the combined quadric)
@@ -634,6 +803,9 @@ export async function quadricSimplify(
   let edgeIdx = 0;
   let lastYield = Date.now();
   const startLive = liveTriCount;
+  let rebuilds = 0;
+
+  for (;;) { // outer loop — rebuilds edge list when exhausted
 
   while (liveTriCount > targetTriangles && edgeIdx < edges.length) {
     const e = edges[edgeIdx++];
@@ -707,7 +879,33 @@ export async function quadricSimplify(
       await yieldToUI();
       lastYield = Date.now();
     }
+  } // end inner while
+
+  // If target reached or max rebuilds exhausted, stop
+  if (liveTriCount <= targetTriangles || ++rebuilds > 3) break;
+
+  // Rebuild edge list from remaining alive triangles (costs are stale after collapses)
+  edgeSet.clear();
+  edges = [];
+  edgeIdx = 0;
+  for (let t = 0; t < srcTriCount; t++) {
+    if (!alive[t]) continue;
+    const ri0 = resolve(tris[t*3]), ri1 = resolve(tris[t*3+1]), ri2 = resolve(tris[t*3+2]);
+    for (const [ea, eb] of [[ri0,ri1],[ri1,ri2],[ri2,ri0]] as [number,number][]) {
+      if (ea === eb) continue;
+      const k = edgeKey(ea, eb);
+      if (!edgeSet.has(k)) {
+        edgeSet.add(k);
+        edges.push(computeEdgeCost(ea, eb));
+      }
+    }
   }
+  edges.sort((a, b) => a.cost - b.cost);
+  if (onProgress) onProgress(0, 100, `Re-sorting edges (pass ${rebuilds})…`);
+  await yieldToUI();
+  lastYield = Date.now();
+
+  } // end outer for(;;) rebuild loop
 
   // ── Rebuild non-indexed BufferGeometry ────────────────────────────────
   const outPos: number[] = [];
@@ -741,8 +939,11 @@ export interface PostProcessParams {
 
 /**
  * Full post-processing pipeline for voxel reconstruction output:
- *   1. Taubin smoothing (removes stair-step artifacts)
- *   2. Quadric simplification (reduces over-tessellation)
+ *   1. Quadric simplification (reduces over-tessellation from 8M → target)
+ *   2. Taubin smoothing (removes stair-step artifacts on reduced mesh)
+ *
+ * Simplification runs FIRST so smoothing operates on the reduced mesh
+ * (~410K triangles instead of ~8M), preventing browser hangs.
  */
 export async function postProcessVoxelOutput(
   geo: THREE.BufferGeometry,
@@ -751,17 +952,19 @@ export async function postProcessVoxelOutput(
 ): Promise<THREE.BufferGeometry> {
   let result = geo;
 
-  // Step 1: Taubin smoothing
-  if (params.smoothingIterations > 0) {
-    if (onProgress) onProgress(0, 2, "Smoothing surface…");
-    await taubinSmooth(result, params.smoothingIterations, onProgress);
-  }
-
-  // Step 2: Quadric simplification
+  // Step 1: Quadric simplification (reduce bloated voxel output FIRST —
+  // voxelization over-tessellates 4-8×, running smoothing on millions of
+  // triangles is what causes browser hang/crash)
   const currentTris = Math.floor((result.attributes.position.array as Float32Array).length / 9);
   if (params.simplifyTarget > 0 && currentTris > params.simplifyTarget) {
-    if (onProgress) onProgress(1, 2, "Simplifying mesh…");
+    if (onProgress) onProgress(0, 2, "Simplifying mesh…");
     result = await quadricSimplify(result, params.simplifyTarget, onProgress);
+  }
+
+  // Step 2: Taubin smoothing (runs on the reduced mesh — much faster)
+  if (params.smoothingIterations > 0) {
+    if (onProgress) onProgress(1, 2, "Smoothing surface…");
+    await taubinSmooth(result, params.smoothingIterations, onProgress);
   }
 
   return result;
@@ -1003,12 +1206,19 @@ export async function shellVoxelReconstruct(
   const resolution =
     resolutionMM ?? autoVoxelResolution({ x: bbSize.x, y: bbSize.y, z: bbSize.z });
 
+  // ── Guards ──────────────────────────────────────────────────────────────────
+  validateResolution(resolution);
+  validateBBox(bbSize, bb.min);
+
   // Padding: dilation amount + 1 voxel safety border
   const PAD = dilationVoxels + 1;
   const gx = Math.ceil(bbSize.x / resolution) + 2 * PAD;
   const gy = Math.ceil(bbSize.y / resolution) + 2 * PAD;
   const gz = Math.ceil(bbSize.z / resolution) + 2 * PAD;
   const dims: [number, number, number] = [gx, gy, gz];
+
+  validateGridDims(gx, gy, gz, resolution);
+  validateEstimatedTriangles(gx, gy, gz);
 
   const ox = bb.min.x - PAD * resolution;
   const oy = bb.min.y - PAD * resolution;
@@ -1098,6 +1308,10 @@ export async function shellVoxelReconstruct(
 
   const outGeo = new THREE.BufferGeometry();
   const posFloat = new Float32Array(posOut);
+
+  // Guard 3: validate output positions
+  validateOutputPositions(posFloat, bb.min, bb.max, resolution);
+
   outGeo.setAttribute("position", new THREE.BufferAttribute(posFloat, 3));
   outGeo.computeVertexNormals();
   g.dispose();

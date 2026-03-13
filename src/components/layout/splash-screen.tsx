@@ -86,10 +86,10 @@ export function SplashScreen() {
 
         {/* Progress bar */}
         <div
-          className="mt-2 w-52 h-px relative overflow-hidden rounded-full animate-in fade-in-0 duration-500 delay-500"
+          className="mt-2 w-52 h-[2px] relative overflow-hidden rounded-full animate-in fade-in-0 duration-500 delay-500"
           style={{ background: "hsl(183 91% 43% / 0.12)" }}
         >
-          <div className="kl-scan-progress" />
+          <div className="kl-bar-fill" />
         </div>
 
         {/* Status text */}

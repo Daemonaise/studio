@@ -49,6 +49,7 @@ export interface ViewportHandle {
 
 interface ViewportProps {
   onMeshLoaded: (info: MeshInfo) => void;
+  onLoadStart?: () => void;
   cutPlanes: CutPlane[];
   printerVolume: { x: number; y: number; z: number } | null;
   transforms?: TransformState;
@@ -73,6 +74,7 @@ const PART_COLORS = [
 export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewport(
   {
     onMeshLoaded,
+    onLoadStart,
     cutPlanes,
     printerVolume,
     transforms,
@@ -358,6 +360,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   }, [onMeshLoaded, rebuildPlanes]);
 
   const handleFile = useCallback((file: File) => {
+    onLoadStart?.();
     const ext = file.name.split(".").pop()?.toLowerCase();
     const mb  = parseFloat((file.size / 1024 / 1024).toFixed(2));
 
@@ -394,7 +397,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         }
       });
     }
-  }, [loadGeometry]);
+  }, [loadGeometry, onLoadStart]);
 
   // ── Imperative handle ───────────────────────────────────────────────────────
 

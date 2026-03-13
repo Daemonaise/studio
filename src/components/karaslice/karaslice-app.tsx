@@ -150,10 +150,12 @@ export function KarasliceApp() {
 
   // ── Core state ──────────────────────────────────────────────────────────────
   const [meshInfo, setMeshInfo] = useState<MeshInfo | null>(null);
+  const [fileLoading, setFileLoading] = useState(false);
   const [tab, setTab] = useState<Tab>("file");
 
   // ── Analysis ────────────────────────────────────────────────────────────────
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeStep, setAnalyzeStep] = useState("");
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
 
   // ── Repair (mesh) ───────────────────────────────────────────────────────────
@@ -178,7 +180,7 @@ export function KarasliceApp() {
   // ── AI mesh analysis ─────────────────────────────────────────────────────────
   const [aiAnalysis, setAiAnalysis] = useState<import("@/app/actions/mesh-analysis-actions").AIMeshAnalysisResult | null>(null);
   const [analyzingAI, setAnalyzingAI] = useState(false);
-  const [reconstructMode, setReconstructMode] = useState<"solid_voxel" | "shell_voxel">("solid_voxel");
+  const [reconstructMode, setReconstructMode] = useState<"solid_voxel" | "shell_voxel" | "point_cloud">("solid_voxel");
 
   // ── Prepare ─────────────────────────────────────────────────────────────────
   const [transforms, setTransforms] = useState<TransformState>(DEFAULT_TRANSFORMS);
@@ -246,6 +248,7 @@ export function KarasliceApp() {
 
   // ── Mesh loaded ─────────────────────────────────────────────────────────────
   const handleMeshLoaded = useCallback((info: MeshInfo) => {
+    setFileLoading(false);
     setMeshInfo(info);
     setAnalysisResult(null);
     setSplitParts((prev) => { prev.forEach((p) => p.geometry.dispose()); return []; });
@@ -256,29 +259,96 @@ export function KarasliceApp() {
     setAiAnalysis(null);
     setReconstructMode("solid_voxel");
     // Seed the resolution slider to a sensible default for this model's bbox
-    import("./voxel-reconstruct").then(({ autoVoxelResolution }) => {
-      setReconstructResolutionMM(Math.round(autoVoxelResolution(info.boundingBox)));
+    import("./voxel-reconstruct").then(({ autoVoxelResolution, minSafeResolution }) => {
+      const auto = autoVoxelResolution(info.boundingBox);
+      const floor = minSafeResolution(info.boundingBox);
+      setReconstructResolutionMM(Math.round(Math.max(auto, floor) * 2) / 2);
     });
   }, []);
 
   // ── Analysis ────────────────────────────────────────────────────────────────
+  // Combined analyze: runs basic geometry analysis + AI classification in one step
   const handleAnalyze = async () => {
-    if (!viewportRef.current) return;
+    if (!viewportRef.current || !meshInfo) return;
     setAnalyzing(true);
+    setAnalyzingAI(true);
+    setAiAnalysis(null);
+    setAnalyzeStep("Analyzing geometry…");
     await new Promise((r) => setTimeout(r, 0));
     try {
       const geo = viewportRef.current.getRawGeometry();
       if (!geo) return;
+
+      // Step 1: Basic geometry analysis
       const { analyzeGeometry } = await import("./stl-utils");
-      const result = analyzeGeometry(geo);
-      setAnalysisResult(result);
-      // Auto-open voxel reconstruction panel when severely corrupted
-      const { isSeverelyCorrupted } = await import("./voxel-reconstruct");
-      if (isSeverelyCorrupted(result.openEdgeCount, result.nonManifoldEdgeCount, result.triangleCount)) {
+      const basicResult = analyzeGeometry(geo);
+      setAnalysisResult(basicResult);
+
+      // Step 2: Wall thickness estimate
+      setAnalyzeStep("Estimating wall thickness…");
+      await new Promise((r) => setTimeout(r, 0));
+      const { estimateWallThickness } = await import("./voxel-reconstruct");
+      const thickness = await estimateWallThickness(geo, 150);
+
+      // Step 3: AI classification (uses basic analysis data)
+      setAnalyzeStep("AI classifying mesh…");
+      await new Promise((r) => setTimeout(r, 0));
+      const screenshot = viewportRef.current.captureScreenshot() ?? undefined;
+      const { analyzeMeshWithAI } = await import("@/app/actions/mesh-analysis-actions");
+      const aiResult = await analyzeMeshWithAI({
+        triangles: meshInfo.triangleCount,
+        vertices: basicResult.vertexCount,
+        openEdges: basicResult.openEdgeCount,
+        nonManifoldEdges: basicResult.nonManifoldEdgeCount,
+        boundingBox: meshInfo.boundingBox,
+        surfaceAreaMM2: basicResult.surfaceAreaMM2,
+        volumeMM3: basicResult.volumeMM3,
+        avgWallThicknessMM: thickness.avgMM > 0 ? thickness.avgMM : null,
+        fileName: meshInfo.fileName,
+        screenshotBase64: screenshot,
+      });
+
+      setAiAnalysis(aiResult);
+
+      // Auto-select mode, open the relevant repair section, and apply repair plan params
+      if (aiResult.repairStrategy === "shell_voxel") setReconstructMode("shell_voxel");
+      else if (aiResult.repairStrategy === "solid_voxel") setReconstructMode("solid_voxel");
+      else if (aiResult.repairStrategy === "point_cloud") setReconstructMode("point_cloud");
+
+      // Auto-open the recommended repair section (only when there are real defects)
+      const hasDefects = basicResult.openEdgeCount > 0 || basicResult.nonManifoldEdgeCount > 0;
+      if (aiResult.repairStrategy === "solid_voxel" || aiResult.repairStrategy === "shell_voxel" || aiResult.repairStrategy === "point_cloud") {
         setOpenSections((s) => ({ ...s, voxelReconstruct: true }));
+      } else if (aiResult.repairStrategy === "topology_repair" && hasDefects) {
+        setOpenSections((s) => ({ ...s, repair: true }));
       }
+
+      if (aiResult.repairPlan?.params.pointCloud) {
+        const pc = aiResult.repairPlan.params.pointCloud;
+        setReconstructResolutionMM(pc.resolution);
+        setSmoothingIterations(pc.smoothingIterations);
+        setSimplifyEnabled(pc.simplifyTarget > 0);
+      } else if (aiResult.repairPlan?.params.voxel) {
+        const vp = aiResult.repairPlan.params.voxel;
+        const bb = meshInfo.boundingBox;
+        const maxD = Math.max(bb.x, bb.y, bb.z);
+        const floor = Math.ceil(Math.max(maxD / 1000, Math.cbrt(bb.x * bb.y * bb.z / 200_000_000), 0.5) * 2) / 2;
+        setReconstructResolutionMM(Math.max(vp.resolution, floor));
+        setSmoothingIterations(vp.smoothingIterations);
+        setSimplifyEnabled(vp.simplifyTarget > 0);
+      }
+
+      toast({
+        title: `${aiResult.meshType.replace("_", " ")} — ${aiResult.repairStrategy.replace(/_/g, " ")}`,
+        description: aiResult.repairPlan?.userMessage ?? aiResult.reasoning,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({ title: "Analysis failed", description: msg, variant: "destructive" });
     } finally {
       setAnalyzing(false);
+      setAnalyzingAI(false);
+      setAnalyzeStep("");
     }
   };
 
@@ -366,45 +436,83 @@ export function KarasliceApp() {
 
       // Use AI repair plan params if available, otherwise use UI controls
       const plan = aiAnalysis?.repairPlan;
-      const useResolution = plan?.params.voxel?.resolution ?? reconstructResolutionMM;
-      const useDilation = plan?.params.voxel?.dilationVoxels;
-      const useSmoothing = plan?.params.voxel?.smoothingIterations ?? smoothingIterations;
-      const inputTriCount = meshInfo.triangleCount;
-      const useSimplifyTarget = simplifyEnabled
-        ? (plan?.params.voxel?.simplifyTarget ?? Math.round(inputTriCount * 0.8))
-        : 0;
-
-      const { voxelReconstruct, shellVoxelReconstruct, postProcessVoxelOutput } = await import("./voxel-reconstruct");
-
-      // Step 1: Voxel reconstruction
-      const mode = plan?.pipeline === "shell_voxel" || plan?.pipeline === "solid_voxel"
+      // Clamp AI resolution to grid safety floor (minSafeRes)
+      // Determine pipeline mode
+      const mode = plan?.pipeline === "shell_voxel" || plan?.pipeline === "solid_voxel" || plan?.pipeline === "point_cloud"
         ? plan.pipeline : reconstructMode;
-      const fn = mode === "shell_voxel" ? shellVoxelReconstruct : voxelReconstruct;
-      const result = await fn(geo, (_step, _total, msg) => {
-        setReconstructMessage(msg);
-      }, useResolution, ...(mode === "shell_voxel" && useDilation !== undefined ? [useDilation] : []));
 
-      // Step 2: Post-processing (smoothing + simplification)
-      if (useSmoothing > 0 || useSimplifyTarget > 0) {
-        setReconstructMessage("Post-processing…");
-        const processed = await postProcessVoxelOutput(
-          result.geometry,
-          { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget },
-          (_step, _total, msg) => setReconstructMessage(msg),
+      const inputTriCount = meshInfo.triangleCount;
+      let result: import("./voxel-reconstruct").VoxelReconstructResult;
+
+      if (mode === "point_cloud") {
+        // ── Point cloud / MLS reconstruction ──────────────────────────────
+        const pcParams = plan?.params.pointCloud;
+        const useResolution = pcParams?.resolution ?? reconstructResolutionMM;
+        const useSmoothing = pcParams?.smoothingIterations ?? smoothingIterations;
+        const useSimplifyTarget = simplifyEnabled
+          ? (pcParams?.simplifyTarget ?? Math.round(inputTriCount * 1.5))
+          : 0;
+        const useRadiusMult = pcParams?.radiusMultiplier ?? 2;
+
+        const { pointCloudReconstruct } = await import("./poisson-reconstruct");
+        result = await pointCloudReconstruct(geo, (_step, _total, msg) => {
+          setReconstructMessage(msg);
+        }, { resolution: useResolution, radiusMultiplier: useRadiusMult });
+
+        // Post-processing (smoothing + simplification)
+        if (useSmoothing > 0 || useSimplifyTarget > 0) {
+          const { postProcessVoxelOutput } = await import("./voxel-reconstruct");
+          setReconstructMessage("Post-processing…");
+          const processed = await postProcessVoxelOutput(
+            result.geometry,
+            { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget },
+            (_step, _total, msg) => setReconstructMessage(msg),
+          );
+          const finalTris = Math.floor((processed.attributes.position.array as Float32Array).length / 9);
+          result.geometry = processed;
+          result.outputTriangles = finalTris;
+        }
+      } else {
+        // ── Voxel reconstruction (solid or shell) ─────────────────────────
+        const useResolution = Math.max(
+          plan?.params.voxel?.resolution ?? reconstructResolutionMM,
+          minSafeRes,
         );
+        const useDilation = plan?.params.voxel?.dilationVoxels;
+        const useSmoothing = plan?.params.voxel?.smoothingIterations ?? smoothingIterations;
+        const useSimplifyTarget = simplifyEnabled
+          ? (plan?.params.voxel?.simplifyTarget ?? Math.round(inputTriCount * 0.8))
+          : 0;
 
-        const finalTris = Math.floor((processed.attributes.position.array as Float32Array).length / 9);
-        result.geometry = processed;
-        result.outputTriangles = finalTris;
+        const { voxelReconstruct, shellVoxelReconstruct, postProcessVoxelOutput } = await import("./voxel-reconstruct");
+
+        const fn = mode === "shell_voxel" ? shellVoxelReconstruct : voxelReconstruct;
+        result = await fn(geo, (_step, _total, msg) => {
+          setReconstructMessage(msg);
+        }, useResolution, ...(mode === "shell_voxel" && useDilation !== undefined ? [useDilation] : []));
+
+        // Post-processing (smoothing + simplification)
+        if (useSmoothing > 0 || useSimplifyTarget > 0) {
+          setReconstructMessage("Post-processing…");
+          const processed = await postProcessVoxelOutput(
+            result.geometry,
+            { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget },
+            (_step, _total, msg) => setReconstructMessage(msg),
+          );
+          const finalTris = Math.floor((processed.attributes.position.array as Float32Array).length / 9);
+          result.geometry = processed;
+          result.outputTriangles = finalTris;
+        }
       }
 
+      const modeLabel = mode === "point_cloud" ? "Point cloud" : mode === "shell_voxel" ? "Shell" : "Solid";
       setReconstructResult(result);
       viewportRef.current.loadRepairedGeometry(result.geometry, meshInfo.fileName);
       setAnalysisResult(null); // invalidate stale analysis
       setAiAnalysis(null);     // analysis refers to old geometry
       toast({
-        title: `${mode === "shell_voxel" ? "Shell" : "Solid"} reconstruction complete`,
-        description: `${result.outputTriangles.toLocaleString()} triangles · ${result.resolution} mm voxels · mesh is watertight`,
+        title: `${modeLabel} reconstruction complete`,
+        description: `${result.outputTriangles.toLocaleString()} triangles · ${result.resolution} mm resolution · mesh is watertight`,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -415,62 +523,7 @@ export function KarasliceApp() {
     }
   };
 
-  // ── AI mesh analysis ──────────────────────────────────────────────────────────
-  const handleAIAnalysis = async () => {
-    if (!viewportRef.current || !meshInfo) return;
-    setAnalyzingAI(true);
-    try {
-      const geo = viewportRef.current.getRawGeometry();
-      if (!geo) return;
-
-      // Wall thickness estimate (runs in browser, uses voxel-reconstruct helper)
-      const { estimateWallThickness } = await import("./voxel-reconstruct");
-      const thickness = await estimateWallThickness(geo, 150);
-
-      // Viewport screenshot (optional — null if renderer not ready)
-      const screenshot = viewportRef.current.captureScreenshot() ?? undefined;
-
-      // Call AI server action
-      const { analyzeMeshWithAI } = await import("@/app/actions/mesh-analysis-actions");
-      const result = await analyzeMeshWithAI({
-        triangles: meshInfo.triangleCount,
-        vertices: analysisResult?.vertexCount ?? 0,
-        openEdges: analysisResult?.openEdgeCount ?? 0,
-        nonManifoldEdges: analysisResult?.nonManifoldEdgeCount ?? 0,
-        boundingBox: meshInfo.boundingBox,
-        surfaceAreaMM2: analysisResult?.surfaceAreaMM2 ?? 0,
-        volumeMM3: analysisResult?.volumeMM3 ?? 0,
-        avgWallThicknessMM: thickness.avgMM > 0 ? thickness.avgMM : null,
-        fileName: meshInfo.fileName,
-        screenshotBase64: screenshot,
-      });
-
-      setAiAnalysis(result);
-      // Auto-select the AI-recommended mode
-      if (result.repairStrategy === "shell_voxel") setReconstructMode("shell_voxel");
-      else if (result.repairStrategy === "solid_voxel") setReconstructMode("solid_voxel");
-
-      // Auto-apply repair plan params to UI controls
-      if (result.repairPlan?.params.voxel) {
-        const vp = result.repairPlan.params.voxel;
-        setReconstructResolutionMM(vp.resolution);
-        setSmoothingIterations(vp.smoothingIterations);
-        setSimplifyEnabled(vp.simplifyTarget > 0);
-      }
-
-      toast({
-        title: `AI: ${result.meshType.replace("_", " ")} → ${result.repairStrategy.replace("_", " ")}`,
-        description: result.heuristic
-          ? "Heuristic analysis (add ANTHROPIC_API_KEY for AI)"
-          : `Confidence: ${Math.round(result.confidence * 100)}%`,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast({ title: "AI analysis failed", description: msg, variant: "destructive" });
-    } finally {
-      setAnalyzingAI(false);
-    }
-  };
+  // handleAIAnalysis removed — merged into handleAnalyze above
 
   // ── Scale ────────────────────────────────────────────────────────────────────
   const handleScaleChange = (axis: "X" | "Y" | "Z", value: number) => {
@@ -617,16 +670,30 @@ export function KarasliceApp() {
        analysisResult.nonManifoldEdgeCount / (analysisResult.triangleCount * 1.5) > 0.005)
     : false;
 
-  const estimatedReconstructTris = meshInfo
-    ? 4 * (
-        (Math.ceil(meshInfo.boundingBox.x / reconstructResolutionMM) + 2) *
-        (Math.ceil(meshInfo.boundingBox.y / reconstructResolutionMM) + 2) +
-        (Math.ceil(meshInfo.boundingBox.y / reconstructResolutionMM) + 2) *
-        (Math.ceil(meshInfo.boundingBox.z / reconstructResolutionMM) + 2) +
-        (Math.ceil(meshInfo.boundingBox.z / reconstructResolutionMM) + 2) *
-        (Math.ceil(meshInfo.boundingBox.x / reconstructResolutionMM) + 2)
-      )
-    : 0;
+  // Minimum resolution that fits within grid limits (1000/axis, 200M total)
+  const minSafeRes = meshInfo
+    ? (() => {
+        const bb = meshInfo.boundingBox;
+        const maxDim = Math.max(bb.x, bb.y, bb.z);
+        const fromAxis = maxDim / 1000;
+        const fromTotal = Math.cbrt(bb.x * bb.y * bb.z / 200_000_000);
+        const raw = Math.max(fromAxis, fromTotal, 0.5);
+        return Math.ceil(raw * 2) / 2; // round up to 0.5 step
+      })()
+    : 1;
+
+  const estimatedReconstructTris = (() => {
+    if (!meshInfo) return 0;
+    const gx = Math.ceil(meshInfo.boundingBox.x / reconstructResolutionMM) + 2;
+    const gy = Math.ceil(meshInfo.boundingBox.y / reconstructResolutionMM) + 2;
+    const gz = Math.ceil(meshInfo.boundingBox.z / reconstructResolutionMM) + 2;
+    const raw = 4 * (gx * gy + gy * gz + gz * gx);
+    // When simplification is enabled, cap at the repair plan target or 80% of input
+    const target = simplifyEnabled
+      ? (aiAnalysis?.repairPlan?.params.voxel?.simplifyTarget ?? Math.round(meshInfo.triangleCount * 0.8))
+      : null;
+    return target && target < raw ? target : raw;
+  })();
 
   const brands = Array.from(new Set((printerProfiles as PrinterProfile[]).map((p) => p.brand))).sort();
   const enabledPlaneCount = cutPlanes.filter((p) => p.enabled).length;
@@ -659,6 +726,7 @@ export function KarasliceApp() {
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (!file) return;
+          setFileLoading(true);
           window.dispatchEvent(new CustomEvent("karaslice:load-file", { detail: file }));
           e.target.value = "";
         }}
@@ -759,10 +827,13 @@ export function KarasliceApp() {
                   size="sm"
                   className="w-full gap-2"
                   style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                  disabled={fileLoading}
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <Upload className="h-3.5 w-3.5" />
-                  {meshInfo ? "Load New File" : "Upload STL / OBJ / 3MF"}
+                  {fileLoading
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Upload className="h-3.5 w-3.5" />}
+                  {fileLoading ? "Processing file…" : meshInfo ? "Load New File" : "Upload STL / OBJ / 3MF"}
                 </Button>
               </div>
               <Separator className="my-1" />
@@ -787,340 +858,374 @@ export function KarasliceApp() {
               )}
               <Separator className="my-1" />
 
-              {/* ── Repair ──────────────────────────────────────────────── */}
-              <SectionHeader icon={Wrench} label="Repair Mesh" open={openSections.repair} onToggle={() => toggleSection("repair")} />
-              {openSections.repair && (
-                <div className="px-3 pb-3 space-y-2">
-                  <Button
-                    size="sm" className="w-full gap-2"
-                    style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                    disabled={!meshInfo || repairing}
-                    onClick={handleRepair}
-                  >
-                    {repairing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
-                    {repairing ? repairMessage || "Repairing…" : "Auto-Repair"}
-                  </Button>
-
-                  {repairResult && (
-                    <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
-                      <div className="flex items-center gap-1.5">
-                        {repairResult.isWatertight
-                          ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                          : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
-                        <span className="font-medium">
-                          {repairResult.isWatertight ? "Mesh is watertight" : "Partial repair"}
-                        </span>
-                      </div>
-                      <div className="pl-5 space-y-0.5 text-muted-foreground">
-                        {repairResult.degeneratesRemoved > 0 && (
-                          <p className="text-green-400">Removed {repairResult.degeneratesRemoved} degenerate tri{repairResult.degeneratesRemoved !== 1 ? "s" : ""}</p>
-                        )}
-                        {repairResult.duplicatesRemoved > 0 && (
-                          <p className="text-green-400">Removed {repairResult.duplicatesRemoved} duplicate tri{repairResult.duplicatesRemoved !== 1 ? "s" : ""}</p>
-                        )}
-                        {repairResult.windingFixed > 0 && (
-                          <p className="text-green-400">Fixed winding on {repairResult.windingFixed} tri{repairResult.windingFixed !== 1 ? "s" : ""}</p>
-                        )}
-                        {repairResult.invertedNormalsFixed && (
-                          <p className="text-green-400">Corrected inverted normals</p>
-                        )}
-                        {repairResult.holesFilled > 0 && (
-                          <p className="text-green-400">Filled {repairResult.holesFilled} hole{repairResult.holesFilled !== 1 ? "s" : ""}</p>
-                        )}
-                        {repairResult.weldToleranceMM > 1e-3 && (
-                          <p className="text-muted-foreground">Welded vertices ±{repairResult.weldToleranceMM.toFixed(repairResult.weldToleranceMM < 0.01 ? 4 : 2)} mm</p>
-                        )}
-                        {!repairResult.isWatertight && (
-                          <p className="text-yellow-400">Some issues remain — run analysis for details</p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-              <Separator className="my-1" />
-
-              <SectionHeader icon={Cpu} label="Mesh Analysis" open={openSections.analysis} onToggle={() => toggleSection("analysis")} />
+              {/* ── STEP 1: ANALYZE ────────────────────────────────────── */}
+              <SectionHeader icon={Sparkles} label="Analyze & Repair" open={openSections.analysis} onToggle={() => toggleSection("analysis")} />
               {openSections.analysis && (
-                <div className="px-3 pb-3 space-y-2">
-                  <Button
-                    size="sm" variant="outline" className="w-full gap-2"
-                    disabled={!meshInfo || analyzing}
-                    onClick={handleAnalyze}
-                  >
-                    {analyzing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Cpu className="h-3 w-3" />}
-                    {analyzing ? "Analyzing…" : "Run Analysis"}
-                  </Button>
+                <div className="px-3 pb-3 space-y-3">
+                  {/* Analyze button */}
+                  {!aiAnalysis ? (
+                    <div className="space-y-2">
+                      {!analyzing && (
+                        <p className="text-[10px] text-muted-foreground">
+                          Analyzes mesh geometry, classifies the type, and recommends the best repair path.
+                        </p>
+                      )}
+                      <Button
+                        size="sm" className="w-full gap-2"
+                        style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                        disabled={!meshInfo || analyzing}
+                        onClick={handleAnalyze}
+                      >
+                        {analyzing
+                          ? <Loader2 className="h-3 w-3 animate-spin" />
+                          : <Sparkles className="h-3 w-3" />}
+                        {analyzing ? (analyzeStep || "Analyzing…") : "Analyze Mesh"}
+                      </Button>
+                      {analyzing && (
+                        <div className="space-y-1.5">
+                          <Progress value={
+                            analyzeStep.includes("wall") ? 40
+                            : analyzeStep.includes("AI") ? 70
+                            : 15
+                          } className="h-1" />
+                          <p className="text-[10px] text-muted-foreground text-center">{analyzeStep}</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {/* Analysis results */}
+                      <div className="rounded-md border border-border p-2 space-y-2 text-xs">
+                        {/* Health status */}
+                        <div className="flex items-center gap-1.5">
+                          {analysisResult?.isWatertight
+                            ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                            : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
+                          <span className="font-medium">
+                            {analysisResult?.isWatertight ? "Mesh is watertight" : "Issues detected"}
+                          </span>
+                        </div>
 
-                  {analysisResult && (
-                    <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
-                      <div className="flex items-center gap-1.5">
-                        {analysisResult.isWatertight
-                          ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                          : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
-                        <span>{analysisResult.isWatertight ? "Mesh is watertight" : "Issues detected"}</span>
-                      </div>
-                      <div className="pl-5 space-y-0.5 text-muted-foreground">
-                        <p>Vertices: {analysisResult.vertexCount.toLocaleString()}</p>
-                        <p>Surface: {u === "in"
-                          ? (analysisResult.surfaceAreaMM2 / 645.16).toFixed(2) + " in²"
-                          : u === "cm"
-                          ? (analysisResult.surfaceAreaMM2 / 100).toFixed(1) + " cm²"
-                          : analysisResult.surfaceAreaMM2.toFixed(0) + " mm²"
-                        }</p>
-                        <p>Volume: {u === "in"
-                          ? (analysisResult.volumeMM3 / 16387.064).toFixed(2) + " in³"
-                          : u === "cm"
-                          ? (analysisResult.volumeMM3 / 1000).toFixed(1) + " cm³"
-                          : analysisResult.volumeMM3.toFixed(0) + " mm³"
-                        }</p>
-                        {analysisResult.openEdgeCount > 0 && (
-                          <p className="text-yellow-400">{analysisResult.openEdgeCount} open edges</p>
+                        {/* Basic stats */}
+                        {analysisResult && (
+                          <div className="pl-5 space-y-0.5 text-muted-foreground text-[11px]">
+                            <p>Vertices: {analysisResult.vertexCount.toLocaleString()}</p>
+                            <p>Surface: {u === "in"
+                              ? (analysisResult.surfaceAreaMM2 / 645.16).toFixed(2) + " in²"
+                              : u === "cm"
+                              ? (analysisResult.surfaceAreaMM2 / 100).toFixed(1) + " cm²"
+                              : analysisResult.surfaceAreaMM2.toFixed(0) + " mm²"
+                            }</p>
+                            <p>Volume: {u === "in"
+                              ? (analysisResult.volumeMM3 / 16387.064).toFixed(2) + " in³"
+                              : u === "cm"
+                              ? (analysisResult.volumeMM3 / 1000).toFixed(1) + " cm³"
+                              : analysisResult.volumeMM3.toFixed(0) + " mm³"
+                            }</p>
+                            {analysisResult.openEdgeCount > 0 && (
+                              <p className="text-yellow-400">{analysisResult.openEdgeCount.toLocaleString()} open edges</p>
+                            )}
+                            {analysisResult.nonManifoldEdgeCount > 0 && (
+                              <p className="text-red-400">{analysisResult.nonManifoldEdgeCount.toLocaleString()} non-manifold edges</p>
+                            )}
+                          </div>
                         )}
-                        {analysisResult.nonManifoldEdgeCount > 0 && (
-                          <p className="text-red-400">{analysisResult.nonManifoldEdgeCount} non-manifold edges</p>
+
+                        {/* AI classification badges */}
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          <span className={cn(
+                            "rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                            aiAnalysis.meshType === "thin_shell"    && "bg-accent/20 text-accent",
+                            aiAnalysis.meshType === "solid_body"    && "bg-blue-900/40 text-blue-300",
+                            aiAnalysis.meshType === "multi_body"    && "bg-purple-900/40 text-purple-300",
+                            aiAnalysis.meshType === "surface_patch" && "bg-orange-900/40 text-orange-300",
+                          )}>
+                            {aiAnalysis.meshType.replace("_", " ")}
+                          </span>
+                          <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-muted text-muted-foreground">
+                            {aiAnalysis.repairStrategy.replace(/_/g, " ")}
+                          </span>
+                          <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {Math.round(aiAnalysis.confidence * 100)}%
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] text-muted-foreground leading-relaxed">
+                          {aiAnalysis.reasoning}
+                        </p>
+                        {aiAnalysis.warnings.map((w, i) => (
+                          <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
+                            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
+                          </p>
+                        ))}
+                        {aiAnalysis.heuristic && !aiAnalysis.error && (
+                          <p className="text-[10px] text-muted-foreground">
+                            Heuristic analysis — add ANTHROPIC_API_KEY for AI classification.
+                          </p>
+                        )}
+                        {aiAnalysis.error && (
+                          <p className="text-[10px] text-yellow-500">{aiAnalysis.error}</p>
                         )}
                       </div>
-                      {analysisResult.issues.map((iss, i) => (
-                        <p key={i} className="text-[10px] text-muted-foreground pl-5">{iss}</p>
-                      ))}
+
+                      {/* Re-analyze */}
+                      <Button
+                        size="sm" variant="ghost" className="w-full gap-2 text-[11px] text-muted-foreground"
+                        disabled={analyzing || reconstructing || repairing}
+                        onClick={handleAnalyze}
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        Re-analyze
+                      </Button>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* ── Voxel Reconstruction (severely corrupted files) ──────── */}
+              {/* ── STEP 2: REPAIR (routed by analysis) ───────────────── */}
               {meshInfo && (
                 <>
                   <Separator className="my-1" />
-                  <SectionHeader
-                    icon={Boxes}
-                    label="Voxel Reconstruction"
-                    open={openSections.voxelReconstruct}
-                    onToggle={() => toggleSection("voxelReconstruct")}
-                  />
-                  {openSections.voxelReconstruct && (
-                    <div className="px-3 pb-3 space-y-3">
 
-                      {/* Severity warning */}
-                      {isSevere ? (
-                        <div className="flex items-start gap-2 rounded-md border border-red-900/50 bg-red-950/30 p-2 text-xs">
-                          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-red-400 mt-0.5" />
-                          <div className="space-y-0.5">
-                            <p className="font-medium text-red-400">Severe mesh damage detected</p>
-                            <p className="text-muted-foreground">
-                              Topology repair cannot fix this file. Use AI analysis to
-                              determine whether solid or shell reconstruction is needed.
-                            </p>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-[11px] text-muted-foreground">
-                          Rebuilds a clean manifold from scratch using voxel rasterization.
-                          Run AI analysis first to auto-select the correct mode.
-                        </p>
-                      )}
-
-                      {/* ── AI Analysis ──────────────────────────────────── */}
-                      <Button
-                        size="sm" variant="outline" className="w-full gap-2"
-                        disabled={!meshInfo || analyzingAI || reconstructing}
-                        onClick={handleAIAnalysis}
-                      >
-                        {analyzingAI
-                          ? <Loader2 className="h-3 w-3 animate-spin" />
-                          : <Sparkles className="h-3 w-3" />}
-                        {analyzingAI ? "Analyzing with AI…" : "Analyze with AI"}
-                      </Button>
-
-                      {/* AI result card */}
-                      {aiAnalysis && (
-                        <div className="rounded-md border border-border p-2 space-y-2 text-xs">
-                          {/* Mesh type + strategy badges */}
-                          <div className="flex flex-wrap gap-1.5">
-                            <span className={cn(
-                              "rounded px-1.5 py-0.5 text-[10px] font-semibold",
-                              aiAnalysis.meshType === "thin_shell"    && "bg-accent/20 text-accent",
-                              aiAnalysis.meshType === "solid_body"    && "bg-blue-900/40 text-blue-300",
-                              aiAnalysis.meshType === "multi_body"    && "bg-purple-900/40 text-purple-300",
-                              aiAnalysis.meshType === "surface_patch" && "bg-orange-900/40 text-orange-300",
-                            )}>
-                              {aiAnalysis.meshType.replace("_", " ")}
-                            </span>
-                            <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-muted text-muted-foreground">
-                              → {aiAnalysis.repairStrategy.replace(/_/g, " ")}
-                            </span>
-                            <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                              {Math.round(aiAnalysis.confidence * 100)}% confidence
-                            </span>
-                          </div>
-
-                          {/* Reasoning */}
-                          <p className="text-[11px] text-muted-foreground leading-relaxed">
-                            {aiAnalysis.reasoning}
-                          </p>
-
-                          {/* Warnings */}
-                          {aiAnalysis.warnings.map((w, i) => (
-                            <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
-                              <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
-                            </p>
-                          ))}
-
-                          {/* Heuristic / error note */}
-                          {aiAnalysis.heuristic && !aiAnalysis.error && (
-                            <p className="text-[10px] text-muted-foreground">
-                              Heuristic analysis — add ANTHROPIC_API_KEY for AI classification.
-                            </p>
-                          )}
-                          {aiAnalysis.error && (
-                            <p className="text-[10px] text-yellow-500">{aiAnalysis.error}</p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* ── Mode toggle ──────────────────────────────────── */}
-                      <div className="space-y-1">
-                        <Label className="text-[11px]">Reconstruction mode</Label>
-                        <div className="flex rounded-md border border-border overflow-hidden text-[11px] font-semibold">
-                          {(["solid_voxel", "shell_voxel"] as const).map((mode) => (
-                            <button
-                              key={mode}
-                              onClick={() => setReconstructMode(mode)}
-                              disabled={reconstructing}
-                              className={cn(
-                                "flex-1 py-1.5 transition-colors",
-                                reconstructMode === mode
-                                  ? "bg-accent text-accent-foreground"
-                                  : "text-muted-foreground hover:text-foreground",
-                              )}
-                            >
-                              {mode === "solid_voxel" ? "Solid" : "Shell"}
-                            </button>
-                          ))}
-                        </div>
-                        <p className="text-[10px] text-muted-foreground">
-                          {reconstructMode === "shell_voxel"
-                            ? "Shell: surface-only rasterization + dilation. Preserves windows, door cutouts, and openings."
-                            : "Solid: parity fill + flood fill. Best for enclosed solid parts."}
-                        </p>
-                      </div>
-
-                      {/* ── Resolution slider ────────────────────────────── */}
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px]">
-                          <Label className="text-[11px]">Voxel resolution</Label>
-                          <span className="font-mono text-accent">{reconstructResolutionMM} mm</span>
-                        </div>
-                        <Slider
-                          min={1} max={20} step={0.5}
-                          value={[reconstructResolutionMM]}
-                          onValueChange={([v]) => setReconstructResolutionMM(v)}
-                          disabled={reconstructing}
-                        />
-                        <div className="flex justify-between text-[10px] text-muted-foreground">
-                          <span>1 mm — fine detail</span>
-                          <span>20 mm — fast</span>
-                        </div>
-                      </div>
-
-                      {/* ── Post-processing controls ─────────────────── */}
-                      <Separator className="my-1" />
-                      <p className="text-[11px] font-medium text-muted-foreground">Post-processing</p>
-
-                      {/* Smoothing iterations */}
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px]">
-                          <Label className="text-[11px]">Taubin smoothing</Label>
-                          <span className="font-mono text-accent">
-                            {smoothingIterations === 0 ? "off" : `${smoothingIterations} pass${smoothingIterations !== 1 ? "es" : ""}`}
-                          </span>
-                        </div>
-                        <Slider
-                          min={0} max={15} step={1}
-                          value={[smoothingIterations]}
-                          onValueChange={([v]) => setSmoothingIterations(v)}
-                          disabled={reconstructing}
-                        />
-                        <p className="text-[10px] text-muted-foreground">
-                          Removes stair-step artifacts without shrinking the mesh.
-                        </p>
-                      </div>
-
-                      {/* Simplify toggle */}
-                      <div className="flex items-center justify-between">
-                        <div className="space-y-0.5">
-                          <Label className="text-[11px]">Simplify mesh</Label>
+                  {/* TOPOLOGY REPAIR — shown when AI recommends topology_repair AND mesh has defects */}
+                  {aiAnalysis?.repairStrategy === "topology_repair" && analysisResult &&
+                   (analysisResult.openEdgeCount > 0 || analysisResult.nonManifoldEdgeCount > 0) && (
+                    <>
+                      <SectionHeader icon={Wrench} label="Topology Repair" open={openSections.repair} onToggle={() => toggleSection("repair")} />
+                      {openSections.repair && (
+                        <div className="px-3 pb-3 space-y-2">
                           <p className="text-[10px] text-muted-foreground">
-                            Reduce over-tessellation to ~80% of original
+                            Minor defects detected. Fast topology repair should fix this without geometry loss.
                           </p>
-                        </div>
-                        <Switch
-                          checked={simplifyEnabled}
-                          onCheckedChange={setSimplifyEnabled}
-                          disabled={reconstructing}
-                        />
-                      </div>
+                          <Button
+                            size="sm" className="w-full gap-2"
+                            style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                            disabled={repairing}
+                            onClick={handleRepair}
+                          >
+                            {repairing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                            {repairing ? repairMessage || "Repairing…" : "Auto-Repair"}
+                          </Button>
 
-                      {/* Estimated output */}
-                      <div className="rounded-md border border-border p-2 space-y-0.5 text-[11px] text-muted-foreground">
-                        <div className="flex justify-between">
-                          <span>Est. output triangles</span>
-                          <span className="font-mono">{estimatedReconstructTris.toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Detail loss</span>
-                          <span className={reconstructResolutionMM <= 2 ? "text-green-400" : reconstructResolutionMM <= 6 ? "text-yellow-400" : "text-orange-400"}>
-                            {reconstructResolutionMM <= 2 ? "minimal" : reconstructResolutionMM <= 6 ? "minor" : "noticeable"}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* AI plan summary (when available) */}
-                      {aiAnalysis?.repairPlan && (
-                        <div className="rounded-md border border-accent/30 bg-accent/5 p-2 space-y-1 text-[11px]">
-                          <p className="font-medium text-accent flex items-center gap-1.5">
-                            <Sparkles className="h-3 w-3" />
-                            AI Repair Plan
-                          </p>
-                          <p className="text-muted-foreground">{aiAnalysis.repairPlan.userMessage}</p>
+                          {repairResult && (
+                            <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
+                              <div className="flex items-center gap-1.5">
+                                {repairResult.isWatertight
+                                  ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                                  : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
+                                <span className="font-medium">
+                                  {repairResult.isWatertight ? "Mesh is watertight" : "Partial repair"}
+                                </span>
+                              </div>
+                              <div className="pl-5 space-y-0.5 text-muted-foreground">
+                                {repairResult.degeneratesRemoved > 0 && (
+                                  <p className="text-green-400">Removed {repairResult.degeneratesRemoved} degenerate tri{repairResult.degeneratesRemoved !== 1 ? "s" : ""}</p>
+                                )}
+                                {repairResult.duplicatesRemoved > 0 && (
+                                  <p className="text-green-400">Removed {repairResult.duplicatesRemoved} duplicate tri{repairResult.duplicatesRemoved !== 1 ? "s" : ""}</p>
+                                )}
+                                {repairResult.windingFixed > 0 && (
+                                  <p className="text-green-400">Fixed winding on {repairResult.windingFixed} tri{repairResult.windingFixed !== 1 ? "s" : ""}</p>
+                                )}
+                                {repairResult.invertedNormalsFixed && (
+                                  <p className="text-green-400">Corrected inverted normals</p>
+                                )}
+                                {repairResult.holesFilled > 0 && (
+                                  <p className="text-green-400">Filled {repairResult.holesFilled} hole{repairResult.holesFilled !== 1 ? "s" : ""}</p>
+                                )}
+                                {repairResult.weldToleranceMM > 1e-3 && (
+                                  <p className="text-muted-foreground">Welded vertices ±{repairResult.weldToleranceMM.toFixed(repairResult.weldToleranceMM < 0.01 ? 4 : 2)} mm</p>
+                                )}
+                                {!repairResult.isWatertight && (
+                                  <p className="text-yellow-400">Some issues remain — try voxel reconstruction</p>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
+                    </>
+                  )}
 
-                      {/* ── Reconstruct button ───────────────────────────── */}
-                      <Button
-                        size="sm"
-                        className="w-full gap-2"
-                        style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                        disabled={!meshInfo || reconstructing}
-                        onClick={handleVoxelReconstruct}
-                      >
-                        {reconstructing
-                          ? <Loader2 className="h-3 w-3 animate-spin" />
-                          : <Boxes className="h-3 w-3" />}
-                        {reconstructing
-                          ? (reconstructMessage || "Reconstructing…")
-                          : `Reconstruct (${reconstructMode === "shell_voxel" ? "Shell" : "Solid"})`}
-                      </Button>
+                  {/* RECONSTRUCTION — shown when AI recommends solid_voxel, shell_voxel, or point_cloud */}
+                  {(aiAnalysis?.repairStrategy === "solid_voxel" || aiAnalysis?.repairStrategy === "shell_voxel" || aiAnalysis?.repairStrategy === "point_cloud") && (
+                    <>
+                      <SectionHeader icon={Boxes} label="Mesh Reconstruction" open={openSections.voxelReconstruct} onToggle={() => toggleSection("voxelReconstruct")} />
+                      {openSections.voxelReconstruct && (
+                        <div className="px-3 pb-3 space-y-3">
 
-                      {/* Result */}
-                      {reconstructResult && (
-                        <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
-                          <div className="flex items-center gap-1.5">
-                            <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                            <span className="font-medium text-green-400">Reconstruction complete</span>
+                          {/* AI plan summary */}
+                          {aiAnalysis?.repairPlan && (
+                            <div className="rounded-md border border-accent/30 bg-accent/5 p-2 space-y-1 text-[11px]">
+                              <p className="font-medium text-accent flex items-center gap-1.5">
+                                <Sparkles className="h-3 w-3" />
+                                AI Repair Plan
+                              </p>
+                              <p className="text-muted-foreground">{aiAnalysis.repairPlan.userMessage}</p>
+                            </div>
+                          )}
+
+                          {/* Mode toggle */}
+                          <div className="space-y-1">
+                            <Label className="text-[11px]">Reconstruction mode</Label>
+                            <div className="flex rounded-md border border-border overflow-hidden text-[11px] font-semibold">
+                              {(["solid_voxel", "shell_voxel", "point_cloud"] as const).map((mode) => (
+                                <button
+                                  key={mode}
+                                  onClick={() => setReconstructMode(mode)}
+                                  disabled={reconstructing}
+                                  className={cn(
+                                    "flex-1 py-1.5 transition-colors",
+                                    reconstructMode === mode
+                                      ? "bg-accent text-accent-foreground"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  {mode === "solid_voxel" ? "Solid" : mode === "shell_voxel" ? "Shell" : "Point Cloud"}
+                                </button>
+                              ))}
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">
+                              {reconstructMode === "point_cloud"
+                                ? "MLS/SDF reconstruction from point cloud. Best for thin shells and car bodies."
+                                : reconstructMode === "shell_voxel"
+                                ? "Surface rasterization + dilation. Preserves openings."
+                                : "Parity fill + flood fill. Best for enclosed solid parts."}
+                            </p>
                           </div>
-                          <div className="pl-5 space-y-0.5 text-muted-foreground">
-                            <p className="text-green-400">Mesh is watertight (0 open edges)</p>
-                            <p className="text-green-400">0 non-manifold edges</p>
-                            <p>Mode: {reconstructMode === "shell_voxel" ? "Shell" : "Solid"}</p>
-                            <p>Voxel size: {reconstructResult.resolution} mm</p>
-                            <p>Output: {reconstructResult.outputTriangles.toLocaleString()} triangles</p>
-                            {smoothingIterations > 0 && <p className="text-green-400">Smoothed ({smoothingIterations} Taubin passes)</p>}
-                            {simplifyEnabled && <p className="text-green-400">Simplified (quadric edge collapse)</p>}
+
+                          {/* Resolution slider */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <Label className="text-[11px]">{reconstructMode === "point_cloud" ? "Grid resolution" : "Voxel resolution"}</Label>
+                              <span className="font-mono text-accent">{reconstructResolutionMM} mm</span>
+                            </div>
+                            <Slider
+                              min={minSafeRes} max={20} step={0.5}
+                              value={[Math.max(reconstructResolutionMM, minSafeRes)]}
+                              onValueChange={([v]) => setReconstructResolutionMM(v)}
+                              disabled={reconstructing}
+                            />
+                            <div className="flex justify-between text-[10px] text-muted-foreground">
+                              <span>{minSafeRes} mm — finest</span>
+                              <span>20 mm — fast</span>
+                            </div>
+                            {minSafeRes > 1 && (
+                              <p className="text-[10px] text-yellow-400">
+                                Min {minSafeRes} mm for this mesh size (grid limit).
+                              </p>
+                            )}
                           </div>
+
+                          {/* Post-processing */}
+                          <Separator className="my-0.5" />
+                          <p className="text-[11px] font-medium text-muted-foreground">Post-processing</p>
+
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <Label className="text-[11px]">Taubin smoothing</Label>
+                              <span className="font-mono text-accent">
+                                {smoothingIterations === 0 ? "off" : `${smoothingIterations} pass${smoothingIterations !== 1 ? "es" : ""}`}
+                              </span>
+                            </div>
+                            <Slider
+                              min={0} max={15} step={1}
+                              value={[smoothingIterations]}
+                              onValueChange={([v]) => setSmoothingIterations(v)}
+                              disabled={reconstructing}
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <div className="space-y-0.5">
+                              <Label className="text-[11px]">Simplify mesh</Label>
+                              <p className="text-[10px] text-muted-foreground">
+                                Reduce to ~{meshInfo ? Math.round(meshInfo.triangleCount * 0.8).toLocaleString() : "80%"} triangles
+                              </p>
+                            </div>
+                            <Switch
+                              checked={simplifyEnabled}
+                              onCheckedChange={setSimplifyEnabled}
+                              disabled={reconstructing}
+                            />
+                          </div>
+
+                          {/* Estimated output */}
+                          <div className="rounded-md border border-border p-2 space-y-0.5 text-[11px] text-muted-foreground">
+                            <div className="flex justify-between">
+                              <span>Est. output{simplifyEnabled ? " (after simplify)" : ""}</span>
+                              <span className="font-mono">{estimatedReconstructTris.toLocaleString()} tris</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Detail loss</span>
+                              <span className={reconstructResolutionMM <= 2 ? "text-green-400" : reconstructResolutionMM <= 6 ? "text-yellow-400" : "text-orange-400"}>
+                                {reconstructResolutionMM <= 2 ? "minimal" : reconstructResolutionMM <= 6 ? "minor" : "noticeable"}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Reconstruct button */}
+                          <Button
+                            size="sm"
+                            className="w-full gap-2"
+                            style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                            disabled={!meshInfo || reconstructing}
+                            onClick={handleVoxelReconstruct}
+                          >
+                            {reconstructing
+                              ? <Loader2 className="h-3 w-3 animate-spin" />
+                              : <Boxes className="h-3 w-3" />}
+                            {reconstructing
+                              ? "Reconstructing…"
+                              : `Reconstruct (${reconstructMode === "point_cloud" ? "Point Cloud" : reconstructMode === "shell_voxel" ? "Shell" : "Solid"})`}
+                          </Button>
+                          {reconstructing && reconstructMessage && (
+                            <div className="space-y-1">
+                              <Progress value={
+                                reconstructMessage.includes("Simplif") ? 70
+                                : reconstructMessage.includes("Smooth") ? 85
+                                : reconstructMessage.includes("Extract") || reconstructMessage.includes("Marching") ? 50
+                                : reconstructMessage.includes("Flood") ? 30
+                                : reconstructMessage.includes("Voxeliz") || reconstructMessage.includes("Rasteriz") ? 15
+                                : reconstructMessage.includes("SDF") || reconstructMessage.includes("distance") ? 40
+                                : reconstructMessage.includes("point cloud") || reconstructMessage.includes("spatial") ? 15
+                                : reconstructMessage.includes("Re-sorting") ? 75
+                                : reconstructMessage.includes("Finaliz") ? 95
+                                : 10
+                              } className="h-1" />
+                              <p className="text-[10px] text-muted-foreground text-center">{reconstructMessage}</p>
+                            </div>
+                          )}
+
+                          {/* Result */}
+                          {reconstructResult && (
+                            <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
+                              <div className="flex items-center gap-1.5">
+                                <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                                <span className="font-medium text-green-400">Reconstruction complete</span>
+                              </div>
+                              <div className="pl-5 space-y-0.5 text-muted-foreground">
+                                <p className="text-green-400">Mesh is watertight (0 open edges)</p>
+                                <p className="text-green-400">0 non-manifold edges</p>
+                                <p>Mode: {reconstructMode === "point_cloud" ? "Point Cloud" : reconstructMode === "shell_voxel" ? "Shell" : "Solid"}</p>
+                                <p>{reconstructMode === "point_cloud" ? "Grid" : "Voxel"} size: {reconstructResult.resolution} mm</p>
+                                <p>Output: {reconstructResult.outputTriangles.toLocaleString()} triangles</p>
+                                {smoothingIterations > 0 && <p className="text-green-400">Smoothed ({smoothingIterations} Taubin passes)</p>}
+                                {simplifyEnabled && <p className="text-green-400">Simplified (quadric edge collapse)</p>}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
+                    </>
+                  )}
+
+                  {/* WAITING — no analysis yet */}
+                  {!aiAnalysis && (
+                    <div className="px-3 py-3">
+                      <p className="text-[11px] text-muted-foreground text-center">
+                        Run analysis above to see repair options.
+                      </p>
                     </div>
                   )}
                 </>
@@ -1711,6 +1816,7 @@ export function KarasliceApp() {
         <Viewport
           ref={viewportRef}
           onMeshLoaded={handleMeshLoaded}
+          onLoadStart={() => setFileLoading(true)}
           cutPlanes={cutPlanes}
           printerVolume={effectivePrinter
             ? { x: effectivePrinter.x, y: effectivePrinter.y, z: effectivePrinter.z }

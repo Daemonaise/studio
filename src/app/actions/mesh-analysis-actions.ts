@@ -15,6 +15,7 @@ export type RepairStrategy =
   | "topology_repair" // minor defects — existing half-edge pipeline
   | "solid_voxel"     // broken solid — volume flood-fill reconstruction
   | "shell_voxel"     // broken thin shell — surface rasterisation + dilation
+  | "point_cloud"     // broken thin shell — MLS/SDF point cloud reconstruction
   | "manual";         // too ambiguous — present both options to the user
 
 export interface AIMeshAnalysisInput {
@@ -52,10 +53,18 @@ export interface VoxelRepairParams {
   simplifyTarget: number;       // target triangle count (0 = no simplify)
 }
 
+export interface PointCloudRepairParams {
+  resolution: number;           // mm per grid cell
+  smoothingIterations: number;  // taubin smoothing passes post-reconstruction
+  simplifyTarget: number;       // target triangle count (0 = no simplify)
+  radiusMultiplier: number;     // MLS smoothing radius = resolution * this (default 2)
+}
+
 export interface RepairPlan {
-  pipeline: "topology" | "solid_voxel" | "shell_voxel";
+  pipeline: "topology" | "solid_voxel" | "shell_voxel" | "point_cloud";
   params: {
     voxel: VoxelRepairParams | null;
+    pointCloud?: PointCloudRepairParams | null;
   };
   expect: {
     watertight: boolean;
@@ -66,6 +75,21 @@ export interface RepairPlan {
 
 // ─── Heuristic fallback ───────────────────────────────────────────────────────
 
+/**
+ * Estimate how many triangles the block-mesh / MC surface extraction will
+ * produce for a given bounding box and resolution.  This must match the
+ * formula in voxel-reconstruct.ts → estimateOutputTriangles().
+ */
+function estimateVoxelOutputTris(
+  bbox: { x: number; y: number; z: number },
+  resolution: number,
+): number {
+  const gx = Math.ceil(bbox.x / resolution) + 2;
+  const gy = Math.ceil(bbox.y / resolution) + 2;
+  const gz = Math.ceil(bbox.z / resolution) + 2;
+  return 4 * (gx * gy + gy * gz + gz * gx);
+}
+
 function computeVoxelParams(input: AIMeshAnalysisInput, isShell: boolean): VoxelRepairParams {
   const maxDim = Math.max(input.boundingBox.x, input.boundingBox.y, input.boundingBox.z, 1);
   const totalEdges = input.triangles * 1.5 || 1;
@@ -74,6 +98,12 @@ function computeVoxelParams(input: AIMeshAnalysisInput, isShell: boolean): Voxel
   // Resolution: finer for shells, coarser for solids
   let resolution = isShell ? maxDim / 800 : maxDim / 500;
   resolution = Math.max(0.5, Math.min(resolution, 20));
+  // Enforce grid-safety floor: max 1000 voxels/axis, 200M total
+  const gridFloor = Math.max(
+    maxDim / 1000,
+    Math.cbrt(input.boundingBox.x * input.boundingBox.y * input.boundingBox.z / 200_000_000),
+  );
+  resolution = Math.max(resolution, gridFloor);
   resolution = Math.round(resolution * 10) / 10;
 
   // Dilation: 0 for solid, 1 normally, 2 if heavily broken
@@ -83,10 +113,60 @@ function computeVoxelParams(input: AIMeshAnalysisInput, isShell: boolean): Voxel
   const smoothingIterations =
     resolution < 2 ? 0 : resolution <= 6 ? 3 : resolution <= 10 ? 5 : 10;
 
-  // Simplify target: aim for ~80% of original
+  // Simplify target: match or slightly reduce the *input* triangle count.
+  // Voxelization over-tessellates (often 4-8x), so the simplifier should
+  // bring it back down to input-scale complexity, not 80% of the bloated output.
   const simplifyTarget = Math.round(input.triangles * 0.8);
 
   return { resolution, dilationVoxels, smoothingIterations, simplifyTarget };
+}
+
+/** Clamp AI-returned voxel params to safe ranges. */
+function sanitizeVoxelParams(params: VoxelRepairParams, input: AIMeshAnalysisInput): VoxelRepairParams {
+  // Grid safety floor: same formula as minSafeResolution in voxel-reconstruct.ts
+  const maxDim = Math.max(input.boundingBox.x, input.boundingBox.y, input.boundingBox.z, 1);
+  const gridFloor = Math.max(
+    maxDim / 1000,
+    Math.cbrt(input.boundingBox.x * input.boundingBox.y * input.boundingBox.z / 200_000_000),
+    0.5,
+  );
+  const minRes = Math.ceil(gridFloor * 2) / 2; // round up to 0.5 step
+  const resolution = Math.max(minRes, Math.min(Math.round((params.resolution || 1) * 10) / 10, 20));
+  const dilationVoxels = Math.max(0, Math.min(Math.round(params.dilationVoxels || 0), 3));
+  const smoothingIterations = Math.max(0, Math.min(Math.round(params.smoothingIterations || 0), 20));
+
+  // Simplify target: should match input-scale complexity, not voxel output.
+  // Voxelization over-tessellates (4-8x), simplifier reduces back down.
+  let simplifyTarget = Math.round(params.simplifyTarget || 0);
+  const inputScale = Math.round(input.triangles * 0.8);
+  if (simplifyTarget <= 0 || simplifyTarget > input.triangles * 2) {
+    // AI gave no target or an unreasonably high one — use 80% of input
+    simplifyTarget = inputScale;
+  }
+
+  return { resolution, dilationVoxels, smoothingIterations, simplifyTarget };
+}
+
+function computePointCloudParams(input: AIMeshAnalysisInput): PointCloudRepairParams {
+  const maxDim = Math.max(input.boundingBox.x, input.boundingBox.y, input.boundingBox.z, 1);
+  // Target ~600 cells on longest axis for high-quality reconstruction
+  let resolution = maxDim / 600;
+  // Grid safety floor
+  const gridFloor = Math.max(
+    maxDim / 1000,
+    Math.cbrt(input.boundingBox.x * input.boundingBox.y * input.boundingBox.z / 200_000_000),
+    0.5,
+  );
+  resolution = Math.max(resolution, gridFloor);
+  resolution = Math.round(resolution * 10) / 10;
+
+  // Lighter smoothing to preserve sharp panel details
+  const smoothingIterations = resolution < 3 ? 0 : resolution <= 5 ? 1 : resolution <= 8 ? 2 : 3;
+  // Allow more triangles — MC at higher res produces denser meshes
+  const simplifyTarget = Math.round(input.triangles * 1.5);
+  const radiusMultiplier = 2;
+
+  return { resolution, smoothingIterations, simplifyTarget, radiusMultiplier };
 }
 
 function heuristicAnalysis(input: AIMeshAnalysisInput): AIMeshAnalysisResult {
@@ -111,21 +191,25 @@ function heuristicAnalysis(input: AIMeshAnalysisInput): AIMeshAnalysisResult {
     };
   }
 
+  // Thin shells → point cloud reconstruction (MLS/SDF).
+  // Shell voxel fails on thin shells where wall thickness < voxel resolution.
   if (thinShell) {
-    const voxel = computeVoxelParams(input, true);
+    const pc = computePointCloudParams(input);
     return {
       meshType: "thin_shell",
-      repairStrategy: "shell_voxel",
-      confidence: 0.7,
+      repairStrategy: "point_cloud",
+      confidence: 0.8,
       reasoning:
-        "High SA/volume ratio or thin wall estimate suggests a shell mesh. " +
-        "Solid flood-fill would close intentional openings.",
-      warnings: ["Shell will be thickened by the dilation pass (~1–2× voxel size)."],
+        "Thin shell detected (high SA/volume ratio or wall thickness < 1% of max dimension). " +
+        "Point cloud reconstruction (MLS/SDF) preserves thin surfaces and openings where voxel methods fail.",
+      warnings: [
+        "Large openings (windows, doors) will be preserved — no surface is created where there are no input points.",
+      ],
       repairPlan: {
-        pipeline: "shell_voxel",
-        params: { voxel },
-        expect: { watertight: true, maxTriangles: voxel.simplifyTarget > 0 ? voxel.simplifyTarget : input.triangles },
-        userMessage: `Shell reconstruction at ${voxel.resolution} mm resolution with ${voxel.smoothingIterations} smoothing passes.`,
+        pipeline: "point_cloud",
+        params: { voxel: null, pointCloud: pc },
+        expect: { watertight: true, maxTriangles: pc.simplifyTarget > 0 ? pc.simplifyTarget : input.triangles },
+        userMessage: `Point cloud reconstruction at ${pc.resolution} mm resolution with ${pc.smoothingIterations} smoothing passes, target ${pc.simplifyTarget.toLocaleString()} triangles.`,
       },
       heuristic: true,
     };
@@ -142,7 +226,7 @@ function heuristicAnalysis(input: AIMeshAnalysisInput): AIMeshAnalysisResult {
       pipeline: "solid_voxel",
       params: { voxel },
       expect: { watertight: true, maxTriangles: voxel.simplifyTarget > 0 ? voxel.simplifyTarget : input.triangles },
-      userMessage: `Solid reconstruction at ${voxel.resolution} mm resolution with ${voxel.smoothingIterations} smoothing passes.`,
+      userMessage: `Solid reconstruction at ${voxel.resolution} mm resolution with ${voxel.smoothingIterations} smoothing passes, target ${voxel.simplifyTarget.toLocaleString()} triangles.`,
     },
     heuristic: true,
   };
@@ -161,7 +245,8 @@ MESH TYPES:
 REPAIR STRATEGIES:
 - topology_repair: For meshes with <1% defective edges. Fast, preserves geometry exactly.
 - solid_voxel: For broken solid bodies. Parity voxelization + flood-fill + block mesh. Fills interior solid. NEVER use on thin shells — it closes windows and openings.
-- shell_voxel: For broken thin shells. Surface rasterization + 3D dilation + block mesh. Preserves openings, thickens shell to make watertight.
+- point_cloud: PREFERRED for broken thin shells (car bodies, panels, monocoques). Uses MLS/SDF point cloud reconstruction. Extracts oriented points from triangle soup, builds SDF via weighted normal projection, runs marching cubes. Handles thin walls, overlapping patches, and gaps. Preserves large openings (windows, doors). Memory scales with surface area, not bounding volume. Use this instead of shell_voxel for thin shells.
+- shell_voxel: Fallback for thin shells only if point_cloud is not appropriate. Surface rasterization + 3D dilation + block mesh. May fail if wall thickness < voxel resolution.
 - manual: Too ambiguous or complex. Flag for user intervention.
 
 KEY DIAGNOSTIC RATIOS:
@@ -171,13 +256,22 @@ KEY DIAGNOSTIC RATIOS:
 - File name contains "body", "panel", "shell", "skin", "cover", "monocoque": strong thin-shell hint
 
 VOXEL PARAMETER RULES (only when repairStrategy is solid_voxel or shell_voxel):
-- resolution: maxDimension/500 for solids, maxDimension/800 for shells, clamped to [0.5, 20] mm
+- resolution: Start with maxDimension/500 for solids, maxDimension/800 for shells.
+  HARD MINIMUM: resolution must be >= max(maxDimension/1000, cbrt(bbX*bbY*bbZ / 200000000), 0.5), rounded up to nearest 0.5mm.
+  This ensures the voxel grid stays under 1000 voxels/axis and 200M total voxels.
+  Maximum: 20mm. If your computed resolution is below the hard minimum, use the minimum.
 - dilationVoxels: 0 for solid, 1 for shell, 2 for shell with >10% open edges
 - smoothingIterations: 0 if resolution<2mm, 3 if 2-6mm, 5 if 6-10mm, 10 if >10mm
 - simplifyTarget: originalTriangles * 0.8 (marching-cubes/block-mesh over-tessellates)
 
+POINT CLOUD PARAMETER RULES (only when repairStrategy is point_cloud):
+- resolution: maxDimension/600, with the same hard minimum as voxel params.
+- radiusMultiplier: 2 (MLS smoothing radius = resolution * radiusMultiplier). Lower values preserve sharper details.
+- smoothingIterations: 0 if resolution<3mm, 1 if 3-5mm, 2 if 5-8mm, 3 if >8mm
+- simplifyTarget: originalTriangles * 1.5
+
 Respond with a JSON object only. No markdown, no backticks, no commentary. Schema:
-{"meshType":"…","repairStrategy":"…","confidence":0.0–1.0,"reasoning":"…","warnings":["…"],"voxelParams":{"resolution":number,"dilationVoxels":number,"smoothingIterations":number,"simplifyTarget":number}|null}`;
+{"meshType":"…","repairStrategy":"…","confidence":0.0–1.0,"reasoning":"…","warnings":["…"],"voxelParams":{"resolution":number,"dilationVoxels":number,"smoothingIterations":number,"simplifyTarget":number}|null,"pointCloudParams":{"resolution":number,"smoothingIterations":number,"simplifyTarget":number,"radiusMultiplier":number}|null}`;
 
 export async function analyzeMeshWithAI(
   input: AIMeshAnalysisInput
@@ -260,31 +354,37 @@ ${input.avgWallThicknessMM !== null ? `Estimated wall thickness: ${input.avgWall
       reasoning: string;
       warnings: string[];
       voxelParams?: VoxelRepairParams | null;
+      pointCloudParams?: PointCloudRepairParams | null;
     };
 
     // Build executable repair plan from AI-returned params
     let repairPlan: RepairPlan | undefined;
     const strategy = parsed.repairStrategy;
-    if ((strategy === "solid_voxel" || strategy === "shell_voxel") && parsed.voxelParams) {
-      repairPlan = {
-        pipeline: strategy,
-        params: { voxel: parsed.voxelParams },
-        expect: {
-          watertight: true,
-          maxTriangles: parsed.voxelParams.simplifyTarget > 0
-            ? parsed.voxelParams.simplifyTarget
-            : input.triangles,
-        },
-        userMessage: `${strategy === "shell_voxel" ? "Shell" : "Solid"} reconstruction at ${parsed.voxelParams.resolution} mm resolution with ${parsed.voxelParams.smoothingIterations} smoothing passes, target ${parsed.voxelParams.simplifyTarget.toLocaleString()} triangles.`,
-      };
-    } else if ((strategy === "solid_voxel" || strategy === "shell_voxel") && !parsed.voxelParams) {
-      // AI didn't return params — compute heuristically
-      const voxel = computeVoxelParams(input, strategy === "shell_voxel");
+    if (strategy === "solid_voxel" || strategy === "shell_voxel") {
+      // Use AI params (sanitized) if provided, otherwise compute heuristically
+      const voxel = parsed.voxelParams
+        ? sanitizeVoxelParams(parsed.voxelParams, input)
+        : computeVoxelParams(input, strategy === "shell_voxel");
+      const label = strategy === "shell_voxel" ? "Shell" : "Solid";
       repairPlan = {
         pipeline: strategy,
         params: { voxel },
-        expect: { watertight: true, maxTriangles: voxel.simplifyTarget > 0 ? voxel.simplifyTarget : input.triangles },
-        userMessage: `${strategy === "shell_voxel" ? "Shell" : "Solid"} reconstruction at ${voxel.resolution} mm resolution.`,
+        expect: {
+          watertight: true,
+          maxTriangles: voxel.simplifyTarget > 0 ? voxel.simplifyTarget : input.triangles,
+        },
+        userMessage: `${label} reconstruction at ${voxel.resolution} mm resolution with ${voxel.smoothingIterations} smoothing passes, target ${voxel.simplifyTarget.toLocaleString()} triangles.`,
+      };
+    } else if (strategy === "point_cloud") {
+      const pc = parsed.pointCloudParams ?? computePointCloudParams(input);
+      repairPlan = {
+        pipeline: "point_cloud",
+        params: { voxel: null, pointCloud: pc },
+        expect: {
+          watertight: true,
+          maxTriangles: pc.simplifyTarget > 0 ? pc.simplifyTarget : input.triangles,
+        },
+        userMessage: `Point cloud reconstruction at ${pc.resolution} mm resolution with ${pc.smoothingIterations} smoothing passes, target ${pc.simplifyTarget.toLocaleString()} triangles.`,
       };
     }
 
