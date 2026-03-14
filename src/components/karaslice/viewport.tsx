@@ -702,6 +702,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   return (
     <div
       className="relative w-full h-full"
+      data-karaslice-viewport
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
     >

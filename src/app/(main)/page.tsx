@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { ArrowRight, Check, Wand2, Car, Layers, Upload, Settings2, PackageCheck, Zap, Ruler, Clock, Scissors, Cpu, Shield } from 'lucide-react';
+import { ArrowRight, Check, Wand2, Car, Layers, Upload, Settings2, PackageCheck, Zap, Ruler, Clock, Scissors, Cpu, Shield, Cloud, Wrench, Box } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 const stats = [
@@ -35,17 +35,32 @@ const tools = [
   {
     icon: Cpu,
     title: 'AI Mesh Analysis',
-    desc: 'Classifies mesh type, detects damage, and generates an executable repair plan with optimal parameters.',
+    desc: 'Gemini-powered damage classification, geometry diagnostics, and auto-prescribed repair parameters — identifies boundary loops, non-manifold edges, and corruption clusters.',
   },
   {
-    icon: Shield,
-    title: 'Voxel Reconstruction',
-    desc: 'Rebuilds broken meshes from scratch via voxelization — solid flood-fill or shell dilation — with Taubin smoothing and QEM simplification.',
+    icon: Wrench,
+    title: 'Topology Repair',
+    desc: 'Client-side repair pipeline: exact vertex dedup, degenerate removal, BFS winding fix, outward normal correction, and ear-clip hole filling — all in-browser.',
+  },
+  {
+    icon: Cloud,
+    title: 'Cloud Repair',
+    desc: '15-stage server-side pipeline with feature edge preservation, thin wall detection and auto-thickening, Screened Poisson reconstruction, and 4-method boolean fallback.',
   },
   {
     icon: Scissors,
     title: 'Mesh Splitting',
-    desc: 'Slice oversized parts into printable segments with automatic tenon joints and printer bed fitting.',
+    desc: 'Split oversized parts along configurable cut planes using manifold-3d booleans. Auto-calculates cuts from printer bed dimensions.',
+  },
+  {
+    icon: Box,
+    title: '3D Viewport',
+    desc: 'PBR Three.js viewport with ACES tone mapping, real-time unit conversion (mm/cm/in), weight estimation across 8 material densities, and per-part volume calculation.',
+  },
+  {
+    icon: Shield,
+    title: 'Export & Quote',
+    desc: 'Export repaired or split parts as STL, OBJ, or ZIP. Send parts directly to the AI quote wizard with one click — no re-upload needed.',
   },
 ];
 
@@ -194,12 +209,12 @@ export default function HomePage() {
               <span className="text-accent">Mesh Tools</span>
             </h2>
             <p className="text-foreground/60 max-w-lg mx-auto">
-              Browser-based mesh analysis, repair, and splitting. No uploads,
-              no installs — everything runs client-side.
+              AI-powered mesh analysis, repair, and splitting — basic repairs run in-browser,
+              heavy reconstruction offloads to the cloud. No installs required.
             </p>
           </div>
 
-          <div className="grid md:grid-cols-3 gap-6 mb-10">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
             {tools.map(({ icon: Icon, title, desc }) => (
               <div key={title} className="group relative rounded-xl">
                 <div className="absolute -inset-0.5 rounded-xl bg-gradient-to-br from-accent/40 via-primary/30 to-secondary/20 opacity-0 blur-lg transition-opacity duration-300 group-hover:opacity-50" />

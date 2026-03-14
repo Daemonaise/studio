@@ -72,7 +72,7 @@ export default function RootLayout({
             forcedTheme="dark"
             disableTransitionOnChange
           >
-            <div className="relative flex min-h-screen flex-col">
+            <div className="relative z-[1] flex min-h-screen flex-col">
               {children}
             </div>
             <Toaster />
