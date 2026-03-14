@@ -8,7 +8,7 @@ Precision 3D printing and automotive manufacturing platform — from rapid proto
 |---|---|
 | Framework | Next.js 15.5 (App Router) |
 | UI | React 19, Tailwind CSS v3, shadcn/ui |
-| AI | Google Genkit + Gemini 2.5 Pro |
+| AI | Google Genkit + Gemini 3.1 Pro, Anthropic Claude (fallback) |
 | Payments | Stripe Checkout |
 | Shipping | Shippo REST API |
 | 3D Engine | Three.js + manifold-3d (WASM) |
@@ -17,7 +17,7 @@ Precision 3D printing and automotive manufacturing platform — from rapid proto
 ## Key Features
 
 - **AI Quote Wizard** — Upload STL/OBJ/3MF, pick a material and nozzle size, receive an AI-generated cost breakdown and lead time estimate
-- **Karaslice** — In-browser 3D mesh slicer and analyzer: mesh repair, voxel reconstruction, boolean splits via manifold-3d, OBJ/STL/ZIP export, unit conversion (mm/cm/in), custom printer volume input, and send-to-quote integration
+- **Karaslice** — In-browser 3D mesh slicer and analyzer: AI-driven mesh repair with auto-retry, voxel and point cloud (MLS/SDF) reconstruction, pre-reconstruction sanitation, boolean splits via manifold-3d, OBJ/STL/ZIP export, unit conversion (mm/cm/in), custom printer volume input, and send-to-quote integration
 - **Stripe Checkout** — Full payment flow with shipping info collected pre-checkout; metadata forwarded to fulfilment
 - **Shippo Integration** — Automatic shipment creation and label purchase on order success; tracking info surfaced in the customer portal
 - **Customer Portal** — Order history, status badges, and shipment tracking stored client-side (localStorage)
@@ -79,12 +79,14 @@ public/
 └── index.html                # Firebase Hosting static fallback
 
 docs/
+├── ai-provider-reference.md       # AI provider models and Genkit integration patterns
 ├── ai-repair-plan.md              # AI-driven executable repair plan spec
 ├── blueprint.md                   # Original project blueprint
 ├── flipped-faces-nonmanifold-fix.md # Flipped face and non-manifold edge fixes
 ├── grid-overflow-fix.md           # Emergency grid overflow guard documentation
 ├── karaslice-architecture.md      # Karaslice webapp architecture overview
 ├── mesh-pipeline.md               # Mesh processing pipeline architecture
+├── mesh_repair_spec.md            # Topology-first mesh repair architecture spec
 ├── performance-analysis.md        # Performance profiling and analysis
 ├── post-mc-processing.md          # Post marching-cubes processing pipeline
 ├── shell-reconstruction.md        # Shell reconstruction and AI analysis
@@ -99,11 +101,14 @@ Karaslice is a fully client-side 3D mesh slicer and analyzer at `/karaslice`. Al
 
 ```
 src/components/karaslice/
-├── karaslice-app.tsx     # Main UI component (sidebar tabs + state)
-├── viewport.tsx          # Three.js WebGL viewport (forwardRef, OrbitControls)
-├── manifold-engine.ts    # Core geometry engine
-├── stl-utils.ts          # Binary STL / OBJ export, mesh analysis
-└── voxel-reconstruct.ts  # Voxel-based mesh reconstruction
+├── karaslice-app.tsx          # Main UI component (sidebar tabs + state + retry loop)
+├── viewport.tsx               # Three.js WebGL viewport (forwardRef, OrbitControls)
+├── manifold-engine.ts         # Core geometry engine
+├── stl-utils.ts               # Binary STL / OBJ export, mesh analysis + geometry diagnostics
+├── voxel-reconstruct.ts       # Voxel-based mesh reconstruction (solid + shell)
+├── poisson-reconstruct.ts     # Point cloud / MLS / SDF reconstruction for thin shells
+├── mesh-sanitize.ts           # Pre-reconstruction sanitation (dedup, debris removal, non-manifold fix)
+└── validate-reconstruction.ts # Output validation (NaN, degenerates, topology, Euler characteristic)
 ```
 
 ### Geometry Pipeline
@@ -111,6 +116,34 @@ src/components/karaslice/
 ```
 File (STL / OBJ / 3MF)
   └─► Three.js BufferGeometry
+        └─► AI Analysis (Gemini 3.1 Pro)
+              ├── Geometry diagnostics (boundary loops, corruption clustering,
+              │   normal consistency, gap widths, degenerate triangles)
+              ├── Object identification + damage classification
+              └── Prescribe 15+ reconstruction parameters
+                    └─► Smart Routing
+                          ├── Clean mesh → no repair needed
+                          ├── Minor defects → basic topology repair
+                          └── Severe damage → reconstruction pipeline
+                                └─► Pre-Sanitation (mesh-sanitize.ts)
+                                      ├── Duplicate face removal
+                                      ├── Component extraction + debris classification
+                                      └── Non-manifold edge resolution (normal clustering)
+                                            └─► Reconstruction (AI-tuned parameters)
+                                                  ├── Solid voxel (broken solids)
+                                                  ├── Shell voxel (thin shell fallback)
+                                                  └── Point cloud / MLS / SDF (thin shells)
+                                                        └─► Post-Processing
+                                                              ├── Taubin smoothing (lambda|mu)
+                                                              └── QEM quadric simplification
+                                                                    └─► Validation
+                                                                          ├── NaN / degenerate check
+                                                                          ├── Edge topology check
+                                                                          └── Euler characteristic
+                                                                                ├── PASS → output
+                                                                                └── FAIL → AI diagnose
+                                                                                      → adjust params
+                                                                                      → retry (up to 3x)
         └─► Repair Pipeline (manifold-engine)
               ├── Exact vertex dedup (uint32 bit-pattern hash, zero epsilon)
               ├── Epsilon weld fallback (only if open edges remain after exact pass)
@@ -129,7 +162,11 @@ File (STL / OBJ / 3MF)
 - **Custom printer volume** — Preset / Custom toggle in Pre-Split tab; manual X/Y/Z input in the current display unit, stored internally as mm
 - **Auto-calculate cuts** — Compares mesh bounding box to printer volume and places cut planes where needed
 - **Weight estimate** — Material density selector (PLA, PETG, ABS, ASA, TPU, Nylon, Resin, CF) with per-part and total weight
-- **Voxel reconstruction** — Shell-based voxel approach for non-manifold mesh recovery
+- **AI-Driven Reconstruction** — Gemini 3.1 Pro analyzes geometry diagnostics and prescribes exact parameters; auto-retry loop validates output and adjusts on failure
+- **Pre-Reconstruction Sanitation** — Deterministic cleanup: duplicate face removal, debris component classification, non-manifold edge resolution via normal clustering
+- **Voxel Reconstruction** — Solid and shell-based voxel approaches for non-manifold mesh recovery
+- **Point Cloud / MLS Reconstruction** — Moving Least Squares signed distance field reconstruction for thin shells (car bodies, panels, monocoques)
+- **Slice Lines Toggle** — Show/hide cut plane lines in the 3D viewport
 
 ### manifold-engine exports
 
@@ -183,8 +220,9 @@ The Three.js viewport uses physically-based rendering throughout:
 ## Required Environment Variables
 
 ```bash
-# AI
+# AI (primary: Gemini 3.1 Pro for mesh analysis, fallback: Anthropic Claude)
 GEMINI_API_KEY=
+ANTHROPIC_API_KEY=              # optional — fallback for mesh analysis + retry diagnosis
 
 # Stripe (test keys: sk_test_ / pk_test_)
 STRIPE_SECRET_KEY=
@@ -229,6 +267,18 @@ npm run dev        # starts on http://localhost:9002
 3. Router navigates to `/quote?from=karaslice`
 4. The Quote Wizard detects the `from=karaslice` param and pre-loads the transferred files
 5. The module-level store survives the client-side navigation (no page reload) and is cleared after pickup
+
+## CI/CD
+
+A GitHub Actions workflow (`.github/workflows/reconstruct-autofix.yml`) runs on pushes to reconstruction pipeline files. It:
+
+1. Runs TypeScript type-checking
+2. Runs reconstruction validation tests
+3. If either fails, invokes a Claude agent to diagnose and auto-fix the issue, opening a PR with the fix
+
+The workflow only triggers on changes to `voxel-reconstruct.ts`, `poisson-reconstruct.ts`, `validate-reconstruction.ts`, or `mesh-analysis-actions.ts` — keeping cloud costs minimal.
+
+**Required secret:** `ANTHROPIC_API_KEY` in GitHub repo settings.
 
 ## Deployment
 
