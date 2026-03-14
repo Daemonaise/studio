@@ -769,7 +769,9 @@ function marchingCubesOnSDF(
 
 // ─── Main pipeline ───────────────────────────────────────────────────────────
 
-const MAX_GRID_CELLS = 200_000_000;
+// 50M cells is the practical browser limit — avoids tab crashes and multi-minute stalls.
+// Even with sparse SDF, the per-point evaluation cube (evalRadius³) is the real bottleneck.
+const MAX_GRID_CELLS = 50_000_000;
 
 export interface PointCloudReconstructParams {
   /** Grid resolution in mm. Smaller = finer detail, more memory. */
@@ -792,15 +794,17 @@ export interface PointCloudReconstructParams {
 
 /**
  * Auto-compute a grid resolution for point cloud reconstruction.
- * Targets ~600 cells along the longest axis for high-quality output.
+ * Targets ~400 cells along the longest axis — keeps grid under 50M cells
+ * even for large bounding boxes (e.g. 1800×1000×2300 mm car bodies).
  */
 function autoResolution(bbox: { x: number; y: number; z: number }): number {
   const maxDim = Math.max(bbox.x, bbox.y, bbox.z, 1);
-  const res = maxDim / 600;
-  // Enforce grid safety: same limits as voxel pipeline
+  const res = maxDim / 400; // more conservative than 600 — avoids browser stalls
+  // Enforce grid safety: cube root of volume / max cells (with padding factor 1.5)
+  const paddedVol = (bbox.x * 1.5) * (bbox.y * 1.5) * (bbox.z * 1.5);
   const floor = Math.max(
-    maxDim / 1000,
-    Math.cbrt(bbox.x * bbox.y * bbox.z / MAX_GRID_CELLS),
+    maxDim / 500,
+    Math.cbrt(paddedVol / MAX_GRID_CELLS),
     0.5,
   );
   return Math.max(res, floor);
@@ -870,20 +874,29 @@ export async function pointCloudReconstruct(
   onProgress(3, 6, "Evaluating signed distance field…");
   await yieldToUI();
 
-  const pad = resolution * gridPadding;
-  const ox = bb.min.x - pad, oy = bb.min.y - pad, oz = bb.min.z - pad;
-  const nx = Math.ceil((bbSize.x + 2 * pad) / resolution) + 1;
-  const ny = Math.ceil((bbSize.y + 2 * pad) / resolution) + 1;
-  const nz = Math.ceil((bbSize.z + 2 * pad) / resolution) + 1;
-  const dims: [number, number, number] = [nx, ny, nz];
+  // Compute grid dims; auto-coarsen resolution if grid exceeds safety limit
+  let useRes = resolution;
+  let pad = useRes * gridPadding;
+  let ox = bb.min.x - pad, oy = bb.min.y - pad, oz = bb.min.z - pad;
+  let nx = Math.ceil((bbSize.x + 2 * pad) / useRes) + 1;
+  let ny = Math.ceil((bbSize.y + 2 * pad) / useRes) + 1;
+  let nz = Math.ceil((bbSize.z + 2 * pad) / useRes) + 1;
 
-  const totalCells = nx * ny * nz;
-  if (totalCells > MAX_GRID_CELLS) {
-    throw new Error(
-      `SDF grid too large: ${nx}×${ny}×${nz} = ${totalCells.toLocaleString()} cells ` +
-      `(max ${MAX_GRID_CELLS.toLocaleString()}). Increase resolution.`
-    );
+  let totalCells = nx * ny * nz;
+  while (totalCells > MAX_GRID_CELLS) {
+    useRes *= 1.25; // coarsen by 25% each round
+    pad = useRes * gridPadding;
+    ox = bb.min.x - pad; oy = bb.min.y - pad; oz = bb.min.z - pad;
+    nx = Math.ceil((bbSize.x + 2 * pad) / useRes) + 1;
+    ny = Math.ceil((bbSize.y + 2 * pad) / useRes) + 1;
+    nz = Math.ceil((bbSize.z + 2 * pad) / useRes) + 1;
+    totalCells = nx * ny * nz;
   }
+  if (useRes !== resolution) {
+    onProgress(3, 6, `Grid too large at ${resolution.toFixed(1)} mm — auto-coarsened to ${useRes.toFixed(1)} mm (${totalCells.toLocaleString()} cells)`);
+    await yieldToUI();
+  }
+  const dims: [number, number, number] = [nx, ny, nz];
 
   // Sparse SDF: only store cells that are actually evaluated.
   // Unevaluated cells return +1.0 (outside). For thin shells, typically <10%
@@ -895,19 +908,24 @@ export async function pointCloudReconstruct(
 
   // Evaluate SDF only in cells near input points
   // gapBridgingFactor widens the eval radius to bridge larger gaps (at compute cost)
-  const baseEvalRadius = Math.ceil(smoothingRadius / resolution) + 1;
-  const evalRadius = Math.ceil(baseEvalRadius * gapBridgingFactor);
+  // Use actual grid resolution (may have been coarsened) for eval radius
+  const actualSmoothingRadius = useRes * radiusMult;
+  const baseEvalRadius = Math.ceil(actualSmoothingRadius / useRes) + 1;
+  // Cap eval radius to prevent O(n³) explosion on each point — max 5 cells in each direction
+  const evalRadius = Math.min(5, Math.ceil(baseEvalRadius * gapBridgingFactor));
   // sdfSharpness controls Gaussian sigma: sharp = tight kernel (local), smooth = wide kernel
   // sharpness 0.0 → h = smoothingRadius (very smooth), 1.0 → h = smoothingRadius * 0.3 (very sharp)
-  const h = smoothingRadius * (1.0 - sdfSharpness * 0.7);
+  const h = actualSmoothingRadius * (1.0 - sdfSharpness * 0.7);
   let lastYieldAt = Date.now();
   let evaluatedCount = 0;
+  const sdfStartTime = Date.now();
+  const SDF_TIMEOUT_MS = 60_000; // 60 seconds max for SDF evaluation
 
   for (let pi = 0; pi < pc.count; pi++) {
     const px = pc.points[pi * 3], py = pc.points[pi * 3 + 1], pz = pc.points[pi * 3 + 2];
-    const gx = Math.round((px - ox) / resolution);
-    const gy = Math.round((py - oy) / resolution);
-    const gz = Math.round((pz - oz) / resolution);
+    const gx = Math.round((px - ox) / useRes);
+    const gy = Math.round((py - oy) / useRes);
+    const gz = Math.round((pz - oz) / useRes);
 
     for (let dz = -evalRadius; dz <= evalRadius; dz++) {
       const iz = gz + dz;
@@ -923,17 +941,23 @@ export async function pointCloudReconstruct(
           if (sdf.has(cellIdx)) continue;
           evaluatedCount++;
 
-          const qx = ox + ix * resolution;
-          const qy = oy + iy * resolution;
-          const qz = oz + iz * resolution;
+          const qx = ox + ix * useRes;
+          const qy = oy + iy * useRes;
+          const qz = oz + iz * useRes;
 
-          const neighbors = hash.queryRadius(qx, qy, qz, smoothingRadius, pc.points);
+          const neighbors = hash.queryRadius(qx, qy, qz, actualSmoothingRadius, pc.points);
           sdf.set(cellIdx, evaluateSDF(qx, qy, qz, neighbors, pc.points, pc.normals, h));
         }
       }
     }
 
     if (pi % 2000 === 0 && Date.now() - lastYieldAt > 50) {
+      // Abort if SDF evaluation is taking too long
+      if (Date.now() - sdfStartTime > SDF_TIMEOUT_MS) {
+        onProgress(3, 6, `SDF timed out after 60s — using ${evaluatedCount.toLocaleString()} evaluated cells`);
+        await yieldToUI();
+        break;
+      }
       const pct = Math.round((pi / pc.count) * 100);
       onProgress(3, 6, `Evaluating SDF… ${pct}% (${evaluatedCount.toLocaleString()} cells)`);
       await yieldToUI();
@@ -949,7 +973,7 @@ export async function pointCloudReconstruct(
   onProgress(5, 6, "Running marching cubes…");
   await yieldToUI();
 
-  const mc = marchingCubesOnSDF(sdfGet, nx, ny, nz, ox, oy, oz, resolution, onProgress);
+  const mc = marchingCubesOnSDF(sdfGet, nx, ny, nz, ox, oy, oz, useRes, onProgress);
 
   // ── Build output geometry (indexed — saves ~3× memory) ─────────────────
   onProgress(6, 6, "Finalizing geometry…");
@@ -964,7 +988,7 @@ export async function pointCloudReconstruct(
 
   return {
     geometry: outGeo,
-    resolution,
+    resolution: useRes,
     gridDims: dims,
     outputTriangles: mc.triCount,
   };

@@ -156,7 +156,7 @@ function gridSafetyFloor(bbox: { x: number; y: number; z: number }): number {
   const maxDim = Math.max(bbox.x, bbox.y, bbox.z, 1);
   return Math.max(
     maxDim / 1000,
-    Math.cbrt(bbox.x * bbox.y * bbox.z / 200_000_000),
+    Math.cbrt(bbox.x * bbox.y * bbox.z / 50_000_000),
     0.5,
   );
 }
@@ -458,7 +458,7 @@ STRATEGY RULES:
 
 USE GEOMETRY DIAGNOSTICS TO SET PARAMETERS:
 - resolution: Set to 2× medianEdgeLength for detail preservation. Clamp to [FLOOR, 20mm].
-  FLOOR: max(maxDim/1000, cbrt(X*Y*Z/2e8), 0.5)
+  FLOOR: max(maxDim/1000, cbrt(X*Y*Z/5e7), 0.5)
 - gapBridgingFactor: Based on maxGapWidth vs resolution.
   If maxGapWidth < 3×resolution → 1.0 (gaps close naturally)
   If maxGapWidth < 8×resolution → 1.5 (moderate bridging)
