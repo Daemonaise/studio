@@ -162,6 +162,8 @@ export function KarasliceApp() {
   const viewportRef = useRef<ViewportHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingUploadFile = useRef<File | null>(null);
+  /** Persistent copy of the loaded file — survives upload clearing. Used by Cloud Repair. */
+  const loadedFileRef = useRef<File | null>(null);
   const currentJobId = useRef<string>("");
 
   // ── Core state ──────────────────────────────────────────────────────────────
@@ -362,14 +364,12 @@ export function KarasliceApp() {
         // Mesh is clean — no repair section opened
         notify("Mesh is clean — no defects detected, ready for slicing.");
       } else if (isNearPerfect || aiResult.repairStrategy === "topology_repair") {
-        // Minor defects — route to basic topology repair, even if AI suggested complex
+        // Minor defects — route to basic topology repair
         setOpenSections((s) => ({ ...s, repair: true }));
       } else {
-        // Significant defects — use AI-recommended complex reconstruction
-        if (aiResult.repairStrategy === "shell_voxel") setReconstructMode("shell_voxel");
-        else if (aiResult.repairStrategy === "solid_voxel") setReconstructMode("solid_voxel");
-        else if (aiResult.repairStrategy === "point_cloud") setReconstructMode("point_cloud");
-        setOpenSections((s) => ({ ...s, voxelReconstruct: true }));
+        // Significant defects — route to cloud repair (not client-side reconstruction)
+        setOpenSections((s) => ({ ...s, cloudRepair: true }));
+        notify("Heavy repair needed — use Cloud Repair for best results.");
       }
 
       if (aiResult.repairPlan?.params.pointCloud) {
@@ -705,13 +705,8 @@ export function KarasliceApp() {
 
   const handleCloudRepair = async () => {
     if (!meshInfo) return;
-    const file = pendingUploadFile.current;
 
-    // We need the original file — if user already loaded, re-read from viewport
-    // For cloud repair, we need to get the file from the file input
-    const fileInput = fileInputRef.current;
-    const uploadFile = file ?? (fileInput?.files?.[0] || null);
-
+    const uploadFile = loadedFileRef.current;
     if (!uploadFile) {
       notify("No file available for cloud upload. Please re-load the file.", "destructive");
       return;
@@ -1059,6 +1054,7 @@ export function KarasliceApp() {
           const file = e.target.files?.[0];
           if (!file) return;
           pendingUploadFile.current = file;
+          loadedFileRef.current = file;
           setFileLoading(true);
           window.dispatchEvent(new CustomEvent("karaslice:load-file", { detail: file }));
           e.target.value = "";
@@ -2427,7 +2423,7 @@ export function KarasliceApp() {
           ref={viewportRef}
           onMeshLoaded={handleMeshLoaded}
           onLoadStart={() => setFileLoading(true)}
-          onFileSelected={(file) => { pendingUploadFile.current = file; }}
+          onFileSelected={(file) => { pendingUploadFile.current = file; loadedFileRef.current = file; }}
           cutPlanes={cutPlanes}
           printerVolume={effectivePrinter
             ? { x: effectivePrinter.x, y: effectivePrinter.y, z: effectivePrinter.z }
