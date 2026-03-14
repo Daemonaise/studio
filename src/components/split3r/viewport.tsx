@@ -361,36 +361,42 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
     if (ext === "stl") {
       const loader = new STLLoader();
-      file.arrayBuffer().then((buf) => loadGeometry(loader.parse(buf), file.name, mb, "stl"));
+      file.arrayBuffer()
+        .then((buf) => loadGeometry(loader.parse(buf), file.name, mb, "stl"))
+        .catch((err) => console.error("[Viewport] STL load failed:", err));
     } else if (ext === "obj") {
       const loader = new OBJLoader();
-      file.text().then((text) => {
-        const obj   = loader.parse(text);
-        const child = obj.children.find((c) => c instanceof THREE.Mesh) as THREE.Mesh | undefined;
-        if (child) loadGeometry(child.geometry, file.name, mb, "obj");
-      });
+      file.text()
+        .then((text) => {
+          const obj   = loader.parse(text);
+          const child = obj.children.find((c) => c instanceof THREE.Mesh) as THREE.Mesh | undefined;
+          if (child) loadGeometry(child.geometry, file.name, mb, "obj");
+        })
+        .catch((err) => console.error("[Viewport] OBJ load failed:", err));
     } else if (ext === "3mf") {
-      file.arrayBuffer().then(async (buf) => {
-        const { ThreeMFLoader } = await import("three/examples/jsm/loaders/3MFLoader.js");
-        const group = new ThreeMFLoader().parse(buf);
-        const geos: THREE.BufferGeometry[] = [];
-        group.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            const g = child.geometry.clone();
-            child.updateWorldMatrix(true, false);
-            g.applyMatrix4(child.matrixWorld);
-            geos.push(g);
+      file.arrayBuffer()
+        .then(async (buf) => {
+          const { ThreeMFLoader } = await import("three/examples/jsm/loaders/3MFLoader.js");
+          const group = new ThreeMFLoader().parse(buf);
+          const geos: THREE.BufferGeometry[] = [];
+          group.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+              const g = child.geometry.clone();
+              child.updateWorldMatrix(true, false);
+              g.applyMatrix4(child.matrixWorld);
+              geos.push(g);
+            }
+          });
+          if (geos.length === 0) return;
+          if (geos.length === 1) {
+            loadGeometry(geos[0], file.name, mb, "3mf");
+          } else {
+            const { mergeGeometries } = await import("three/examples/jsm/utils/BufferGeometryUtils.js");
+            const merged = mergeGeometries(geos);
+            if (merged) loadGeometry(merged, file.name, mb, "3mf");
           }
-        });
-        if (geos.length === 0) return;
-        if (geos.length === 1) {
-          loadGeometry(geos[0], file.name, mb, "3mf");
-        } else {
-          const { mergeGeometries } = await import("three/examples/jsm/utils/BufferGeometryUtils.js");
-          const merged = mergeGeometries(geos);
-          if (merged) loadGeometry(merged, file.name, mb, "3mf");
-        }
-      });
+        })
+        .catch((err) => console.error("[Viewport] 3MF load failed:", err));
     }
   }, [loadGeometry]);
 

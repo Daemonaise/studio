@@ -1,6 +1,7 @@
 'use server';
 
 import Stripe from 'stripe';
+import { randomUUID } from 'crypto';
 
 export interface ShippingInfo {
   fullName: string;
@@ -67,6 +68,11 @@ export async function createCheckoutSession(
 
   try {
     const stripe = getStripe();
+
+    // Validate the quote total before sending to Stripe
+    if (!isFinite(quote.totalCost) || quote.totalCost < 0) {
+      return { url: null, error: 'Invalid quote total.' };
+    }
 
     // Stripe minimum charge is $0.50 — enforce $1.00 floor
     const rawCents = Math.round(quote.totalCost * 100);
@@ -160,7 +166,7 @@ export async function verifyAndFulfillOrder(
       country:  meta.country || 'US',
     };
 
-    const orderNumber = `KL-${Date.now().toString(36).toUpperCase()}`;
+    const orderNumber = `KL-${randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
 
     let trackingNumber: string | undefined;
     let trackingUrl:    string | undefined;
@@ -311,11 +317,22 @@ async function createShippoShipment(
   // Enforce $25 minimum for shipping & handling.
   // Prefer the cheapest rate at or above $25; fall back to cheapest overall.
   const SHIPPING_MIN = 25;
-  const qualifiedRates = rates.filter(r => parseFloat(r.amount) >= SHIPPING_MIN);
+  const qualifiedRates = rates.filter(r => {
+    const amount = parseFloat(r.amount);
+    return isFinite(amount) && amount >= SHIPPING_MIN;
+  });
   const pool = qualifiedRates.length > 0 ? qualifiedRates : rates;
-  const cheapest = pool.reduce((best, r) =>
-    parseFloat(r.amount) < parseFloat(best.amount) ? r : best
-  );
+  if (pool.length === 0) {
+    console.warn('[Shippo] No usable shipping rates for shipment', shipmentId);
+    return { shipmentId };
+  }
+  const cheapest = pool.reduce((best, r) => {
+    const rAmount = parseFloat(r.amount);
+    const bestAmount = parseFloat(best.amount);
+    if (!isFinite(rAmount)) return best;
+    if (!isFinite(bestAmount)) return r;
+    return rAmount < bestAmount ? r : best;
+  });
 
   // Purchase the label
   const txRes = await fetch('https://api.goshippo.com/transactions/', {

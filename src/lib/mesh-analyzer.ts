@@ -208,8 +208,10 @@ function analyzeObj(bufferOrText: Buffer | string): Omit<MeshMetrics, 'file_byte
                 } else {
                     index -= 1; // 1-based to 0-based
                 }
-                if (vertices[index]) {
+                if (index >= 0 && index < vertices.length) {
                     faceVertices.push(vertices[index]);
+                } else if (!notes.includes('invalid_face_index')) {
+                    notes.push('invalid_face_index');
                 }
             }
 
@@ -317,10 +319,12 @@ async function analyze3mf(buffer: Buffer): Promise<Omit<MeshMetrics, 'file_bytes
         allVertices.push(...currentVertices);
 
         const meshTriangles = mesh.triangles.triangle.map((t: any) => {
-            const i1 = parseInt(t.v1) + vertexOffset;
-            const i2 = parseInt(t.v2) + vertexOffset;
-            const i3 = parseInt(t.v3) + vertexOffset;
-            if (i1 >= allVertices.length || i2 >= allVertices.length || i3 >= allVertices.length) {
+            const i1 = parseInt(t.v1, 10) + vertexOffset;
+            const i2 = parseInt(t.v2, 10) + vertexOffset;
+            const i3 = parseInt(t.v3, 10) + vertexOffset;
+            if (isNaN(i1) || isNaN(i2) || isNaN(i3) ||
+                i1 < 0 || i2 < 0 || i3 < 0 ||
+                i1 >= allVertices.length || i2 >= allVertices.length || i3 >= allVertices.length) {
               throw new Error('PARSE_ERROR: 3MF triangle index out of bounds.');
             }
             return [allVertices[i1], allVertices[i2], allVertices[i3]] as Triangle;
@@ -390,11 +394,13 @@ function analyzeAmf(buffer: Buffer): Omit<MeshMetrics, 'file_bytes' | 'parse_ms'
             if (!vol.triangle) continue;
             const trianglesRaw = Array.isArray(vol.triangle) ? vol.triangle : [vol.triangle];
             for (const t of trianglesRaw) {
-                const i1 = parseInt(t.v1);
-                const i2 = parseInt(t.v2);
-                const i3 = parseInt(t.v3);
+                const i1 = parseInt(t.v1, 10);
+                const i2 = parseInt(t.v2, 10);
+                const i3 = parseInt(t.v3, 10);
 
-                if (i1 >= vertices.length || i2 >= vertices.length || i3 >= vertices.length) {
+                if (isNaN(i1) || isNaN(i2) || isNaN(i3) ||
+                    i1 < 0 || i2 < 0 || i3 < 0 ||
+                    i1 >= vertices.length || i2 >= vertices.length || i3 >= vertices.length) {
                     throw new Error(`PARSE_ERROR: AMF triangle index out of bounds.`);
                 }
                 allTriangles.push([vertices[i1], vertices[i2], vertices[i3]]);

@@ -15,6 +15,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2, Lock, Mail } from "lucide-react";
 
+const DEMO_EMAIL    = process.env.NEXT_PUBLIC_DEMO_EMAIL    ?? "test@test.com";
+const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? "password";
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -27,7 +30,7 @@ export default function LoginPage() {
     setError("");
     setIsLoading(true);
 
-    if (email === "test@test.com" && password === "password") {
+    if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
       localStorage.setItem("kl_logged_in", "true");
       router.push("/portal");
     } else {
@@ -137,9 +140,9 @@ export default function LoginPage() {
             </div>
 
             <div className="rounded-md bg-muted/50 border border-border/50 px-3 py-2.5 text-center text-xs text-muted-foreground">
-              <span className="font-mono">test@test.com</span>
+              <span className="font-mono">{DEMO_EMAIL}</span>
               {" · "}
-              <span className="font-mono">password</span>
+              <span className="font-mono">{DEMO_PASSWORD}</span>
             </div>
 
             <p className="text-center text-sm text-muted-foreground pt-1">

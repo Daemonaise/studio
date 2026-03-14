@@ -29,7 +29,8 @@ export function CheckoutSuccessClient({ order }: { order: OrderFulfillmentResult
 
     try {
       // Persist order to order history
-      const stored: any[] = JSON.parse(localStorage.getItem("kl_orders") || "[]");
+      const rawOrders = JSON.parse(localStorage.getItem("kl_orders") || "[]");
+      const stored: Record<string, unknown>[] = Array.isArray(rawOrders) ? rawOrders : [];
       if (!stored.some((o) => o.orderNumber === orderNumber)) {
         stored.unshift({
           orderNumber,

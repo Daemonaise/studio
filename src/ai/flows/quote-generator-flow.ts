@@ -337,6 +337,8 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
       min: Math.min(minLead, pricingMatrix.leadTime.maxDaysCap),
       max: Math.min(maxLead, pricingMatrix.leadTime.maxDaysCap),
   };
+  // Ensure max >= min after capping (can invert if minLead already exceeds maxDaysCap)
+  if (leadTimeDays.max < leadTimeDays.min) leadTimeDays.max = leadTimeDays.min;
   
   // 11. Finalize
   if (!metrics.watertight_est) {
