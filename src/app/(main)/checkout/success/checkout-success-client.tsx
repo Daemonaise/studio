@@ -51,7 +51,11 @@ export function CheckoutSuccessClient({ order }: { order: OrderFulfillmentResult
 
       // Update customer profile so the portal can greet them by name
       if (order.shipping?.fullName || order.shipping?.email) {
-        const existing = JSON.parse(localStorage.getItem("kl_customer") || "{}");
+        const existingRaw = JSON.parse(localStorage.getItem("kl_customer") || "{}");
+        const existing: Record<string, unknown> =
+          typeof existingRaw === "object" && existingRaw !== null && !Array.isArray(existingRaw)
+            ? existingRaw
+            : {};
         localStorage.setItem(
           "kl_customer",
           JSON.stringify({

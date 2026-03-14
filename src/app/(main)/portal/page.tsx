@@ -93,10 +93,12 @@ const STATUS_CONFIG: Record<
   },
 };
 
-function safeParseJSON<T>(key: string, fallback: T): T {
+function safeParseJSON<T>(key: string, fallback: T, validate?: (v: unknown) => boolean): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
+    if (!raw) return fallback;
+    const parsed: unknown = JSON.parse(raw);
+    return (validate ? validate(parsed) : true) ? (parsed as T) : fallback;
   } catch {
     return fallback;
   }
@@ -184,8 +186,12 @@ export default function PortalPage() {
   const [customer, setCustomer] = useState<Customer | null>(null);
 
   useEffect(() => {
-    setOrders(safeParseJSON<Order[]>("kl_orders", []));
-    setCustomer(safeParseJSON<Customer | null>("kl_customer", null));
+    setOrders(safeParseJSON<Order[]>("kl_orders", [], Array.isArray));
+    setCustomer(
+      safeParseJSON<Customer | null>("kl_customer", null,
+        (v) => typeof v === "object" && v !== null && !Array.isArray(v)
+      )
+    );
   }, []);
 
   const stats = useMemo(
