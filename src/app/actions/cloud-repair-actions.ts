@@ -153,11 +153,11 @@ export async function submitCloudRepairJob(
       },
     );
   } else {
-    // No worker URL configured — run inline (dev mode)
-    // Mark as failed with helpful message
+    // No worker URL configured — fail immediately with actionable error
     await db.collection(REPAIR_JOBS_COLLECTION).doc(jobId).update({
-      status: "queued",
-      stepMessage: "Waiting for worker — set MESH_REPAIR_WORKER_URL env var for Cloud Run, or use the local dev endpoint.",
+      status: "failed",
+      error: "Cloud repair worker not configured. Set MESH_REPAIR_WORKER_URL environment variable and deploy the cloud-worker.",
+      finishedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
   }

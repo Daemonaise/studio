@@ -12,12 +12,15 @@ Precision 3D printing and automotive manufacturing platform — from rapid proto
 | Payments | Stripe Checkout |
 | Shipping | Shippo REST API |
 | 3D Engine | Three.js + manifold-3d (WASM) |
+| Cloud Repair | Python (PyMeshLab + Open3D + trimesh) on Cloud Run |
+| Storage | Firebase Storage + Firestore |
 | Hosting | Firebase App Hosting |
 
 ## Key Features
 
 - **AI Quote Wizard** — Upload STL/OBJ/3MF, pick a material and nozzle size, receive an AI-generated cost breakdown and lead time estimate
-- **Karaslice** — In-browser 3D mesh slicer and analyzer: AI-driven mesh repair with auto-retry, voxel and point cloud (MLS/SDF) reconstruction, pre-reconstruction sanitation, boolean splits via manifold-3d, OBJ/STL/ZIP export, unit conversion (mm/cm/in), custom printer volume input, and send-to-quote integration
+- **Karaslice** — In-browser 3D mesh slicer and analyzer: AI-driven mesh repair with auto-retry, boolean splits via manifold-3d, OBJ/STL/ZIP export, unit conversion (mm/cm/in), custom printer volume input, and send-to-quote integration
+- **Cloud Mesh Repair** — Server-side 15-stage repair pipeline with feature edge preservation, thin wall detection/thickening, and 4-method reconstruction fallback chain; auto-loads results into the Karaslice viewport
 - **Stripe Checkout** — Full payment flow with shipping info collected pre-checkout; metadata forwarded to fulfilment
 - **Shippo Integration** — Automatic shipment creation and label purchase on order success; tracking info surfaced in the customer portal
 - **Customer Portal** — Order history, status badges, and shipment tracking stored client-side (localStorage)
@@ -49,8 +52,11 @@ src/
 │   ├── actions/
 │   │   ├── assistant-actions.ts      # AI assistant server action
 │   │   ├── checkout-actions.ts       # Stripe + Shippo server actions
+│   │   ├── cloud-repair-actions.ts   # Cloud mesh repair + split server actions
 │   │   ├── mesh-analysis-actions.ts  # Mesh file analysis server action
 │   │   └── quote-actions.ts          # Quote generation server action
+│   ├── api/
+│   │   └── repair-job/[jobId]/route.ts  # Job status GET + worker PATCH endpoint
 │   ├── data/
 │   │   ├── materials.ts
 │   │   ├── pricing-matrix.json
@@ -67,9 +73,18 @@ src/
 │   └── ui/                   # shadcn/ui primitives
 ├── hooks/
 └── lib/
+    ├── firebase-admin.ts     # Firebase Admin SDK (Storage + Firestore singletons)
     ├── karaslice-transfer.ts # Module-level store for passing split parts to quote
     ├── mesh-analyzer.ts      # Mesh file parsing and metrics (STL, OBJ, 3MF, AMF)
     └── utils.ts
+
+cloud-worker/                 # Cloud Run mesh repair worker (Python)
+├── Dockerfile
+├── deploy.sh                 # Build + deploy to Cloud Run
+├── requirements.txt
+├── main.py                   # Flask server (/health, /repair, /split)
+├── repair_pipeline.py        # 15-stage repair pipeline
+└── boolean_split.py          # Robust boolean split with 4-method fallback
 
 public/
 ├── manifold/                 # manifold-3d WASM bundle (copied from node_modules)
@@ -82,36 +97,130 @@ docs/
 ├── ai-provider-reference.md       # AI provider models and Genkit integration patterns
 ├── ai-repair-plan.md              # AI-driven executable repair plan spec
 ├── blueprint.md                   # Original project blueprint
-├── flipped-faces-nonmanifold-fix.md # Flipped face and non-manifold edge fixes
-├── grid-overflow-fix.md           # Emergency grid overflow guard documentation
+├── flipped-faces-nonmanifold-fix.md
+├── grid-overflow-fix.md
 ├── karaslice-architecture.md      # Karaslice webapp architecture overview
 ├── mesh-pipeline.md               # Mesh processing pipeline architecture
+├── mesh_repair_cloud_architecture.md  # Cloud repair architecture spec
 ├── mesh_repair_spec.md            # Topology-first mesh repair architecture spec
-├── performance-analysis.md        # Performance profiling and analysis
-├── post-mc-processing.md          # Post marching-cubes processing pipeline
-├── shell-reconstruction.md        # Shell reconstruction and AI analysis
-├── slicer-debugging.md            # Slicer debug instructions
-├── slicer-fix.md                  # Slicer fix instructions
-└── voxel-reconstruction.md        # Voxel reconstruction architecture
+├── performance-analysis.md
+├── poisson-reconstruction.md
+├── post-mc-processing.md
+├── shell-reconstruction.md
+├── slicer-debugging.md
+├── slicer-fix.md
+└── voxel-reconstruction.md
 ```
+
+## Architecture Overview
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     Browser Client                           │
+│  Three.js viewport · AI analysis · basic topology repair     │
+│  manifold-3d booleans · file upload/download                 │
+└──────────────────┬───────────────────────────────────────────┘
+                   │  Firebase Storage (mesh upload)
+                   │  Firestore (job metadata)
+                   ▼
+┌──────────────────────────────────────────────────────────────┐
+│                Next.js Server Actions                         │
+│  cloud-repair-actions.ts · checkout-actions.ts               │
+│  Triggers Cloud Run · Polls job status · Returns signed URLs │
+└──────────────────┬───────────────────────────────────────────┘
+                   │  Authenticated HTTP (identity token)
+                   ▼
+┌──────────────────────────────────────────────────────────────┐
+│             Cloud Run Worker (Python)                         │
+│  PyMeshLab · Open3D · trimesh                                │
+│  8GB RAM · 4 CPU · 15min timeout · scale-to-zero             │
+│  /repair endpoint · /split endpoint                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Cloud Mesh Repair
+
+The cloud repair system handles meshes too damaged or complex for browser-side repair. It runs on Cloud Run with scale-to-zero pricing.
+
+### 15-Stage Repair Pipeline (`repair_pipeline.py`)
+
+```
+ 1. Parse           — Load mesh via trimesh (STL/OBJ/3MF/PLY)
+ 2. Weld            — Vertex welding to close micro-gaps
+ 3. Sanitize        — Remove zero-area and degenerate triangles
+ 4. Components      — Extract connected components, remove debris
+ 5. Non-Manifold    — Iterative non-manifold edge/vertex removal (3 passes)
+ 6. Normals         — Consistent winding + outward normal correction
+ 7. Holes           — Progressive hole filling (small → medium → large, 3 passes)
+ 8. Self-Intersect  — Detect and resolve self-intersecting faces
+ 9. Reconstruct     — 4-method fallback chain (if needed):
+                       Screened Poisson → Ball Pivoting → Alpha Shape → PyMeshLab Poisson
+10. Post-Cleanup    — Remove reconstruction artifacts
+11. Remesh          — Feature-preserving remesh (sharp edges untouched)
+12. Thin Walls      — Ray-cast thickness detection + auto-thickening (< 0.8mm)
+13. Simplify        — QEM decimation to target face count
+14. Validate        — Quality score 0–100%, topology checks
+15. Export          — Write repaired STL + JSON report
+```
+
+### Damage Classification
+
+The pipeline classifies input meshes into severity levels:
+
+| Level | Criteria | Action |
+|---|---|---|
+| Clean | Watertight, manifold, no issues | Skip repair |
+| Minor | < 5% open edges, small holes | Topology fix only |
+| Moderate | Non-manifold edges, medium holes | Full pipeline |
+| Severe | > 30% open edges, self-intersections | Pipeline + reconstruction |
+| Destroyed | Disconnected fragments, no usable topology | Full reconstruction |
+
+### Competitive Features
+
+Three capabilities that close the gap with commercial tools (Autodesk Netfabb, Materialise Magics):
+
+1. **Feature Edge Preservation** — Dihedral angle analysis (`trimesh.face_adjacency_angles`) classifies sharp edges at a configurable threshold (default 30°). Remeshing only applies to smooth regions; sharp creases, chamfers, and fillets are preserved.
+
+2. **Robust Boolean Split** — 4-method fallback chain for splitting meshes along cut planes:
+   - Trimesh direct slice
+   - Perturbed plane (3 jitter attempts)
+   - Vertex classification with edge-cached intersections
+   - Manual triangle clipping (always succeeds)
+
+3. **Thin Wall Detection & Thickening** — Open3D `RaycastingScene` casts rays inward from each vertex along the inverted normal. Regions below the minimum thickness (0.8mm default) are automatically thickened by displacing vertices outward.
+
+### Auto-Load into Viewport
+
+When cloud repair completes, the client automatically:
+1. Polls Firestore job status via server action
+2. Detects `status: "finished"`
+3. Fetches signed download URL from Firebase Storage
+4. Downloads the repaired STL
+5. Parses with `STLLoader` and calls `viewportRef.current.loadRepairedGeometry()`
+
+No manual download or reload required — the repaired mesh appears seamlessly in the Karaslice viewport.
+
+### AI Routing
+
+When Gemini 3.1 Pro analyzes a mesh and recommends heavy reconstruction (`solid_voxel`, `shell_voxel`, or `point_cloud`), the UI automatically opens the Cloud Repair section instead of client-side reconstruction, with a notification: "Heavy repair needed — use Cloud Repair for best results."
 
 ## Karaslice Architecture
 
-Karaslice is a fully client-side 3D mesh slicer and analyzer at `/karaslice`. All geometry processing runs in the browser — no server round-trips, no file uploads.
+Karaslice is a 3D mesh slicer and analyzer at `/karaslice`. Basic topology repair runs client-side; heavy reconstruction routes to the cloud worker.
 
 ```
 src/components/karaslice/
-├── karaslice-app.tsx          # Main UI component (sidebar tabs + state + retry loop)
+├── karaslice-app.tsx          # Main UI (sidebar tabs, state, cloud repair polling)
 ├── viewport.tsx               # Three.js WebGL viewport (forwardRef, OrbitControls)
-├── manifold-engine.ts         # Core geometry engine
-├── stl-utils.ts               # Binary STL / OBJ export, mesh analysis + geometry diagnostics
+├── manifold-engine.ts         # Core geometry engine (repair, split, booleans)
+├── stl-utils.ts               # Binary STL / OBJ export, mesh analysis + diagnostics
 ├── voxel-reconstruct.ts       # Voxel-based mesh reconstruction (solid + shell)
-├── poisson-reconstruct.ts     # Point cloud / MLS / SDF reconstruction for thin shells
-├── mesh-sanitize.ts           # Pre-reconstruction sanitation (dedup, debris removal, non-manifold fix)
-└── validate-reconstruction.ts # Output validation (NaN, degenerates, topology, Euler characteristic)
+├── poisson-reconstruct.ts     # Point cloud / MLS / SDF reconstruction
+├── mesh-sanitize.ts           # Pre-reconstruction sanitation (dedup, debris, non-manifold)
+└── validate-reconstruction.ts # Output validation (NaN, degenerates, topology, Euler)
 ```
 
-### Geometry Pipeline
+### Client-Side Geometry Pipeline
 
 ```
 File (STL / OBJ / 3MF)
@@ -123,30 +232,11 @@ File (STL / OBJ / 3MF)
               └── Prescribe 15+ reconstruction parameters
                     └─► Smart Routing
                           ├── Clean mesh → no repair needed
-                          ├── Minor defects → basic topology repair
-                          └── Severe damage → reconstruction pipeline
-                                └─► Pre-Sanitation (mesh-sanitize.ts)
-                                      ├── Duplicate face removal
-                                      ├── Component extraction + debris classification
-                                      └── Non-manifold edge resolution (normal clustering)
-                                            └─► Reconstruction (AI-tuned parameters)
-                                                  ├── Solid voxel (broken solids)
-                                                  ├── Shell voxel (thin shell fallback)
-                                                  └── Point cloud / MLS / SDF (thin shells)
-                                                        └─► Post-Processing
-                                                              ├── Taubin smoothing (lambda|mu)
-                                                              └── QEM quadric simplification
-                                                                    └─► Validation
-                                                                          ├── NaN / degenerate check
-                                                                          ├── Edge topology check
-                                                                          └── Euler characteristic
-                                                                                ├── PASS → output
-                                                                                └── FAIL → AI diagnose
-                                                                                      → adjust params
-                                                                                      → retry (up to 3x)
-        └─► Repair Pipeline (manifold-engine)
+                          ├── Minor defects → client-side topology repair
+                          └── Severe damage → Cloud Repair (server-side)
+        └─► Client Repair Pipeline (manifold-engine)
               ├── Exact vertex dedup (uint32 bit-pattern hash, zero epsilon)
-              ├── Epsilon weld fallback (only if open edges remain after exact pass)
+              ├── Epsilon weld fallback (only if open edges remain)
               ├── Remove degenerate triangles
               ├── Remove duplicate triangles
               ├── BFS winding consistency fix
@@ -162,10 +252,9 @@ File (STL / OBJ / 3MF)
 - **Custom printer volume** — Preset / Custom toggle in Pre-Split tab; manual X/Y/Z input in the current display unit, stored internally as mm
 - **Auto-calculate cuts** — Compares mesh bounding box to printer volume and places cut planes where needed
 - **Weight estimate** — Material density selector (PLA, PETG, ABS, ASA, TPU, Nylon, Resin, CF) with per-part and total weight
+- **Cloud Repair panel** — Submit to cloud, live 15-stage progress bar, full repair report with quality score, damage classification, feature edge count, thin wall stats, and download buttons
 - **AI-Driven Reconstruction** — Gemini 3.1 Pro analyzes geometry diagnostics and prescribes exact parameters; auto-retry loop validates output and adjusts on failure
 - **Pre-Reconstruction Sanitation** — Deterministic cleanup: duplicate face removal, debris component classification, non-manifold edge resolution via normal clustering
-- **Voxel Reconstruction** — Solid and shell-based voxel approaches for non-manifold mesh recovery
-- **Point Cloud / MLS Reconstruction** — Moving Least Squares signed distance field reconstruction for thin shells (car bodies, panels, monocoques)
 - **Slice Lines Toggle** — Show/hide cut plane lines in the 3D viewport
 
 ### manifold-engine exports
@@ -178,7 +267,7 @@ File (STL / OBJ / 3MF)
 | `getManifoldAPI` | Lazy singleton loader for the manifold-3d WASM module |
 | `computeGeometryVolume` | Signed-volume (divergence theorem) for a `BufferGeometry` |
 
-### Repair Pipeline Detail
+### Client Repair Pipeline Detail
 
 `repairMesh` and the internal pre-split repair both run these steps:
 
@@ -215,7 +304,26 @@ The Three.js viewport uses physically-based rendering throughout:
 | Mesh material | `MeshStandardMaterial` (PBR — roughness 0.45, metalness 0.15) |
 | Lighting | `HemisphereLight` + warm key directional + cool fill directional |
 | Resize | `ResizeObserver` on the mount div; `window resize` as fallback |
-| Post-split normals | `toCreasedNormals` (30° crease angle) + `mergeVertices` for sharp cap edges without jagged seam artifacts |
+| Post-split normals | `toCreasedNormals` (30° crease angle) + `mergeVertices` for sharp cap edges |
+
+## Cloud Worker Deployment
+
+```bash
+cd cloud-worker
+./deploy.sh              # Local Docker build + deploy to Cloud Run
+./deploy.sh --cloud-build  # Use Cloud Build instead of local Docker
+```
+
+Cloud Run configuration:
+- **Memory**: 8GB
+- **CPU**: 4 vCPU
+- **Timeout**: 900s (15 minutes)
+- **Concurrency**: 1 (one mesh per instance)
+- **Max instances**: 5
+- **Min instances**: 0 (scale-to-zero)
+- **Auth**: `--no-allow-unauthenticated` (identity token required)
+
+After deployment, set the `MESH_REPAIR_WORKER_URL` environment variable to the Cloud Run service URL.
 
 ## Required Environment Variables
 
@@ -238,6 +346,9 @@ SHIPPO_FROM_STATE=
 SHIPPO_FROM_ZIP=
 SHIPPO_FROM_PHONE=                 # E.164 format e.g. +15551234567
 SHIPPO_FROM_EMAIL=
+
+# Cloud Repair
+MESH_REPAIR_WORKER_URL=            # Cloud Run service URL (set after deploy)
 
 # App
 NEXT_PUBLIC_BASE_URL=https://your-domain.com
@@ -283,3 +394,11 @@ The workflow only triggers on changes to `voxel-reconstruct.ts`, `poisson-recons
 ## Deployment
 
 Deployed via Firebase App Hosting (`apphosting.yaml`). The `public/` directory is the Firebase Hosting static fallback — the live Next.js app is served by the App Hosting backend.
+
+### Cloud Worker Prerequisite
+
+Before the cloud repair feature works end-to-end:
+
+1. Enable Firestore API in the GCP project
+2. Deploy the worker: `cd cloud-worker && ./deploy.sh`
+3. Set `MESH_REPAIR_WORKER_URL` in `apphosting.yaml` or `.env`

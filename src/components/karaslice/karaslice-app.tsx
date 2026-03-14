@@ -734,12 +734,30 @@ export function KarasliceApp() {
         stepMessage: "Job submitted — waiting for worker…",
       });
 
-      // Start polling
+      // Start polling with timeout and error counting
       setCloudRepairPolling(true);
+      let pollErrors = 0;
+      const pollStartTime = Date.now();
+      const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes max
+      const MAX_POLL_ERRORS = 10;
+
       cloudRepairPollRef.current = setInterval(async () => {
+        // Timeout check
+        if (Date.now() - pollStartTime > POLL_TIMEOUT_MS) {
+          stopCloudPolling();
+          setCloudRepairJob((prev) => prev ? {
+            ...prev,
+            status: "failed",
+            error: "Cloud repair timed out after 15 minutes. The worker may have crashed — check Cloud Run logs.",
+          } : null);
+          notify("Cloud repair timed out after 15 minutes.", "destructive");
+          return;
+        }
+
         try {
           const status = await getRepairJobStatus(result.jobId);
           if (!status) return;
+          pollErrors = 0; // reset on success
           setCloudRepairJob(status);
 
           if (status.status === "finished" || status.status === "failed") {
@@ -763,13 +781,29 @@ export function KarasliceApp() {
               notify(`Cloud repair failed: ${status.error ?? "Unknown error"}`, "destructive");
             }
           }
-        } catch {
-          // Polling error — keep trying
+        } catch (pollErr) {
+          pollErrors++;
+          if (pollErrors >= MAX_POLL_ERRORS) {
+            stopCloudPolling();
+            const msg = pollErr instanceof Error ? pollErr.message : String(pollErr);
+            setCloudRepairJob((prev) => prev ? {
+              ...prev,
+              status: "failed",
+              error: `Lost connection to repair service after ${MAX_POLL_ERRORS} retries: ${msg}`,
+            } : null);
+            notify(`Cloud repair polling failed: ${msg}`, "destructive");
+          }
         }
       }, 3000);
 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      // Persist the error in the UI panel, not just a toast
+      setCloudRepairJob({
+        jobId: "",
+        status: "failed",
+        error: `Submission failed: ${msg}`,
+      });
       notify(`Cloud repair submission failed: ${msg}`, "destructive");
     } finally {
       setCloudRepairSubmitting(false);
@@ -1705,8 +1739,8 @@ export function KarasliceApp() {
                                 } className="h-1" />
                               )}
 
-                              {cloudRepairJob.status === "failed" && cloudRepairJob.error && (
-                                <p className="text-[10px] text-red-400">{cloudRepairJob.error}</p>
+                              {cloudRepairJob.status === "failed" && (
+                                <p className="text-[10px] text-red-400">{cloudRepairJob.error || "Unknown error — check Cloud Run logs or re-submit."}</p>
                               )}
 
                               {/* Repair report */}
