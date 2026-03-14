@@ -138,10 +138,11 @@ function parseStlAscii(buffer: Buffer): Triangle[] {
 
     for (const line of lines) {
         const parts = line.trim().split(/\s+/);
-        if (parts[0] === 'vertex') {
+        if (parts[0] === 'vertex' && parts.length >= 4) {
             const x = parseFloat(parts[1]);
             const y = parseFloat(parts[2]);
             const z = parseFloat(parts[3]);
+            if (isNaN(x) || isNaN(y) || isNaN(z)) continue;
             currentTriangle.push([x, y, z]);
             if (currentTriangle.length === 3) {
                 triangles.push(currentTriangle as Triangle);
@@ -428,7 +429,8 @@ interface AnalyzeMeshInput {
 
 export async function analyzeMeshFile({ fileName, buffer }: AnalyzeMeshInput): Promise<MeshMetrics> {
     const startTime = Date.now();
-    const extension = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
+    const lastDot = fileName.lastIndexOf('.');
+    const extension = lastDot === -1 ? '' : fileName.slice(lastDot).toLowerCase();
 
     let result: Omit<MeshMetrics, 'file_bytes' | 'parse_ms'>;
 

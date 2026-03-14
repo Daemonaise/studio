@@ -34,7 +34,8 @@ export function ChatInterface() {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
       const acceptedTypes = ['.stl', '.obj', '.3mf', '.amf'];
-      const fileExtension = selectedFile.name.slice(selectedFile.name.lastIndexOf('.')).toLowerCase();
+      const lastDot = selectedFile.name.lastIndexOf('.');
+      const fileExtension = lastDot === -1 ? '' : selectedFile.name.slice(lastDot).toLowerCase();
       if (!acceptedTypes.includes(fileExtension)) {
           // Maybe show a toast error here in the future
           console.error("Invalid file type for assistant");
