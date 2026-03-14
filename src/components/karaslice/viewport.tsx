@@ -389,14 +389,14 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
     if (ext === "stl") {
       const loader = new STLLoader();
-      file.arrayBuffer().then((buf) => loadGeometry(loader.parse(buf), file.name, mb, "stl"));
+      file.arrayBuffer().then((buf) => loadGeometry(loader.parse(buf), file.name, mb, "stl")).catch((e) => console.error("[Viewport] STL load failed:", e));
     } else if (ext === "obj") {
       const loader = new OBJLoader();
       file.text().then((text) => {
         const obj   = loader.parse(text);
         const child = obj.children.find((c) => c instanceof THREE.Mesh) as THREE.Mesh | undefined;
         if (child) loadGeometry(child.geometry, file.name, mb, "obj");
-      });
+      }).catch((e) => console.error("[Viewport] OBJ load failed:", e));
     } else if (ext === "3mf") {
       file.arrayBuffer().then(async (buf) => {
         const { ThreeMFLoader } = await import("three/examples/jsm/loaders/3MFLoader.js");
@@ -418,7 +418,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
           const merged = mergeGeometries(geos);
           if (merged) loadGeometry(merged, file.name, mb, "3mf");
         }
-      });
+      }).catch((e) => console.error("[Viewport] 3MF load failed:", e));
     }
   }, [loadGeometry, onLoadStart, onFileSelected]);
 

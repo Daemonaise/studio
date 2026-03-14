@@ -333,9 +333,11 @@ export async function quoteGenerator(input: QuoteGeneratorInput): Promise<QuoteO
   const minLead = Math.max(pricingMatrix.leadTime.minDays, baseDays + segmentationAddDays);
   const maxLead = Math.ceil(minLead * 1.4);
 
+  const cappedMin = Math.min(minLead, pricingMatrix.leadTime.maxDaysCap);
+  const cappedMax = Math.min(maxLead, pricingMatrix.leadTime.maxDaysCap);
   const leadTimeDays = {
-      min: Math.min(minLead, pricingMatrix.leadTime.maxDaysCap),
-      max: Math.min(maxLead, pricingMatrix.leadTime.maxDaysCap),
+      min: cappedMin,
+      max: Math.max(cappedMax, cappedMin),
   };
   
   // 11. Finalize

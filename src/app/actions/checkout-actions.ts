@@ -68,6 +68,11 @@ export async function createCheckoutSession(
   try {
     const stripe = getStripe();
 
+    // Validate price bounds before creating a charge
+    if (!Number.isFinite(quote.totalCost) || quote.totalCost < 0) {
+      return { url: null, error: 'Invalid quote total. Please regenerate your quote.' };
+    }
+
     // Stripe minimum charge is $0.50 — enforce $1.00 floor
     const rawCents = Math.round(quote.totalCost * 100);
     const amountCents = Math.max(rawCents, 100);
@@ -160,7 +165,7 @@ export async function verifyAndFulfillOrder(
       country:  meta.country || 'US',
     };
 
-    const orderNumber = `KL-${Date.now().toString(36).toUpperCase()}`;
+    const orderNumber = `KL-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 
     let trackingNumber: string | undefined;
     let trackingUrl:    string | undefined;
