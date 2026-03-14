@@ -1,0 +1,66 @@
+name: Auto-fix Reconstruction
+
+on:
+  push:
+    paths:
+      - 'src/components/karaslice/voxel-reconstruct.ts'
+      - 'src/components/karaslice/poisson-reconstruct.ts'
+      - 'src/components/karaslice/validate-reconstruction.ts'
+      - 'src/app/actions/mesh-analysis-actions.ts'
+
+jobs:
+  test-and-fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - run: npm ci
+
+      # Type-check reconstruction files
+      - name: TypeScript check
+        id: typecheck
+        run: npx tsc --noEmit 2>&1 | tee /tmp/tsc-output.txt
+        continue-on-error: true
+
+      # Run reconstruction validation tests
+      - name: Run reconstruction tests
+        id: tests
+        run: npm test -- --testPathPattern=reconstruct --forceExit 2>&1 | tee /tmp/test-output.txt
+        continue-on-error: true
+
+      # Only invoke Claude if something failed
+      - name: Auto-fix with Claude
+        if: steps.typecheck.outcome == 'failure' || steps.tests.outcome == 'failure'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Reconstruction pipeline check failed. Here's what happened:
+
+            TypeScript check: ${{ steps.typecheck.outcome }}
+            Test run: ${{ steps.tests.outcome }}
+
+            Analyze the errors, fix only the voxel and/or point cloud
+            reconstruction code. Files you may edit:
+            - src/components/karaslice/voxel-reconstruct.ts
+            - src/components/karaslice/poisson-reconstruct.ts
+            - src/components/karaslice/validate-reconstruction.ts
+            - src/app/actions/mesh-analysis-actions.ts
+
+            Do NOT modify:
+            - The slicer code
+            - The viewport
+            - Any UI components
+
+            Open a PR with the fix. Keep changes minimal and focused.
+          claude_args: "--max-turns 5"

@@ -11,7 +11,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
 const navItems = [
-  { href: "/theater", label: "😊" },
+  { href: "/theater", label: "😊", hoverLabel: "😜" },
   { href: "/automotive", label: "Automotive" },
   { href: "/materials", label: "Materials" },
   { href: "/karaslice", label: "Karaslice ✨" },
@@ -41,75 +41,94 @@ export function Header() {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "transition-colors hover:text-foreground/80",
+                  "group/nav transition-colors hover:text-foreground/80",
                   (pathname === item.href || (item.href.startsWith("/#") && pathname === "/"))
                     ? "text-foreground"
                     : "text-foreground/60"
                 )}
               >
-                {item.label}
+                {item.hoverLabel ? (
+                  <span className="text-2xl leading-none">
+                    <span className="group-hover/nav:hidden">{item.label}</span>
+                    <span className="hidden group-hover/nav:inline">{item.hoverLabel}</span>
+                  </span>
+                ) : (
+                  item.label
+                )}
               </Link>
             ))}
           </nav>
         </div>
 
-        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-          <SheetTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="inline-flex items-center justify-center whitespace-nowrap rounded-md font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 md:hidden"
-            >
-              <Menu className="h-5 w-5" />
-              <span className="sr-only">Toggle Menu</span>
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="left" className="pr-0">
-            <Link href="/" className="mr-6 flex items-center space-x-2" onClick={() => setMobileOpen(false)}>
-              <Logo className="h-6 w-6" />
-              <span className="font-bold">Karasawa Labs</span>
-            </Link>
-            <div className="my-4 h-[calc(100vh-8rem)] pb-10 pl-6">
-              <div className="flex flex-col space-y-3">
-                {navItems.map((item) => (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    onClick={() => setMobileOpen(false)}
-                    className={cn(
-                      "transition-colors hover:text-foreground/80",
-                      (pathname === item.href || (item.href.startsWith("/#") && pathname === "/"))
-                        ? "text-foreground"
-                        : "text-foreground/60"
-                    )}
-                  >
-                    {item.label}
-                  </Link>
-                ))}
-                {isLoggedIn && (
-                  <>
+        {/* Defer Sheet to avoid Radix ID hydration mismatch */}
+        {hydrated ? (
+          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+            <SheetTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="inline-flex items-center justify-center whitespace-nowrap rounded-md font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 md:hidden"
+              >
+                <Menu className="h-5 w-5" />
+                <span className="sr-only">Toggle Menu</span>
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="pr-0">
+              <Link href="/" className="mr-6 flex items-center space-x-2" onClick={() => setMobileOpen(false)}>
+                <Logo className="h-6 w-6" />
+                <span className="font-bold">Karasawa Labs</span>
+              </Link>
+              <div className="my-4 h-[calc(100vh-8rem)] pb-10 pl-6">
+                <div className="flex flex-col space-y-3">
+                  {navItems.map((item) => (
                     <Link
-                      href="/portal"
+                      key={item.href}
+                      href={item.href}
                       onClick={() => setMobileOpen(false)}
                       className={cn(
                         "transition-colors hover:text-foreground/80",
-                        pathname === "/portal" ? "text-foreground" : "text-foreground/60"
+                        (pathname === item.href || (item.href.startsWith("/#") && pathname === "/"))
+                          ? "text-foreground"
+                          : "text-foreground/60"
                       )}
                     >
-                      My Portal
+                      {item.label}
                     </Link>
-                    <button
-                      onClick={() => { setMobileOpen(false); signOut({ callbackUrl: "/" }); }}
-                      className="text-left text-foreground/60 transition-colors hover:text-foreground/80"
-                    >
-                      Sign Out
-                    </button>
-                  </>
-                )}
+                  ))}
+                  {isLoggedIn && (
+                    <>
+                      <Link
+                        href="/portal"
+                        onClick={() => setMobileOpen(false)}
+                        className={cn(
+                          "transition-colors hover:text-foreground/80",
+                          pathname === "/portal" ? "text-foreground" : "text-foreground/60"
+                        )}
+                      >
+                        My Portal
+                      </Link>
+                      <button
+                        onClick={() => { setMobileOpen(false); signOut({ callbackUrl: "/" }); }}
+                        className="text-left text-foreground/60 transition-colors hover:text-foreground/80"
+                      >
+                        Sign Out
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
-          </SheetContent>
-        </Sheet>
+            </SheetContent>
+          </Sheet>
+        ) : (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="inline-flex items-center justify-center whitespace-nowrap rounded-md font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 md:hidden"
+          >
+            <Menu className="h-5 w-5" />
+            <span className="sr-only">Toggle Menu</span>
+          </Button>
+        )}
 
         <div className="flex flex-1 items-center justify-end space-x-2">
           <nav className="flex items-center space-x-2">

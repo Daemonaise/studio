@@ -22,6 +22,7 @@ import {
   Loader2,
   Upload,
   Scissors,
+  Send,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -451,6 +452,17 @@ export default function PortalPage() {
                         </div>
 
                         <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            asChild
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-accent hover:text-accent"
+                            title="Send to Quote"
+                          >
+                            <Link href={`/quote?file=${encodeURIComponent(file.originalName)}&path=${encodeURIComponent(file.path)}&size=${file.size}`}>
+                              <Send className="h-4 w-4" />
+                            </Link>
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"

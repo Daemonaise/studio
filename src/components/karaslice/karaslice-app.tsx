@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { useToast } from "@/hooks/use-toast";
+// toast removed — using sidebar notifications instead
 import type { MeshInfo, CutPlane, TransformState, SplitPartVisual, ViewportHandle } from "./viewport";
 import type { SplitPart } from "./manifold-engine";
 import printerProfiles from "@/app/data/printer-profiles.json";
@@ -144,7 +144,14 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function KarasliceApp() {
-  const { toast } = useToast();
+  // Sidebar notification — replaces popup toasts
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [sidebarNotice, setSidebarNotice] = useState<{ message: string; variant?: "default" | "destructive" } | null>(null);
+  const notify = useCallback((message: string, variant: "default" | "destructive" = "default") => {
+    setSidebarNotice({ message, variant });
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setSidebarNotice(null), variant === "destructive" ? 8000 : 4000);
+  }, []);
   const router = useRouter();
   const viewportRef = useRef<ViewportHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -217,6 +224,7 @@ export function KarasliceApp() {
 
   // ── View state ──────────────────────────────────────────────────────────────
   const [explodeAmount, setExplodeAmount] = useState(0);
+  const [showSliceLines, setShowSliceLines] = useState(true);
   const [ghostMode, setGhostMode] = useState(false);
   const [wireframe, setWireframe] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -325,6 +333,7 @@ export function KarasliceApp() {
         avgWallThicknessMM: thickness.avgMM > 0 ? thickness.avgMM : null,
         fileName: meshInfo.fileName,
         screenshotBase64: screenshot,
+        geometryDiagnostics: basicResult.diagnostics,
       });
 
       setAiAnalysis(aiResult);
@@ -339,7 +348,7 @@ export function KarasliceApp() {
 
       if (!hasDefects) {
         // Mesh is clean — no repair section opened
-        toast({ title: "Mesh is clean", description: "No defects detected — ready for slicing." });
+        notify("Mesh is clean — no defects detected, ready for slicing.");
       } else if (isNearPerfect || aiResult.repairStrategy === "topology_repair") {
         // Minor defects — route to basic topology repair, even if AI suggested complex
         setOpenSections((s) => ({ ...s, repair: true }));
@@ -366,13 +375,10 @@ export function KarasliceApp() {
         setSimplifyEnabled(vp.simplifyTarget > 0);
       }
 
-      toast({
-        title: `${aiResult.meshType.replace("_", " ")} — ${aiResult.repairStrategy.replace(/_/g, " ")}`,
-        description: aiResult.repairPlan?.userMessage ?? aiResult.reasoning,
-      });
+      notify(`${aiResult.meshType.replace("_", " ")} — ${aiResult.repairStrategy.replace(/_/g, " ")}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast({ title: "Analysis failed", description: msg, variant: "destructive" });
+      notify(`Analysis failed: ${msg}`, "destructive");
     } finally {
       setAnalyzing(false);
       setAnalyzingAI(false);
@@ -397,15 +403,10 @@ export function KarasliceApp() {
       setRepairResult(stats);
       viewportRef.current.loadRepairedGeometry(geometry, meshInfo.fileName);
       setAnalysisResult(null); // invalidate stale analysis
-      toast({
-        title: stats.isWatertight ? "Repair complete — mesh is watertight" : "Repair complete",
-        description: stats.isWatertight
-          ? "All issues resolved. Ready to split."
-          : "Some issues may remain. Check analysis for details.",
-      });
+      notify(stats.isWatertight ? "Repair complete — mesh is watertight. Ready to split." : "Repair complete — some issues may remain.");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast({ title: "Repair failed", description: msg, variant: "destructive" });
+      notify(`Repair failed: ${msg}`, "destructive");
     } finally {
       setRepairing(false);
       setRepairMessage("");
@@ -442,10 +443,10 @@ export function KarasliceApp() {
       }
       splitParts.forEach((p) => p.geometry.dispose());
       setSplitParts(repairedParts);
-      toast({ title: "Parts repaired", description: `${repairedParts.length} part${repairedParts.length !== 1 ? "s" : ""} repaired.` });
+      notify(`${repairedParts.length} part${repairedParts.length !== 1 ? "s" : ""} repaired.`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast({ title: "Repair failed", description: msg, variant: "destructive" });
+      notify(`Repair failed: ${msg}`, "destructive");
     } finally {
       setRepairingParts(false);
       setRepairPartsMessage("");
@@ -469,25 +470,44 @@ export function KarasliceApp() {
   ): Promise<import("./voxel-reconstruct").VoxelReconstructResult> => {
     let result: import("./voxel-reconstruct").VoxelReconstructResult;
 
+    // Pre-reconstruction sanitation: remove duplicate faces, debris, non-manifold edges
+    setReconstructMessage("Sanitizing mesh…");
+    const { sanitizeMesh } = await import("./mesh-sanitize");
+    const sanitized = sanitizeMesh(geo, {
+      onProgress: (msg) => setReconstructMessage(msg),
+    });
+    const cleanGeo = sanitized.geometry;
+    const s = sanitized.stats;
+    if (s.duplicateFacesRemoved + s.debrisTrianglesRemoved + s.nonManifoldEdgesResolved > 0) {
+      notify(
+        `Sanitized: ${s.duplicateFacesRemoved} duplicate faces, ${s.debrisComponentsRemoved} debris components (${s.debrisTrianglesRemoved} tri), ${s.nonManifoldEdgesResolved} non-manifold fixes`,
+      );
+    }
+
     if (currentMode === "point_cloud") {
       const pc = params.pointCloud;
       const pp = params.postProcess;
       const useResolution = pc?.resolution ?? reconstructResolutionMM;
       const useSmoothing = pp?.smoothingIterations ?? pc?.smoothingIterations ?? smoothingIterations;
       const useSimplifyTarget = simplifyEnabled
-        ? (pp?.simplifyTarget ?? pc?.simplifyTarget ?? Math.round(inputTriCount * 1.5))
+        ? (pp?.simplifyTarget ?? pc?.simplifyTarget ?? Math.round(inputTriCount * 0.8))
         : 0;
       const useLambda = pp?.smoothingLambda ?? pc?.smoothingLambda ?? 0.5;
       const useBoundaryPenalty = pp?.boundaryPenalty ?? pc?.boundaryPenalty ?? 1.0;
+      const useMu = pp?.taubinMu ?? pc?.taubinMu ?? -0.53;
 
       const { pointCloudReconstruct } = await import("./poisson-reconstruct");
-      result = await pointCloudReconstruct(geo, (_step, _total, msg) => {
+      result = await pointCloudReconstruct(cleanGeo, (_step, _total, msg) => {
         setReconstructMessage(msg);
       }, {
         resolution: useResolution,
         radiusMultiplier: pc?.radiusMultiplier ?? 2,
         sdfSharpness: pc?.sdfSharpness,
         gapBridgingFactor: pc?.gapBridgingFactor,
+        gridPadding: pc?.gridPadding,
+        normalSampleDensity: pc?.normalSampleDensity,
+        vertexMergePrecision: pc?.vertexMergePrecision,
+        outsideBias: pc?.outsideBias,
       });
 
       if (useSmoothing > 0 || useSimplifyTarget > 0) {
@@ -495,7 +515,7 @@ export function KarasliceApp() {
         setReconstructMessage("Post-processing…");
         const processed = await postProcessVoxelOutput(
           result.geometry,
-          { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget, smoothingLambda: useLambda, boundaryPenalty: useBoundaryPenalty },
+          { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget, smoothingLambda: useLambda, boundaryPenalty: useBoundaryPenalty, taubinMu: useMu },
           (_step, _total, msg) => setReconstructMessage(msg),
         );
         const finalTris = processed.index
@@ -515,18 +535,22 @@ export function KarasliceApp() {
         : 0;
       const useLambda = pp?.smoothingLambda ?? vp?.smoothingLambda ?? 0.5;
       const useBoundaryPenalty = pp?.boundaryPenalty ?? vp?.boundaryPenalty ?? 1.0;
+      const useMu = pp?.taubinMu ?? vp?.taubinMu ?? -0.53;
 
       const { voxelReconstruct, shellVoxelReconstruct, postProcessVoxelOutput } = await import("./voxel-reconstruct");
       const fn = currentMode === "shell_voxel" ? shellVoxelReconstruct : voxelReconstruct;
-      result = await fn(geo, (_step, _total, msg) => {
+      result = await fn(cleanGeo, (_step, _total, msg) => {
         setReconstructMessage(msg);
-      }, useResolution, ...(currentMode === "shell_voxel" && useDilation !== undefined ? [useDilation] : []));
+      }, useResolution, ...(currentMode === "shell_voxel" && useDilation !== undefined ? [useDilation] : []), {
+        gridPadding: vp?.gridPadding,
+        degenerateThreshold: vp?.degenerateThreshold,
+      });
 
       if (useSmoothing > 0 || useSimplifyTarget > 0) {
         setReconstructMessage("Post-processing…");
         const processed = await postProcessVoxelOutput(
           result.geometry,
-          { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget, smoothingLambda: useLambda, boundaryPenalty: useBoundaryPenalty },
+          { smoothingIterations: useSmoothing, simplifyTarget: useSimplifyTarget, smoothingLambda: useLambda, boundaryPenalty: useBoundaryPenalty, taubinMu: useMu },
           (_step, _total, msg) => setReconstructMessage(msg),
         );
         const finalTris = processed.index
@@ -590,11 +614,7 @@ export function KarasliceApp() {
         if (attempt > MAX_RECONSTRUCT_RETRIES) {
           // Accept with warnings — show what failed
           const warnings = lastValidation.failures.map((f) => f.detail).join("; ");
-          toast({
-            title: "Reconstruction completed with warnings",
-            description: warnings,
-            variant: "destructive",
-          });
+          notify(`Reconstruction completed with warnings: ${warnings}`, "destructive");
           break;
         }
 
@@ -642,14 +662,11 @@ export function KarasliceApp() {
       setAiAnalysis(null);
 
       if (lastValidation?.passed) {
-        toast({
-          title: `${modeLabel} reconstruction complete`,
-          description: `${result.outputTriangles.toLocaleString()} triangles · ${result.resolution} mm resolution · mesh is watertight`,
-        });
+        notify(`${modeLabel} reconstruction complete — ${result.outputTriangles.toLocaleString()} triangles · ${result.resolution} mm`);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast({ title: "Reconstruction failed", description: msg, variant: "destructive" });
+      notify(`Reconstruction failed: ${msg}`, "destructive");
     } finally {
       setReconstructing(false);
       setReconstructMessage("");
@@ -693,10 +710,10 @@ export function KarasliceApp() {
     });
 
     if (planes.length === 0) {
-      toast({ title: "Model fits your printer", description: "No cuts needed." });
+      notify("Model fits your printer — no cuts needed.");
     } else {
       setCutPlanes(planes);
-      toast({ title: `${planes.length} cut plane${planes.length > 1 ? "s" : ""} added` });
+      notify(`${planes.length} cut plane${planes.length > 1 ? "s" : ""} added.`);
     }
   };
 
@@ -736,10 +753,10 @@ export function KarasliceApp() {
       setSelectedPartIndex(undefined);
       setExplodeAmount(0);
       setTab("export");
-      toast({ title: "Split complete", description: `${parts.length} part${parts.length !== 1 ? "s" : ""} ready for export.` });
+      notify(`Split complete — ${parts.length} part${parts.length !== 1 ? "s" : ""} ready for export.`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast({ title: "Split failed", description: msg, variant: "destructive" });
+      notify(`Split failed: ${msg}`, "destructive");
       setSplitMessage("Error: " + msg);
     } finally {
       setSplitting(false);
@@ -834,7 +851,7 @@ export function KarasliceApp() {
     const a    = document.createElement("a");
     a.href = url; a.download = `${base}_karaslice.zip`; a.click();
     URL.revokeObjectURL(url);
-    toast({ title: "ZIP downloaded", description: `${splitParts.length} ${exportFormat.toUpperCase()} files.` });
+    notify(`ZIP downloaded — ${splitParts.length} ${exportFormat.toUpperCase()} files.`);
 
     // Batch upload all parts to storage (fire-and-forget, throttled server-side)
     batchUploadJob(null, batchEntries, currentJobId.current).then((result) => {
@@ -883,9 +900,11 @@ export function KarasliceApp() {
     const gy = Math.ceil(meshInfo.boundingBox.y / reconstructResolutionMM) + 2;
     const gz = Math.ceil(meshInfo.boundingBox.z / reconstructResolutionMM) + 2;
     const raw = 4 * (gx * gy + gy * gz + gz * gx);
-    // When simplification is enabled, cap at the repair plan target or 80% of input
+    // When simplification is enabled, use the repair plan target (voxel or point cloud) or 80% of input
     const target = simplifyEnabled
-      ? (aiAnalysis?.repairPlan?.params.voxel?.simplifyTarget ?? Math.round(meshInfo.triangleCount * 0.8))
+      ? (aiAnalysis?.repairPlan?.params.voxel?.simplifyTarget
+        ?? aiAnalysis?.repairPlan?.params.pointCloud?.simplifyTarget
+        ?? Math.round(meshInfo.triangleCount * 0.8))
       : null;
     return target && target < raw ? target : raw;
   })();
@@ -1146,38 +1165,20 @@ export function KarasliceApp() {
                           </span>
                         </div>
 
-                        <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        {/* Compact reasoning + model ID */}
+                        {aiAnalysis.modelId && (
+                          <p className="text-[10px] text-accent font-medium">
+                            {aiAnalysis.modelId.description}
+                          </p>
+                        )}
+                        <p className="text-[10px] text-muted-foreground leading-snug">
                           {aiAnalysis.reasoning}
                         </p>
-                        {aiAnalysis.warnings.map((w, i) => (
-                          <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
-                            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
-                          </p>
-                        ))}
-                        {/* Model identification */}
-                        {aiAnalysis.modelId && (
-                          <div className="rounded bg-muted/30 px-2 py-1.5 space-y-0.5">
-                            <p className="text-[10px] font-semibold text-foreground/80">
-                              Identified: <span className="text-accent">{aiAnalysis.modelId.description}</span>
-                            </p>
-                            {aiAnalysis.modelId.expectedFeatures.length > 0 && (
-                              <p className="text-[10px] text-muted-foreground">
-                                Features: {aiAnalysis.modelId.expectedFeatures.join(", ")}
-                              </p>
-                            )}
-                            <p className="text-[10px] text-muted-foreground">
-                              {aiAnalysis.modelId.geometryClass} · {aiAnalysis.modelId.estimatedWallCharacter.replace(/_/g, " ")}
-                              {aiAnalysis.modelId.hasIntentionalOpenings && " · has intentional openings"}
-                            </p>
-                          </div>
-                        )}
-                        {/* Repair guidance */}
-                        {aiAnalysis.repairGuidance && (
+                        {aiAnalysis.warnings.length > 0 && (
                           <div className="space-y-0.5">
-                            <p className="text-[10px] text-muted-foreground italic">{aiAnalysis.repairGuidance.strategyRationale}</p>
-                            {aiAnalysis.repairGuidance.risks.map((r, i) => (
-                              <p key={i} className="text-[10px] text-yellow-400/80 flex gap-1">
-                                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{r}
+                            {aiAnalysis.warnings.slice(0, 2).map((w, i) => (
+                              <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
+                                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
                               </p>
                             ))}
                           </div>
@@ -1893,6 +1894,12 @@ export function KarasliceApp() {
                     </div>
                     <div className="flex items-center justify-between">
                       <Label className="text-xs flex items-center gap-1.5">
+                        <Scissors className="h-3 w-3" /> Slice lines
+                      </Label>
+                      <Switch checked={showSliceLines} onCheckedChange={setShowSliceLines} className="scale-75" />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs flex items-center gap-1.5">
                         <Eye className="h-3 w-3" /> Ghost mode
                       </Label>
                       <Switch checked={ghostMode} onCheckedChange={setGhostMode} className="scale-75" />
@@ -2083,6 +2090,25 @@ export function KarasliceApp() {
           )}
         </div>
 
+        {/* Sidebar notification */}
+        {sidebarNotice && (
+          <div
+            className={cn(
+              "mx-2 mb-1 rounded-md px-3 py-2 text-xs font-medium transition-all animate-in fade-in slide-in-from-bottom-2 duration-200",
+              sidebarNotice.variant === "destructive"
+                ? "bg-destructive/15 text-destructive border border-destructive/30"
+                : "bg-accent/15 text-accent-foreground border border-accent/30"
+            )}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <span className="leading-snug">{sidebarNotice.message}</span>
+              <button onClick={() => setSidebarNotice(null)} className="shrink-0 mt-0.5 opacity-60 hover:opacity-100">
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="border-t border-border px-3 py-2 text-[10px] text-muted-foreground/50 flex items-center justify-between">
           <span>Karaslice · All processing is local</span>
@@ -2110,6 +2136,7 @@ export function KarasliceApp() {
           transforms={transforms}
           splitParts={splitPartsVisual}
           explodeAmount={explodeAmount}
+          showSliceLines={showSliceLines}
           ghostMode={ghostMode}
           wireframe={wireframe}
           selectedPartIndex={selectedPartIndex}

@@ -18,6 +18,17 @@ export type RepairStrategy =
   | "point_cloud"     // broken thin shell — MLS/SDF point cloud reconstruction
   | "manual";         // too ambiguous — present both options to the user
 
+export interface GeometryDiagnosticsInput {
+  avgEdgeLengthMM: number;
+  medianEdgeLengthMM: number;
+  boundaryLoopCount: number;
+  avgGapWidthMM: number;
+  maxGapWidthMM: number;
+  corruptionClustering: number;  // 0 = spread, 1 = concentrated
+  degenerateTriCount: number;
+  normalConsistency: number;     // 0–1
+}
+
 export interface AIMeshAnalysisInput {
   triangles: number;
   vertices: number;
@@ -28,7 +39,8 @@ export interface AIMeshAnalysisInput {
   volumeMM3: number;
   avgWallThicknessMM: number | null;
   fileName: string;
-  screenshotBase64?: string; // optional viewport capture (PNG)
+  screenshotBase64?: string;
+  geometryDiagnostics?: GeometryDiagnosticsInput;
 }
 
 // ─── Model identification ────────────────────────────────────────────────────
@@ -68,6 +80,9 @@ export interface VoxelRepairParams {
   simplifyTarget: number;       // target triangle count (0 = no simplify)
   smoothingLambda?: number;     // taubin lambda (0.1-0.8, default 0.5)
   boundaryPenalty?: number;     // QEM boundary edge penalty (1-10, default 1)
+  taubinMu?: number;            // taubin inflate factor (-0.7 to -0.3, default -0.53)
+  gridPadding?: number;         // voxel grid padding (1-5 voxels, default 1)
+  degenerateThreshold?: number; // barycentric rejection threshold (1e-14 to 1e-6, default 1e-12)
 }
 
 export interface PointCloudRepairParams {
@@ -79,6 +94,11 @@ export interface PointCloudRepairParams {
   gapBridgingFactor?: number;   // eval radius multiplier, 1.0 = standard, 2.0+ bridges wider gaps
   smoothingLambda?: number;     // taubin lambda (0.1-0.8, default 0.5)
   boundaryPenalty?: number;     // QEM boundary edge penalty (1-10, default 1)
+  taubinMu?: number;            // taubin inflate factor (-0.7 to -0.3, default -0.53)
+  gridPadding?: number;         // grid padding multiplier (1-10, default 3)
+  normalSampleDensity?: number; // normal seed sampling density (0.0001-0.1, default 0.001)
+  vertexMergePrecision?: number;// vertex dedup precision in mm (0.0001-1, default 0.001)
+  outsideBias?: number;         // SDF outside bias (0.01-2, default 1.0)
 }
 
 export interface PostProcessParams {
@@ -86,6 +106,7 @@ export interface PostProcessParams {
   simplifyTarget: number;
   smoothingLambda: number;      // taubin lambda
   boundaryPenalty: number;      // QEM boundary edge penalty
+  taubinMu: number;             // taubin inflate factor (default -0.53)
 }
 
 export interface RepairPlan {
@@ -160,22 +181,61 @@ function computeVoxelParams(input: AIMeshAnalysisInput, isShell: boolean): Voxel
 
 function computePointCloudParams(input: AIMeshAnalysisInput): PointCloudRepairParams {
   const maxDim = Math.max(input.boundingBox.x, input.boundingBox.y, input.boundingBox.z, 1);
-  let resolution = maxDim / 600;
+  const diag = input.geometryDiagnostics;
+
+  // Use median edge length for resolution when diagnostics available
+  let resolution = diag && diag.medianEdgeLengthMM > 0
+    ? diag.medianEdgeLengthMM * 2
+    : maxDim / 600;
   resolution = Math.max(resolution, gridSafetyFloor(input.boundingBox));
+  resolution = Math.min(resolution, 20);
   resolution = Math.round(resolution * 10) / 10;
 
-  const smoothingIterations = resolution < 3 ? 0 : resolution <= 5 ? 1 : resolution <= 8 ? 2 : 3;
-  const simplifyTarget = Math.round(input.triangles * 1.5);
+  // Smoothing based on degenerate tri ratio
+  const degenRatio = diag ? diag.degenerateTriCount / Math.max(input.triangles, 1) : 0;
+  const smoothingIterations = degenRatio > 0.01 ? 5 : degenRatio > 0.001 ? 2 : resolution < 3 ? 0 : 1;
+
+  const simplifyTarget = Math.min(Math.round(input.triangles * 0.8), input.triangles);
+
+  // Sharpness from normal consistency
+  let sdfSharpness = 0.5;
+  if (diag) {
+    if (diag.normalConsistency > 0.95) sdfSharpness = 0.7;
+    else if (diag.normalConsistency > 0.8) sdfSharpness = 0.5;
+    else sdfSharpness = 0.3;
+  }
+
+  // Gap bridging from max gap width
+  let gapBridgingFactor = 1.0;
+  if (diag && diag.maxGapWidthMM > 0) {
+    const gapToRes = diag.maxGapWidthMM / resolution;
+    if (gapToRes > 8) gapBridgingFactor = 2.0;
+    else if (gapToRes > 3) gapBridgingFactor = 1.5;
+  }
+
+  // Boundary penalty from loop count
+  let boundaryPenalty = 1.0;
+  if (diag) {
+    if (diag.boundaryLoopCount > 5) boundaryPenalty = 5.0;
+    else if (diag.boundaryLoopCount > 0) boundaryPenalty = 3.0;
+  }
+
+  // Radius from edge density
+  let radiusMultiplier = 2.0;
+  if (diag && diag.avgEdgeLengthMM > 0) {
+    if (diag.avgGapWidthMM > 2 * resolution) radiusMultiplier = 2.5;
+    else if (diag.avgEdgeLengthMM < resolution / 2) radiusMultiplier = 1.5;
+  }
 
   return {
     resolution,
     smoothingIterations,
     simplifyTarget,
-    radiusMultiplier: 2,
-    sdfSharpness: 0.5,
-    gapBridgingFactor: 1.0,
+    radiusMultiplier,
+    sdfSharpness,
+    gapBridgingFactor,
     smoothingLambda: 0.5,
-    boundaryPenalty: 1.0,
+    boundaryPenalty,
   };
 }
 
@@ -187,9 +247,11 @@ function sanitizeVoxelParams(params: VoxelRepairParams, input: AIMeshAnalysisInp
   const smoothingIterations = Math.max(0, Math.min(Math.round(params.smoothingIterations || 0), 20));
 
   let simplifyTarget = Math.round(params.simplifyTarget || 0);
-  if (simplifyTarget <= 0 || simplifyTarget > input.triangles * 2) {
+  // Hard ceiling: output must never exceed input triangle count
+  if (simplifyTarget <= 0 || simplifyTarget > input.triangles) {
     simplifyTarget = Math.round(input.triangles * 0.8);
   }
+  simplifyTarget = Math.min(simplifyTarget, input.triangles);
 
   return {
     resolution,
@@ -198,6 +260,9 @@ function sanitizeVoxelParams(params: VoxelRepairParams, input: AIMeshAnalysisInp
     simplifyTarget,
     smoothingLambda: clamp(params.smoothingLambda ?? 0.5, 0.1, 0.8),
     boundaryPenalty: clamp(params.boundaryPenalty ?? 1.0, 1.0, 10.0),
+    taubinMu: clamp(params.taubinMu ?? -0.53, -0.7, -0.3),
+    gridPadding: Math.max(1, Math.min(5, Math.round(params.gridPadding ?? 1))),
+    degenerateThreshold: clamp(params.degenerateThreshold ?? 1e-12, 1e-14, 1e-6),
   };
 }
 
@@ -208,9 +273,11 @@ function sanitizePointCloudParams(params: PointCloudRepairParams, input: AIMeshA
   const smoothingIterations = Math.max(0, Math.min(Math.round(params.smoothingIterations || 0), 20));
 
   let simplifyTarget = Math.round(params.simplifyTarget || 0);
-  if (simplifyTarget <= 0 || simplifyTarget > input.triangles * 3) {
-    simplifyTarget = Math.round(input.triangles * 1.5);
+  // Hard ceiling: output must never exceed input triangle count
+  if (simplifyTarget <= 0 || simplifyTarget > input.triangles) {
+    simplifyTarget = Math.round(input.triangles * 0.8);
   }
+  simplifyTarget = Math.min(simplifyTarget, input.triangles);
 
   return {
     resolution,
@@ -221,6 +288,11 @@ function sanitizePointCloudParams(params: PointCloudRepairParams, input: AIMeshA
     gapBridgingFactor: clamp(params.gapBridgingFactor ?? 1.0, 1.0, 3.0),
     smoothingLambda: clamp(params.smoothingLambda ?? 0.5, 0.1, 0.8),
     boundaryPenalty: clamp(params.boundaryPenalty ?? 1.0, 1.0, 10.0),
+    taubinMu: clamp(params.taubinMu ?? -0.53, -0.7, -0.3),
+    gridPadding: Math.max(1, Math.min(10, Math.round(params.gridPadding ?? 3))),
+    normalSampleDensity: clamp(params.normalSampleDensity ?? 0.001, 0.0001, 0.1),
+    vertexMergePrecision: clamp(params.vertexMergePrecision ?? 0.001, 0.0001, 1),
+    outsideBias: clamp(params.outsideBias ?? 1.0, 0.01, 2.0),
   };
 }
 
@@ -370,138 +442,168 @@ function heuristicAnalysis(input: AIMeshAnalysisInput): AIMeshAnalysisResult {
 
 // ─── AI system prompt ────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are an expert 3D mesh analysis assistant for a 3D printing preparation tool. Given mesh statistics and a viewport screenshot, you must:
-1. IDENTIFY what the object actually is
-2. CLASSIFY the mesh type and damage level
-3. RECOMMEND a repair strategy with precisely tuned parameters
-4. EXPLAIN your reasoning and what to watch for after repair
+const SYSTEM_PROMPT = `You are a 3D mesh geometry analyzer. You receive mesh statistics, geometry diagnostics, and a viewport screenshot. Your job is to mathematically analyze the corruption and prescribe exact reconstruction parameters. Return ONLY a JSON object.
 
-You are the ONLY intelligence in the pipeline. The repair tool is mechanical — it takes your numbers and runs them. If you get the parameters wrong, the output will be garbage. Be thorough.
+CLASSIFICATION RULES:
+- SA/volume > 0.05 OR wall < 1% maxDim → thin_shell
+- Open edges > 5% of total → severely damaged
+- Non-manifold > 1% → corrupted topology
+- Open edges < 1% → topology_repair only (do NOT reconstruct healthy meshes)
 
-═══ STEP 1: MODEL IDENTIFICATION ═══
+STRATEGY RULES:
+- topology_repair: <1% defective edges. Preserves geometry exactly.
+- solid_voxel: Broken solid (SA/vol < 0.05). Fills interior. NEVER on thin shells.
+- point_cloud: Broken thin shell. MLS/SDF. Preserves openings.
+- shell_voxel: Thin shell fallback if point_cloud fails.
 
-From the screenshot, filename, dimensions, and geometry ratios, determine WHAT this object is. Common categories:
+USE GEOMETRY DIAGNOSTICS TO SET PARAMETERS:
+- resolution: Set to 2× medianEdgeLength for detail preservation. Clamp to [FLOOR, 20mm].
+  FLOOR: max(maxDim/1000, cbrt(X*Y*Z/2e8), 0.5)
+- gapBridgingFactor: Based on maxGapWidth vs resolution.
+  If maxGapWidth < 3×resolution → 1.0 (gaps close naturally)
+  If maxGapWidth < 8×resolution → 1.5 (moderate bridging)
+  If maxGapWidth > 8×resolution → 2.0+ (aggressive bridging)
+  BUT if hasIntentionalOpenings → cap at 1.0
+- sdfSharpness: Based on normalConsistency.
+  normalConsistency > 0.95 → 0.7-0.9 (normals are clean, preserve sharp edges)
+  normalConsistency 0.8-0.95 → 0.4-0.6 (some noise, moderate smoothing)
+  normalConsistency < 0.8 → 0.2-0.4 (noisy, needs smoothing)
+- smoothingIterations: Based on degenerateTriCount / totalTriangles.
+  <0.1% degenerate → 0-1 passes
+  0.1-1% → 2-3 passes
+  >1% → 5+ passes
+- boundaryPenalty: Based on boundaryLoopCount.
+  0 loops → 1.0 (watertight, no boundaries to protect)
+  1-5 loops → 3.0 (few openings, moderate protection)
+  >5 loops → 5.0-8.0 (many boundaries, strong protection)
+- corruptionClustering > 0.7 means damage is localized — use finer resolution to capture detail in the damaged region
+- simplifyTarget: floor(inputTriangles × 0.8). MUST NEVER exceed inputTriangles.
+- smoothingLambda: 0.3 mechanical, 0.5 mixed, 0.7 organic
+- dilationVoxels: 0 solid, 1 shell, 2 shell >10% open
+- radiusMultiplier: 2.0 default. If avgGapWidth > 2×resolution, increase to 2.5. If mesh is dense (avgEdgeLength < resolution/2), reduce to 1.5.
 
-AUTOMOTIVE: car_body, body_panel, fender, hood, bumper, chassis, wheel, interior_trim
-  - Signatures: large bbox (>500mm), thin shell, SA/vol>0.05, intentional openings (windows, wheel arches, door cutouts)
-  - Expected features: panel surfaces, character lines, wheel arches, window frames, door openings
-  - Wall character: uniform_thin (1-3mm sheet metal)
+ADVANCED TUNING (set based on diagnostics):
+- taubinMu: Controls inflation after smoothing. Default -0.53.
+  More negative (-0.6 to -0.7) = stronger inflation (use when volume preservation matters, e.g. solid bodies).
+  Less negative (-0.3 to -0.4) = weaker inflation (use for thin shells to avoid puffing).
+- gridPadding: Voxel: 1-5 (default 1). Point cloud: 1-10 (default 3).
+  Increase for meshes with geometry at bounding box edges.
+  If boundaryLoopCount > 3, increase by 1-2 to capture edge gaps.
+- normalSampleDensity: 0.001 default. Increase to 0.01-0.05 for noisy meshes (normalConsistency < 0.85).
+- vertexMergePrecision: 0.001mm default. For scan data (noisy), use 0.01-0.1. For CAD, use 0.0001.
+- outsideBias: 1.0 default. Lower (0.3-0.5) biases SDF toward filling — good for meshes with many small holes.
+  If corruptionClustering > 0.7 (damage localized), keep at 1.0 (don't over-fill healthy regions).
+- degenerateThreshold: 1e-12 default. For meshes with high degenerateTriCount, increase to 1e-8 to skip more bad triangles during voxelization.
 
-MECHANICAL: bracket, mount, gear, shaft, coupling, housing, enclosure, heatsink
-  - Signatures: smaller bbox, solid body or thick walls, mounting holes, sharp edges
-  - Expected features: mounting holes, fillets, chamfers, flat mating surfaces
-  - Wall character: solid or variable_thin
-
-CONSUMER: figurine, toy, sculpture, vase, container, phone_case
-  - Signatures: organic curves, variable wall thickness, fine surface detail
-  - Expected features: smooth organic surfaces, undercuts, thin features
-  - Wall character: variable_thin
-
-INDUSTRIAL: pipe_fitting, flange, valve_body, manifold, duct, structural_member
-  - Signatures: cylindrical/tubular geometry, thick walls, precise dimensions
-  - Expected features: pipe connections, bolt patterns, sealing surfaces
-
-SCAN DATA: 3d_scan, photogrammetry, point_cloud_mesh
-  - Signatures: very high triangle count, no clean edges, noisy surface, many non-manifold edges
-  - Expected features: surface noise, scan artifacts, registration gaps
-
-═══ STEP 2: MESH CLASSIFICATION ═══
-
-MESH TYPES:
-- solid_body: Enclosed solid. Has interior volume. SA/volume ratio < 0.05.
-- thin_shell: Single-layer surface. No interior volume. SA/volume ratio > 0.05. May have intentional openings.
-- multi_body: Multiple disconnected shells in one file.
-- surface_patch: Open surface not meant to be watertight.
-
-KEY DIAGNOSTICS:
-- SA/volume ratio > 0.05 → thin shell
-- Open edges / total edges > 5% → severely broken
-- Wall thickness < 1% of max bbox dimension → thin shell
-- Non-manifold edges > 1% of total → corrupted topology (normals likely inconsistent)
-- Filename hints: "body", "panel", "shell", "skin", "monocoque" → thin shell
-
-═══ STEP 3: REPAIR STRATEGY ═══
-
-STRATEGIES (choose ONE):
-- topology_repair: <1% defective edges. Fast, preserves geometry exactly.
-- solid_voxel: Broken solid body. Fills interior. NEVER use on thin shells.
-- point_cloud: PREFERRED for broken thin shells. MLS/SDF reconstruction. Preserves openings.
-- shell_voxel: Fallback for thin shells if point_cloud inappropriate.
-- manual: Too ambiguous. Flag for user.
-
-═══ STEP 4: PARAMETER TUNING ═══
-
-Your parameters directly control reconstruction quality. Set them based on what the object IS.
-
-VOXEL PARAMS (solid_voxel or shell_voxel only):
-- resolution: maxDim/500 for solids, maxDim/800 for shells
-  HARD MIN: max(maxDim/1000, cbrt(bbX*bbY*bbZ/200000000), 0.5)
-  MAX: 20mm
-- dilationVoxels: 0 solid, 1 shell, 2 shell with >10% open edges
-- smoothingIterations: 0 if res<2mm, 3 if 2-6mm, 5 if 6-10mm, 10 if >10mm
-- simplifyTarget: inputTriangles * 0.8
-- smoothingLambda: 0.3 mechanical (preserve edges), 0.5 default, 0.7 organic
-- boundaryPenalty: 1.0 for solids, 3.0 for parts with mounting holes, 5.0+ for shells with openings
-
-POINT CLOUD PARAMS (point_cloud only):
-- resolution: maxDim/600
-  Same HARD MIN as voxel
-- radiusMultiplier: 2.0 default. Lower (1.5) for dense meshes. Higher (2.5) for sparse/gappy.
-- sdfSharpness: Controls SDF kernel width.
-  0.0 = very smooth, fills gaps aggressively (good for scan data, organic shapes)
-  0.5 = balanced (good for mixed geometry like car bodies)
-  0.7-0.9 = sharp, preserves hard edges (good for mechanical parts, brackets)
-  1.0 = maximum sharpness (only for pristine mechanical CAD)
-  SET THIS BASED ON GEOMETRY CLASS. A car body with panel seams = 0.5. A bracket = 0.8. A figurine = 0.3.
-- gapBridgingFactor: Multiplier on SDF evaluation radius.
-  1.0 = standard (preserves intentional openings like windows, holes)
-  1.5-2.0 = bridges moderate gaps (good for scan data with acquisition holes)
-  2.5-3.0 = aggressive gap filling (only for heavily damaged meshes with no intentional openings)
-  CRITICAL: If the model has intentional openings (car windows, mounting holes), keep this at 1.0!
-- smoothingIterations: 0 if res<3mm, 1 if 3-5mm, 2 if 5-8mm, 3 if >8mm
-- simplifyTarget: inputTriangles * 1.5
-- smoothingLambda: 0.3 mechanical, 0.5 default, 0.7 organic/figurines
-- boundaryPenalty: 1.0 for closed surfaces, 5.0-8.0 for car bodies with window/door edges, 3.0 for brackets with holes
-  This controls how aggressively the simplifier preserves edges at mesh boundaries.
-  HIGH values protect wheel arches, window frames, door edges from being simplified away.
-
-═══ RESPONSE FORMAT ═══
-
-Respond with a JSON object only. No markdown, no backticks, no commentary.
+Keep "reasoning" under 30 words. Keep "warnings" to max 2 items, under 15 words each.
 
 {
   "meshType": "solid_body|thin_shell|multi_body|surface_patch",
   "repairStrategy": "topology_repair|solid_voxel|shell_voxel|point_cloud|manual",
   "confidence": 0.0-1.0,
-  "reasoning": "Detailed analysis of what you see and why you chose this strategy",
-  "warnings": ["specific risks for this particular model"],
+  "reasoning": "Brief: what it is, what's wrong, why this strategy",
+  "warnings": ["max 2 short warnings"],
   "modelId": {
     "category": "car_body|bracket|figurine|etc",
-    "description": "Full car body monocoque shell with window openings, wheel arches, and panel seams",
-    "expectedFeatures": ["window_openings", "wheel_arches", "panel_seams", "door_cutouts"],
+    "description": "One-line identification",
+    "expectedFeatures": ["feature1", "feature2"],
     "geometryClass": "mechanical|organic|architectural|mixed",
     "hasIntentionalOpenings": true,
     "estimatedWallCharacter": "uniform_thin|variable_thin|solid|mixed"
   },
   "repairGuidance": {
-    "strategyRationale": "Why these specific params for THIS model",
-    "risks": ["Window openings may partially close at high gap bridging"],
-    "postRepairChecklist": ["Verify wheel arches are open", "Check panel seam definition"]
+    "strategyRationale": "One sentence max",
+    "risks": ["max 2 short risks"],
+    "postRepairChecklist": ["max 2 items"]
   },
-  "voxelParams": { "resolution": N, "dilationVoxels": N, "smoothingIterations": N, "simplifyTarget": N, "smoothingLambda": N, "boundaryPenalty": N } | null,
-  "pointCloudParams": { "resolution": N, "radiusMultiplier": N, "sdfSharpness": N, "gapBridgingFactor": N, "smoothingIterations": N, "simplifyTarget": N, "smoothingLambda": N, "boundaryPenalty": N } | null
+  "voxelParams": { "resolution": N, "dilationVoxels": N, "smoothingIterations": N, "simplifyTarget": N, "smoothingLambda": N, "boundaryPenalty": N, "taubinMu": N, "gridPadding": N, "degenerateThreshold": N } | null,
+  "pointCloudParams": { "resolution": N, "radiusMultiplier": N, "sdfSharpness": N, "gapBridgingFactor": N, "smoothingIterations": N, "simplifyTarget": N, "smoothingLambda": N, "boundaryPenalty": N, "taubinMu": N, "gridPadding": N, "normalSampleDensity": N, "vertexMergePrecision": N, "outsideBias": N } | null
 }`;
+
+// ─── AI Provider Helpers ─────────────────────────────────────────────────────
+
+/** Call Google Gemini 2.5 Pro for primary mesh analysis (best math/geometry reasoning). */
+async function callGemini(apiKey: string, prompt: string, screenshotBase64?: string): Promise<string> {
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+
+  if (screenshotBase64) {
+    parts.push({ inlineData: { mimeType: "image/png", data: screenshotBase64 } });
+  }
+  parts.push({ text: prompt });
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          maxOutputTokens: 4096,
+        },
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Gemini API error ${response.status}: ${errText.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+}
+
+/** Call Anthropic Claude as fallback for mesh analysis. */
+async function callAnthropic(apiKey: string, prompt: string, screenshotBase64?: string): Promise<string> {
+  type ContentBlock =
+    | { type: "text"; text: string }
+    | { type: "image"; source: { type: "base64"; media_type: "image/png"; data: string } };
+
+  const content: ContentBlock[] = [];
+  if (screenshotBase64) {
+    content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: screenshotBase64 } });
+  }
+  content.push({ type: "text", text: prompt });
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Anthropic API error ${response.status}: ${errText.slice(0, 200)}`);
+  }
+
+  const data = await response.json() as { content: Array<{ type: string; text: string }> };
+  return data.content.find((b) => b.type === "text")?.text ?? "";
+}
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export async function analyzeMeshWithAI(
   input: AIMeshAnalysisInput
 ): Promise<AIMeshAnalysisResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+
+  if (!geminiKey && !anthropicKey) {
     return {
       ...heuristicAnalysis(input),
-      error: "ANTHROPIC_API_KEY not configured — using heuristic analysis.",
+      error: "No AI API key configured — using heuristic analysis.",
     };
   }
 
@@ -510,6 +612,7 @@ export async function analyzeMeshWithAI(
       ? (input.surfaceAreaMM2 / input.volumeMM3).toFixed(4)
       : "N/A (zero volume)";
 
+  const diag = input.geometryDiagnostics;
   const statsText = `File: ${input.fileName}
 Triangles: ${input.triangles.toLocaleString()}
 Vertices: ${input.vertices.toLocaleString()}
@@ -519,54 +622,45 @@ Volume: ${input.volumeMM3.toFixed(0)} mm³
 SA/Volume ratio: ${saVolRatio}
 Open edges: ${input.openEdges.toLocaleString()} (${((input.openEdges / (input.triangles * 1.5 || 1)) * 100).toFixed(1)}% of total)
 Non-manifold edges: ${input.nonManifoldEdges.toLocaleString()} (${((input.nonManifoldEdges / (input.triangles * 1.5 || 1)) * 100).toFixed(1)}% of total)
-${input.avgWallThicknessMM !== null ? `Estimated wall thickness: ${input.avgWallThicknessMM.toFixed(1)} mm` : "Wall thickness: unknown"}
-Max dimension: ${Math.max(input.boundingBox.x, input.boundingBox.y, input.boundingBox.z).toFixed(1)} mm`;
+${input.avgWallThicknessMM !== null ? `Wall thickness: ${input.avgWallThicknessMM.toFixed(1)} mm` : "Wall thickness: unknown"}
+Max dimension: ${Math.max(input.boundingBox.x, input.boundingBox.y, input.boundingBox.z).toFixed(1)} mm${diag ? `
+--- GEOMETRY DIAGNOSTICS ---
+Avg edge length: ${diag.avgEdgeLengthMM} mm
+Median edge length: ${diag.medianEdgeLengthMM} mm
+Boundary loops: ${diag.boundaryLoopCount}
+Avg gap width: ${diag.avgGapWidthMM} mm
+Max gap width: ${diag.maxGapWidthMM} mm
+Corruption clustering: ${diag.corruptionClustering} (0=spread, 1=concentrated)
+Degenerate triangles: ${diag.degenerateTriCount}
+Normal consistency: ${diag.normalConsistency} (1.0=perfect)` : ""}`;
 
-  type ContentBlock =
-    | { type: "text"; text: string }
-    | { type: "image"; source: { type: "base64"; media_type: "image/png"; data: string } };
-
-  const content: ContentBlock[] = [];
-
-  if (input.screenshotBase64) {
-    content.push({
-      type: "image",
-      source: { type: "base64", media_type: "image/png", data: input.screenshotBase64 },
-    });
-  }
-
-  content.push({
-    type: "text",
-    text: `Analyze this 3D mesh. Identify what the object is, classify its damage, and return precise repair parameters.\n\n${statsText}`,
-  });
+  const userPrompt = `Analyze this 3D mesh. Identify what the object is, classify its damage, and return precise repair parameters.\n\n${statsText}`;
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content }],
-      }),
-    });
+    let rawText: string;
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Anthropic API error ${response.status}: ${errText.slice(0, 200)}`);
+    if (geminiKey) {
+      // Primary: Gemini 2.5 Pro — best for heavy geometry math and parameter calculations
+      rawText = await callGemini(geminiKey, userPrompt, input.screenshotBase64);
+    } else {
+      // Fallback: Anthropic Claude
+      rawText = await callAnthropic(anthropicKey!, userPrompt, input.screenshotBase64);
     }
 
-    const data = await response.json() as {
-      content: Array<{ type: string; text: string }>;
-    };
-
-    const rawText = data.content.find((b) => b.type === "text")?.text ?? "";
-    const jsonText = rawText.replace(/```[a-z]*\n?/gi, "").trim();
+    let jsonText = rawText.replace(/```[a-z]*\n?/gi, "").trim();
+    // Extract the outermost JSON object even if there's trailing garbage
+    const jsonStart = jsonText.indexOf("{");
+    if (jsonStart >= 0) {
+      jsonText = jsonText.slice(jsonStart);
+      // Find the matching closing brace
+      let depth = 0;
+      let end = -1;
+      for (let i = 0; i < jsonText.length; i++) {
+        if (jsonText[i] === "{") depth++;
+        else if (jsonText[i] === "}") { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (end > 0) jsonText = jsonText.slice(0, end + 1);
+    }
     const parsed = JSON.parse(jsonText) as {
       meshType: MeshType;
       repairStrategy: RepairStrategy;
@@ -597,6 +691,7 @@ Max dimension: ${Math.max(input.boundingBox.x, input.boundingBox.y, input.boundi
             simplifyTarget: voxel.simplifyTarget,
             smoothingLambda: voxel.smoothingLambda ?? 0.5,
             boundaryPenalty: voxel.boundaryPenalty ?? 1.0,
+            taubinMu: voxel.taubinMu ?? -0.53,
           },
         },
         expect: {
@@ -619,6 +714,7 @@ Max dimension: ${Math.max(input.boundingBox.x, input.boundingBox.y, input.boundi
             simplifyTarget: pc.simplifyTarget,
             smoothingLambda: pc.smoothingLambda ?? 0.5,
             boundaryPenalty: pc.boundaryPenalty ?? 1.0,
+            taubinMu: pc.taubinMu ?? -0.53,
           },
         },
         expect: {
@@ -811,6 +907,7 @@ Respond with JSON ONLY (no markdown):
         simplifyTarget: Math.max(0, Math.round(parsed.adjustedPostProcess.simplifyTarget ?? 0)),
         smoothingLambda: clamp(parsed.adjustedPostProcess.smoothingLambda ?? 0.5, 0.1, 0.8),
         boundaryPenalty: clamp(parsed.adjustedPostProcess.boundaryPenalty ?? 1.0, 1.0, 10.0),
+        taubinMu: clamp(parsed.adjustedPostProcess.taubinMu ?? -0.53, -0.7, -0.3),
       };
     } else if (sourceParams) {
       postProcess = {
@@ -818,6 +915,7 @@ Respond with JSON ONLY (no markdown):
         simplifyTarget: sourceParams.simplifyTarget,
         smoothingLambda: sourceParams.smoothingLambda ?? 0.5,
         boundaryPenalty: sourceParams.boundaryPenalty ?? 1.0,
+        taubinMu: (sourceParams as PointCloudRepairParams).taubinMu ?? -0.53,
       };
     }
 

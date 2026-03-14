@@ -74,7 +74,7 @@ interface PointCloud {
   count: number;
 }
 
-function extractPointCloud(geo: THREE.BufferGeometry): PointCloud {
+function extractPointCloud(geo: THREE.BufferGeometry, mergePrecision = 0.001): PointCloud {
   const pos = geo.attributes.position.array as Float32Array;
   const triCount = Math.floor(pos.length / 9);
   // Centroids (always unique) + deduplicated vertices
@@ -115,7 +115,8 @@ function extractPointCloud(geo: THREE.BufferGeometry): PointCloud {
     const verts = [p0x, p0y, p0z, p1x, p1y, p1z, p2x, p2y, p2z];
     for (let v = 0; v < 3; v++) {
       const vx = verts[v * 3], vy = verts[v * 3 + 1], vz = verts[v * 3 + 2];
-      const key = `${(vx * 1000) | 0},${(vy * 1000) | 0},${(vz * 1000) | 0}`;
+      const scale = 1 / mergePrecision;
+      const key = `${(vx * scale) | 0},${(vy * scale) | 0},${(vz * scale) | 0}`;
       const existing = vertexMap.get(key);
       if (existing !== undefined) {
         // Update normal of existing vertex
@@ -199,6 +200,7 @@ function orientNormals(
   count: number,
   hash: SpatialHash,
   radius: number,
+  sampleDensity = 0.001,
 ): void {
   const visited = new Uint8Array(count);
   const queue = new RingQueue(count);
@@ -206,7 +208,7 @@ function orientNormals(
   // ── Pass 1: Find best seed — point with highest neighbor normal agreement ──
   let bestSeed = 0;
   let bestScore = -1;
-  const sampleStep = Math.max(1, Math.floor(count / 1000));
+  const sampleStep = Math.max(1, Math.floor(count * sampleDensity > 0 ? 1 / sampleDensity : 1000));
   for (let i = 0; i < count; i += sampleStep) {
     const neighbors = hash.queryRadius(
       points[i * 3], points[i * 3 + 1], points[i * 3 + 2],
@@ -778,6 +780,14 @@ export interface PointCloudReconstructParams {
   sdfSharpness?: number;
   /** Eval radius multiplier: 1.0 = standard, 2.0+ bridges wider gaps. Default 1.0. */
   gapBridgingFactor?: number;
+  /** Grid padding in multiples of resolution. Default 3. Higher = better boundary handling. */
+  gridPadding?: number;
+  /** Normal orientation sample density: fraction of points to sample for seed selection. Default 0.001 (1/1000). Higher = better normals on noisy meshes, slower. */
+  normalSampleDensity?: number;
+  /** Vertex merge precision in mm. Default 0.001. Increase for scan data (0.01-0.1), decrease for precision CAD (0.0001). */
+  vertexMergePrecision?: number;
+  /** SDF outside bias: default value for unevaluated cells. Default 1.0 (outside). Lower (0.1-0.5) biases toward filling gaps. */
+  outsideBias?: number;
 }
 
 /**
@@ -826,12 +836,16 @@ export async function pointCloudReconstruct(
   const smoothingRadius = resolution * radiusMult;
   const sdfSharpness = Math.max(0, Math.min(1, params?.sdfSharpness ?? 0.5));
   const gapBridgingFactor = Math.max(1, Math.min(3, params?.gapBridgingFactor ?? 1.0));
+  const gridPadding = Math.max(1, Math.min(10, params?.gridPadding ?? 3));
+  const normalSampleDensity = Math.max(0.0001, Math.min(0.1, params?.normalSampleDensity ?? 0.001));
+  const vertexMergePrecision = Math.max(0.0001, Math.min(1, params?.vertexMergePrecision ?? 0.001));
+  const outsideBias = Math.max(0.01, Math.min(2, params?.outsideBias ?? 1.0));
 
   // ── Step 1: Extract point cloud ──────────────────────────────────────────
   onProgress(0, 6, "Extracting point cloud…");
   await yieldToUI();
 
-  const pc = extractPointCloud(g);
+  const pc = extractPointCloud(g, vertexMergePrecision);
 
   if (pc.count === 0) {
     throw new Error("No valid triangles found in mesh");
@@ -850,13 +864,13 @@ export async function pointCloudReconstruct(
   onProgress(2, 6, "Orienting normals…");
   await yieldToUI();
 
-  orientNormals(pc.points, pc.normals, pc.count, hash, smoothingRadius);
+  orientNormals(pc.points, pc.normals, pc.count, hash, smoothingRadius, normalSampleDensity);
 
   // ── Step 3: Evaluate SDF on grid near geometry ───────────────────────────
   onProgress(3, 6, "Evaluating signed distance field…");
   await yieldToUI();
 
-  const pad = resolution * 3;
+  const pad = resolution * gridPadding;
   const ox = bb.min.x - pad, oy = bb.min.y - pad, oz = bb.min.z - pad;
   const nx = Math.ceil((bbSize.x + 2 * pad) / resolution) + 1;
   const ny = Math.ceil((bbSize.y + 2 * pad) / resolution) + 1;
@@ -877,7 +891,7 @@ export async function pointCloudReconstruct(
   // e.g. 80M cells × 4 bytes = 320MB dense → ~5M entries × ~40 bytes = ~200MB sparse,
   // but more importantly avoids the upfront 320MB allocation that can crash the tab.
   const sdf = new Map<number, number>();
-  const sdfGet = (idx: number) => sdf.get(idx) ?? 1.0;
+  const sdfGet = (idx: number) => sdf.get(idx) ?? outsideBias;
 
   // Evaluate SDF only in cells near input points
   // gapBridgingFactor widens the eval radius to bridge larger gaps (at compute cost)

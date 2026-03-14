@@ -246,10 +246,20 @@ const FACE_DIRS = [
 
 // ─── Main pipeline ────────────────────────────────────────────────────────────
 
+export interface VoxelReconstructParams {
+  /** Grid resolution in mm. */
+  resolution?: number;
+  /** Grid padding in voxels around the bounding box. Default 1. Higher = better boundary handling. */
+  gridPadding?: number;
+  /** Barycentric rejection threshold for degenerate triangles. Default 1e-12. Increase (1e-8) for corrupted meshes. */
+  degenerateThreshold?: number;
+}
+
 export async function voxelReconstruct(
   geo: THREE.BufferGeometry,
   onProgress: VoxelProgressCallback,
-  resolutionMM?: number
+  resolutionMM?: number,
+  params?: VoxelReconstructParams,
 ): Promise<VoxelReconstructResult> {
   // Work with flat (non-indexed) geometry so triangles are consecutive triplets.
   const g = geo.index ? geo.toNonIndexed() : geo.clone();
@@ -259,14 +269,15 @@ export async function voxelReconstruct(
   bb.getSize(bbSize);
 
   const resolution =
-    resolutionMM ?? autoVoxelResolution({ x: bbSize.x, y: bbSize.y, z: bbSize.z });
+    resolutionMM ?? params?.resolution ?? autoVoxelResolution({ x: bbSize.x, y: bbSize.y, z: bbSize.z });
+  const degenerateThreshold = params?.degenerateThreshold ?? 1e-12;
 
   // ── Guards ──────────────────────────────────────────────────────────────────
   validateResolution(resolution);
   validateBBox(bbSize, bb.min);
 
-  // 1-voxel padding on all sides guarantees the BFS corner is always exterior.
-  const PAD = 1;
+  // Grid padding on all sides guarantees the BFS corner is always exterior.
+  const PAD = Math.max(1, Math.min(5, params?.gridPadding ?? 1));
   const gx = Math.ceil(bbSize.x / resolution) + 2 * PAD;
   const gy = Math.ceil(bbSize.y / resolution) + 2 * PAD;
   const gz = Math.ceil(bbSize.z / resolution) + 2 * PAD;
@@ -324,7 +335,7 @@ export async function voxelReconstruct(
     const e1x = bx - ax, e1y = by - ay;
     const e2x = cx - ax, e2y = cy - ay;
     const denom = e1x * e2y - e1y * e2x;
-    if (Math.abs(denom) < 1e-12) continue;
+    if (Math.abs(denom) < degenerateThreshold) continue;
     const inv = 1 / denom;
 
     for (let ix = ixMin; ix <= ixMax; ix++) {
@@ -960,6 +971,8 @@ export interface PostProcessParams {
   smoothingLambda?: number;
   /** QEM boundary edge penalty (1-10, default 1). High values protect openings during simplification. */
   boundaryPenalty?: number;
+  /** Taubin inflate factor (-0.7 to -0.3, default computed from lambda). More negative = stronger inflation. */
+  taubinMu?: number;
 }
 
 /**
@@ -992,7 +1005,7 @@ export async function postProcessVoxelOutput(
   if (params.smoothingIterations > 0) {
     if (onProgress) onProgress(1, 2, "Smoothing surface…");
     const lambda = params.smoothingLambda ?? 0.5;
-    const mu = -(lambda + 0.03); // Taubin's formula: mu should be slightly more negative than -lambda
+    const mu = params.taubinMu ?? -(lambda + 0.03);
     await taubinSmooth(result, params.smoothingIterations, onProgress, lambda, mu);
   }
 

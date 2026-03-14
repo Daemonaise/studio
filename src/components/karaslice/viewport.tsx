@@ -56,6 +56,7 @@ interface ViewportProps {
   transforms?: TransformState;
   splitParts?: SplitPartVisual[];
   explodeAmount?: number;   // 0–1
+  showSliceLines?: boolean;
   ghostMode?: boolean;
   wireframe?: boolean;
   selectedPartIndex?: number;
@@ -82,6 +83,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     transforms,
     splitParts,
     explodeAmount = 0,
+    showSliceLines = true,
     ghostMode = false,
     wireframe = false,
     selectedPartIndex,
@@ -120,6 +122,8 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       }
     });
     planeHelpersRef.current = [];
+
+    if (!showSliceLines) { invalidateRef.current(); return; }
 
     cutPlanes.forEach(({ axis, position, enabled }) => {
       if (!enabled) return;
@@ -166,7 +170,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       planeHelpersRef.current.push(line);
     });
     invalidateRef.current();
-  }, [cutPlanes]);
+  }, [cutPlanes, showSliceLines]);
 
   // ── Three.js scene init ─────────────────────────────────────────────────────
 
@@ -544,7 +548,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       if (explodeAmount > 0) {
         const dir = centers[i].clone().sub(overallCenter);
         if (dir.length() < 0.001) dir.set(0, 1, 0);
-        dir.normalize().multiplyScalar(explodeAmount * 60);
+        dir.normalize().multiplyScalar(explodeAmount * 150);
         const arr = posAttr.array as Float32Array;
         for (let v = 0; v < vertCount; v++) {
           arr[v * 3]     += dir.x;
