@@ -1,0 +1,10 @@
+flask==3.1.*
+gunicorn==23.*
+google-cloud-storage==2.*
+google-cloud-firestore==2.*
+pymeshlab==2023.12.post2
+trimesh==4.*
+open3d==0.18.*
+numpy==1.*
+scipy==1.*
+scikit-learn==1.*

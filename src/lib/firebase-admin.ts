@@ -1,8 +1,10 @@
 import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
 import { getStorage, type Storage } from "firebase-admin/storage";
+import { getFirestore, type Firestore } from "firebase-admin/firestore";
 
 let app: App;
 let storage: Storage;
+let firestore: Firestore;
 
 function getApp(): App {
   if (!app) {
@@ -22,4 +24,11 @@ export function getAdminStorage(): Storage {
     storage = getStorage(getApp());
   }
   return storage;
+}
+
+export function getAdminFirestore(): Firestore {
+  if (!firestore) {
+    firestore = getFirestore(getApp());
+  }
+  return firestore;
 }

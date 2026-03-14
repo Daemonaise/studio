@@ -8,7 +8,7 @@ import {
   ChevronDown, ChevronRight, Plus, Minus, Download,
   RotateCcw, Info, AlertTriangle, CheckCircle2, Loader2,
   Maximize2, Link2, Eye, ZapOff, Zap, Keyboard, X,
-  Target, Scale, Send, Menu, Wrench, ArrowLeft, Ruler, Boxes, Sparkles,
+  Target, Scale, Send, Menu, Wrench, ArrowLeft, Ruler, Boxes, Sparkles, Cloud, CloudOff,
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,12 @@ import type { SplitPart } from "./manifold-engine";
 import printerProfiles from "@/app/data/printer-profiles.json";
 import { cn } from "@/lib/utils";
 import { uploadToKaraslice, batchUploadJob, type BatchUploadEntry } from "@/app/actions/storage-actions";
+import {
+  submitCloudRepairJob,
+  getRepairJobStatus,
+  getRepairResultUrl,
+  type RepairJobStatus,
+} from "@/app/actions/cloud-repair-actions";
 
 // Only load Three.js viewport client-side
 const Viewport = dynamic(
@@ -184,6 +190,12 @@ export function KarasliceApp() {
   const [reconstructResult, setReconstructResult] = useState<import("./voxel-reconstruct").VoxelReconstructResult | null>(null);
   const [retryAttempt, setRetryAttempt] = useState(0);
 
+  // ── Cloud repair ──────────────────────────────────────────────────────────
+  const [cloudRepairJob, setCloudRepairJob] = useState<RepairJobStatus | null>(null);
+  const [cloudRepairSubmitting, setCloudRepairSubmitting] = useState(false);
+  const [cloudRepairPolling, setCloudRepairPolling] = useState(false);
+  const cloudRepairPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // ── Post-processing (smoothing + simplification) ────────────────────────────
   const [smoothingIterations, setSmoothingIterations] = useState(3);
   const [simplifyEnabled, setSimplifyEnabled] = useState(true);
@@ -233,7 +245,7 @@ export function KarasliceApp() {
   // ── Sections ────────────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState({
     fileInfo: true, repair: true, basicRepair: false, analysis: true,
-    voxelReconstruct: false,
+    voxelReconstruct: false, cloudRepair: false,
     scale: true, rotate: true,
     printer: true, cutPlanes: true, tenon: false,
     splitResult: true,
@@ -671,6 +683,112 @@ export function KarasliceApp() {
       setReconstructing(false);
       setReconstructMessage("");
       setRetryAttempt(0);
+    }
+  };
+
+  // ── Cloud Repair ──────────────────────────────────────────────────────────
+
+  const stopCloudPolling = useCallback(() => {
+    if (cloudRepairPollRef.current) {
+      clearInterval(cloudRepairPollRef.current);
+      cloudRepairPollRef.current = null;
+    }
+    setCloudRepairPolling(false);
+  }, []);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (cloudRepairPollRef.current) clearInterval(cloudRepairPollRef.current);
+    };
+  }, []);
+
+  const handleCloudRepair = async () => {
+    if (!meshInfo) return;
+    const file = pendingUploadFile.current;
+
+    // We need the original file — if user already loaded, re-read from viewport
+    // For cloud repair, we need to get the file from the file input
+    const fileInput = fileInputRef.current;
+    const uploadFile = file ?? (fileInput?.files?.[0] || null);
+
+    if (!uploadFile) {
+      notify("No file available for cloud upload. Please re-load the file.", "destructive");
+      return;
+    }
+
+    setCloudRepairSubmitting(true);
+    setCloudRepairJob(null);
+    stopCloudPolling();
+
+    try {
+      const fd = new FormData();
+      fd.append("file", uploadFile);
+      fd.append("repairMode", "auto");
+
+      // Include AI-prescribed params if available
+      if (aiAnalysis?.repairPlan) {
+        fd.append("params", JSON.stringify(aiAnalysis.repairPlan.params));
+      }
+
+      const result = await submitCloudRepairJob(fd);
+
+      setCloudRepairJob({
+        jobId: result.jobId,
+        status: "queued",
+        stepMessage: "Job submitted — waiting for worker…",
+      });
+
+      // Start polling
+      setCloudRepairPolling(true);
+      cloudRepairPollRef.current = setInterval(async () => {
+        try {
+          const status = await getRepairJobStatus(result.jobId);
+          if (!status) return;
+          setCloudRepairJob(status);
+
+          if (status.status === "finished" || status.status === "failed") {
+            stopCloudPolling();
+
+            if (status.status === "finished") {
+              // Auto-load repaired mesh into viewport
+              try {
+                const url = await getRepairResultUrl(result.jobId, "repaired.stl");
+                const dlRes = await fetch(url);
+                const arrayBuffer = await dlRes.arrayBuffer();
+                const { STLLoader } = await import("three/examples/jsm/loaders/STLLoader.js");
+                const loader = new STLLoader();
+                const geometry = loader.parse(arrayBuffer);
+                viewportRef.current?.loadRepairedGeometry(geometry, "cloud_repaired.stl");
+                notify("Cloud repair complete — repaired mesh loaded.");
+              } catch {
+                notify("Cloud repair complete — auto-load failed. Use download buttons.", "destructive");
+              }
+            } else {
+              notify(`Cloud repair failed: ${status.error ?? "Unknown error"}`, "destructive");
+            }
+          }
+        } catch {
+          // Polling error — keep trying
+        }
+      }, 3000);
+
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      notify(`Cloud repair submission failed: ${msg}`, "destructive");
+    } finally {
+      setCloudRepairSubmitting(false);
+    }
+  };
+
+  const handleDownloadRepairResult = async (fileName: string) => {
+    if (!cloudRepairJob?.jobId) return;
+    try {
+      const url = await getRepairResultUrl(cloudRepairJob.jobId, fileName);
+      window.open(url, "_blank");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      notify(`Download failed: ${msg}`, "destructive");
     }
   };
 
@@ -1499,6 +1617,187 @@ export function KarasliceApp() {
                                 {smoothingIterations > 0 && <p className="text-green-400">Smoothed ({smoothingIterations} Taubin passes)</p>}
                                 {simplifyEnabled && <p className="text-green-400">Simplified (quadric edge collapse)</p>}
                               </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* CLOUD REPAIR — offload heavy repair to server */}
+                  {meshInfo && (
+                    <>
+                      <SectionHeader icon={Cloud} label="Cloud Repair" open={openSections.cloudRepair} onToggle={() => toggleSection("cloudRepair")} />
+                      {openSections.cloudRepair && (
+                        <div className="px-3 pb-3 space-y-3">
+                          <p className="text-[10px] text-muted-foreground">
+                            Offload heavy mesh repair to the cloud. Uses PyMeshLab, Open3D Poisson reconstruction, and isotropic remeshing — handles meshes that are too large for the browser.
+                          </p>
+
+                          {/* Submit button */}
+                          <Button
+                            size="sm"
+                            className="w-full gap-2"
+                            style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                            disabled={cloudRepairSubmitting || cloudRepairPolling}
+                            onClick={handleCloudRepair}
+                          >
+                            {cloudRepairSubmitting ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : cloudRepairPolling ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Cloud className="h-3 w-3" />
+                            )}
+                            {cloudRepairSubmitting
+                              ? "Uploading…"
+                              : cloudRepairPolling
+                              ? "Processing…"
+                              : "Send to Cloud Repair"}
+                          </Button>
+
+                          {/* Job status */}
+                          {cloudRepairJob && (
+                            <div className="rounded-md border border-border p-2 space-y-1.5 text-[11px]">
+                              <div className="flex items-center gap-1.5">
+                                {cloudRepairJob.status === "finished" ? (
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                                ) : cloudRepairJob.status === "failed" ? (
+                                  <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
+                                ) : (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                                )}
+                                <span className={cn(
+                                  "font-medium",
+                                  cloudRepairJob.status === "finished" && "text-green-400",
+                                  cloudRepairJob.status === "failed" && "text-red-400",
+                                  (cloudRepairJob.status === "queued" || cloudRepairJob.status === "running") && "text-accent",
+                                )}>
+                                  {cloudRepairJob.status === "finished"
+                                    ? "Repair complete"
+                                    : cloudRepairJob.status === "failed"
+                                    ? "Repair failed"
+                                    : cloudRepairJob.status === "running"
+                                    ? "Repairing…"
+                                    : "Queued"}
+                                </span>
+                              </div>
+
+                              {cloudRepairJob.stepMessage && (
+                                <p className="text-muted-foreground text-[10px]">{cloudRepairJob.stepMessage}</p>
+                              )}
+
+                              {cloudRepairJob.status === "running" && (
+                                <Progress value={
+                                  cloudRepairJob.step === "parse" ? 3
+                                  : cloudRepairJob.step === "analyze" ? 6
+                                  : cloudRepairJob.step === "weld" ? 10
+                                  : cloudRepairJob.step === "sanitize" ? 15
+                                  : cloudRepairJob.step === "components" ? 22
+                                  : cloudRepairJob.step === "nonmanifold" ? 30
+                                  : cloudRepairJob.step === "normals" ? 35
+                                  : cloudRepairJob.step === "holes" ? 40
+                                  : cloudRepairJob.step === "selfintersect" ? 48
+                                  : cloudRepairJob.step === "reconstruct" ? 58
+                                  : cloudRepairJob.step === "post_cleanup" ? 68
+                                  : cloudRepairJob.step === "remesh" ? 75
+                                  : cloudRepairJob.step === "thinwall" ? 82
+                                  : cloudRepairJob.step === "simplify" ? 88
+                                  : cloudRepairJob.step === "validate" ? 93
+                                  : cloudRepairJob.step === "export" ? 97
+                                  : 3
+                                } className="h-1" />
+                              )}
+
+                              {cloudRepairJob.status === "failed" && cloudRepairJob.error && (
+                                <p className="text-[10px] text-red-400">{cloudRepairJob.error}</p>
+                              )}
+
+                              {/* Repair report */}
+                              {cloudRepairJob.status === "finished" && cloudRepairJob.report && (
+                                <div className="pl-4 space-y-0.5 text-muted-foreground text-[10px]">
+                                  {/* Quality score bar */}
+                                  {cloudRepairJob.report.qualityScore != null && (
+                                    <div className="flex items-center gap-2 pb-0.5">
+                                      <span>Quality</span>
+                                      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                                        <div
+                                          className={cn(
+                                            "h-full rounded-full transition-all",
+                                            cloudRepairJob.report.qualityScore >= 80 ? "bg-green-400"
+                                            : cloudRepairJob.report.qualityScore >= 50 ? "bg-yellow-400"
+                                            : "bg-red-400",
+                                          )}
+                                          style={{ width: `${cloudRepairJob.report.qualityScore}%` }}
+                                        />
+                                      </div>
+                                      <span className="font-mono">{cloudRepairJob.report.qualityScore}%</span>
+                                    </div>
+                                  )}
+                                  {cloudRepairJob.report.damageClassification && (
+                                    <p>Damage: <span className="text-accent">{cloudRepairJob.report.damageClassification}</span> → mode: <span className="text-accent">{cloudRepairJob.report.mode}</span></p>
+                                  )}
+                                  <p>Input: {cloudRepairJob.report.inputFaces?.toLocaleString()} → Output: {cloudRepairJob.report.outputFaces?.toLocaleString()} faces</p>
+                                  {(cloudRepairJob.report.verticesWelded ?? 0) > 0 && (
+                                    <p className="text-green-400">Welded {cloudRepairJob.report.verticesWelded?.toLocaleString()} duplicate vertices</p>
+                                  )}
+                                  {cloudRepairJob.report.duplicateFacesRemoved > 0 && (
+                                    <p className="text-green-400">Removed {cloudRepairJob.report.duplicateFacesRemoved} duplicate faces</p>
+                                  )}
+                                  {cloudRepairJob.report.componentsRemoved > 0 && (
+                                    <p className="text-green-400">Removed {cloudRepairJob.report.componentsRemoved} debris components</p>
+                                  )}
+                                  {cloudRepairJob.report.nonManifoldEdgesFixed > 0 && (
+                                    <p className="text-green-400">Fixed {cloudRepairJob.report.nonManifoldEdgesFixed} non-manifold edges</p>
+                                  )}
+                                  {(cloudRepairJob.report.selfIntersectionsRemoved ?? 0) > 0 && (
+                                    <p className="text-green-400">Removed {cloudRepairJob.report.selfIntersectionsRemoved} self-intersections</p>
+                                  )}
+                                  {cloudRepairJob.report.holesFilled > 0 && (
+                                    <p className="text-green-400">Filled holes</p>
+                                  )}
+                                  {cloudRepairJob.report.reconstructionUsed && (
+                                    <p className="text-green-400">
+                                      Reconstruction: {cloudRepairJob.report.reconstructionMethod ?? "Poisson"}
+                                    </p>
+                                  )}
+                                  {(cloudRepairJob.report.featureEdgesPreserved ?? 0) > 0 && (
+                                    <p className="text-blue-400">Preserved {cloudRepairJob.report.featureEdgesPreserved?.toLocaleString()} feature edges</p>
+                                  )}
+                                  {(cloudRepairJob.report.thinWallsThickened ?? 0) > 0 && (
+                                    <p className="text-blue-400">Thickened {cloudRepairJob.report.thinWallsThickened?.toLocaleString()} thin-wall vertices</p>
+                                  )}
+                                  <p className={cloudRepairJob.report.watertight ? "text-green-400" : "text-yellow-400"}>
+                                    {cloudRepairJob.report.watertight ? "Watertight" : "Not watertight"}
+                                    {cloudRepairJob.report.manifold != null && (cloudRepairJob.report.manifold ? " · Manifold" : " · Non-manifold")}
+                                  </p>
+                                  <p>Completed in {cloudRepairJob.report.elapsedSeconds}s</p>
+                                </div>
+                              )}
+
+                              {/* Download buttons */}
+                              {cloudRepairJob.status === "finished" && cloudRepairJob.outputPaths && (
+                                <div className="flex gap-2 pt-1">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="flex-1 gap-1 text-[10px] h-7"
+                                    onClick={() => handleDownloadRepairResult("repaired.stl")}
+                                  >
+                                    <Download className="h-3 w-3" />
+                                    STL
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="flex-1 gap-1 text-[10px] h-7"
+                                    onClick={() => handleDownloadRepairResult("repaired.obj")}
+                                  >
+                                    <Download className="h-3 w-3" />
+                                    OBJ
+                                  </Button>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
