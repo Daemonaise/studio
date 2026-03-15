@@ -45,7 +45,7 @@ const Viewport = dynamic(
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = "file" | "repair" | "prepare" | "export";
+// Tab type kept for compatibility — UI now uses single-scroll accordion
 
 interface PrinterProfile {
   id: string; name: string; brand: string;
@@ -164,14 +164,14 @@ export function KarasliceApp() {
   const viewportRef = useRef<ViewportHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingUploadFile = useRef<File | null>(null);
-  /** Persistent copy of the loaded file — survives upload clearing. Used by Cloud Repair. */
+  /** Persistent copy of the loaded file — survives upload clearing. Used by Deep Repair. */
   const loadedFileRef = useRef<File | null>(null);
   const currentJobId = useRef<string>("");
 
   // ── Core state ──────────────────────────────────────────────────────────────
   const [meshInfo, setMeshInfo] = useState<MeshInfo | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
-  const [tab, setTab] = useState<Tab>("file");
+  // tab state removed — UI uses single-scroll accordion layout
 
   // ── Analysis ────────────────────────────────────────────────────────────────
   const [analyzing, setAnalyzing] = useState(false);
@@ -195,10 +195,10 @@ export function KarasliceApp() {
   const [retryAttempt, setRetryAttempt] = useState(0);
 
   // ── Cloud repair ──────────────────────────────────────────────────────────
-  const [cloudRepairJob, setCloudRepairJob] = useState<RepairJobStatus | null>(null);
-  const [cloudRepairSubmitting, setCloudRepairSubmitting] = useState(false);
-  const [cloudRepairPolling, setCloudRepairPolling] = useState(false);
-  const cloudRepairPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [deepRepairJob, setCloudRepairJob] = useState<RepairJobStatus | null>(null);
+  const [deepRepairSubmitting, setCloudRepairSubmitting] = useState(false);
+  const [deepRepairPolling, setCloudRepairPolling] = useState(false);
+  const deepRepairPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Post-processing (smoothing + simplification) ────────────────────────────
   const [smoothingIterations, setSmoothingIterations] = useState(3);
@@ -313,7 +313,7 @@ export function KarasliceApp() {
   // ── Sections ────────────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState({
     fileInfo: true, repair: true, basicRepair: false, analysis: true,
-    voxelReconstruct: false, cloudRepair: false,
+    voxelReconstruct: false, deepRepair: false,
     scale: true, rotate: true,
     printer: true, cutPlanes: true, tenon: false,
     splitResult: true, shells: false, printPrep: false,
@@ -347,7 +347,7 @@ export function KarasliceApp() {
     setSplitParts((prev) => { prev.forEach((p) => p.geometry.dispose()); return []; });
     setSelectedPartIndex(undefined);
     setExplodeAmount(0);
-    setTab("file");
+
     setReconstructResult(null);
     setAiAnalysis(null);
     setReconstructMode("solid_voxel");
@@ -451,9 +451,9 @@ export function KarasliceApp() {
         // Minor defects — route to basic topology repair
         setOpenSections((s) => ({ ...s, repair: true }));
       } else {
-        // Significant defects — route to cloud repair (not client-side reconstruction)
-        setOpenSections((s) => ({ ...s, cloudRepair: true }));
-        notify("Heavy repair needed — use Cloud Repair for best results.");
+        // Significant defects — route to deep repair (server-side)
+        setOpenSections((s) => ({ ...s, deepRepair: true }));
+        notify("Heavy repair needed — use Deep Repair for best results.");
       }
 
       if (aiResult.repairPlan?.params.pointCloud) {
@@ -528,8 +528,8 @@ export function KarasliceApp() {
       setPostReview(review);
       if (!review.passed) {
         if (review.recommendation === "escalate_to_cloud") {
-          notify("AI recommends Cloud Repair for better results.", "destructive");
-          setOpenSections((s) => ({ ...s, cloudRepair: true }));
+          notify("AI recommends Deep Repair for better results.", "destructive");
+          setOpenSections((s) => ({ ...s, deepRepair: true }));
         } else if (review.recommendation === "retry_with_params") {
           notify(`AI suggests parameter adjustments: ${review.reasoning}`);
         } else {
@@ -861,12 +861,12 @@ export function KarasliceApp() {
     }
   };
 
-  // ── Cloud Repair ──────────────────────────────────────────────────────────
+  // ── Deep Repair ──────────────────────────────────────────────────────────
 
   const stopCloudPolling = useCallback(() => {
-    if (cloudRepairPollRef.current) {
-      clearInterval(cloudRepairPollRef.current);
-      cloudRepairPollRef.current = null;
+    if (deepRepairPollRef.current) {
+      clearInterval(deepRepairPollRef.current);
+      deepRepairPollRef.current = null;
     }
     setCloudRepairPolling(false);
   }, []);
@@ -874,7 +874,7 @@ export function KarasliceApp() {
   // Cleanup polling on unmount
   useEffect(() => {
     return () => {
-      if (cloudRepairPollRef.current) clearInterval(cloudRepairPollRef.current);
+      if (deepRepairPollRef.current) clearInterval(deepRepairPollRef.current);
     };
   }, []);
 
@@ -892,7 +892,7 @@ export function KarasliceApp() {
     setShowOriginal(false);
     setBottomDrawerOpen(true);
     clearPipelineLog();
-    appendPipelineLog("submit", "Preparing cloud repair submission…", "running");
+    appendPipelineLog("submit", "Preparing deep repair submission…", "running");
 
     setCloudRepairSubmitting(true);
     setCloudRepairJob(null);
@@ -910,6 +910,10 @@ export function KarasliceApp() {
 
       const result = await submitCloudRepairJob(fd);
 
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
       setCloudRepairJob({
         jobId: result.jobId,
         status: "queued",
@@ -925,17 +929,17 @@ export function KarasliceApp() {
       const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes max
       const MAX_POLL_ERRORS = 10;
 
-      cloudRepairPollRef.current = setInterval(async () => {
+      deepRepairPollRef.current = setInterval(async () => {
         // Timeout check
         if (Date.now() - pollStartTime > POLL_TIMEOUT_MS) {
           stopCloudPolling();
           setCloudRepairJob((prev) => prev ? {
             ...prev,
             status: "failed",
-            error: "Cloud repair timed out after 15 minutes. The worker may have crashed — check Cloud Run logs.",
+            error: "Deep repair timed out after 15 minutes. The worker may have crashed — check Cloud Run logs.",
           } : null);
           appendPipelineLog("timeout", "Timed out after 15 minutes", "error");
-          notify("Cloud repair timed out after 15 minutes.", "destructive");
+          notify("Deep repair timed out after 15 minutes.", "destructive");
           return;
         }
 
@@ -957,20 +961,35 @@ export function KarasliceApp() {
             if (lastStep) appendPipelineLog(lastStep, `${lastStep} complete`, "done");
 
             if (status.status === "finished") {
-              appendPipelineLog("finished", "Cloud repair complete — loading result…", "running");
+              appendPipelineLog("finished", "Deep repair complete — loading result…", "running");
               // Auto-load repaired mesh into viewport
               try {
-                const url = await getRepairResultUrl(result.jobId, "repaired.stl");
+                // Try STL first, fall back to OBJ
+                const outputPaths = status.outputPaths ?? {};
+                const repairedKey = outputPaths["repaired.stl"] ? "repaired.stl"
+                  : outputPaths["repaired.obj"] ? "repaired.obj"
+                  : "repaired.stl";
+                const url = await getRepairResultUrl(result.jobId, repairedKey);
                 const dlRes = await fetch(url);
                 const arrayBuffer = await dlRes.arrayBuffer();
-                const { STLLoader } = await import("three/examples/jsm/loaders/STLLoader.js");
-                const loader = new STLLoader();
-                const geometry = loader.parse(arrayBuffer);
-                viewportRef.current?.loadRepairedGeometry(geometry, "cloud_repaired.stl");
+                let geometry: import("three").BufferGeometry;
+                if (repairedKey.endsWith(".obj")) {
+                  const { OBJLoader } = await import("three/examples/jsm/loaders/OBJLoader.js");
+                  const loader = new OBJLoader();
+                  const text = new TextDecoder().decode(arrayBuffer);
+                  const group = loader.parse(text);
+                  const mesh = group.children.find((c): c is import("three").Mesh => (c as import("three").Mesh).isMesh);
+                  geometry = mesh?.geometry ?? new (await import("three")).BufferGeometry();
+                } else {
+                  const { STLLoader } = await import("three/examples/jsm/loaders/STLLoader.js");
+                  const loader = new STLLoader();
+                  geometry = loader.parse(arrayBuffer);
+                }
+                viewportRef.current?.loadRepairedGeometry(geometry, `cloud_repaired.${repairedKey.split(".").pop()}`);
                 // Phase 2: Save as repair candidate
-                addRepairCandidate("Cloud Repair", geometry, "cloud", status.report as Record<string, unknown> | undefined);
+                addRepairCandidate("Deep Repair", geometry, "cloud", status.report as Record<string, unknown> | undefined);
                 appendPipelineLog("finished", "Repaired mesh loaded into viewport", "done");
-                notify("Cloud repair complete — repaired mesh loaded.");
+                notify("Deep repair complete — repaired mesh loaded.");
 
                 // Auto AI review — capture before-metrics from meshInfo
                 if (meshInfo) {
@@ -989,11 +1008,11 @@ export function KarasliceApp() {
                 }
               } catch {
                 appendPipelineLog("finished", "Auto-load failed — use download buttons", "error");
-                notify("Cloud repair complete — auto-load failed. Use download buttons.", "destructive");
+                notify("Deep repair complete — auto-load failed. Use download buttons.", "destructive");
               }
             } else {
               appendPipelineLog("failed", status.error ?? "Unknown error", "error");
-              notify(`Cloud repair failed: ${status.error ?? "Unknown error"}`, "destructive");
+              notify(`Deep repair failed: ${status.error ?? "Unknown error"}`, "destructive");
             }
           }
         } catch (pollErr) {
@@ -1006,7 +1025,7 @@ export function KarasliceApp() {
               status: "failed",
               error: `Lost connection to repair service after ${MAX_POLL_ERRORS} retries: ${msg}`,
             } : null);
-            notify(`Cloud repair polling failed: ${msg}`, "destructive");
+            notify(`Deep repair polling failed: ${msg}`, "destructive");
           }
         }
       }, 3000);
@@ -1019,16 +1038,16 @@ export function KarasliceApp() {
         status: "failed",
         error: `Submission failed: ${msg}`,
       });
-      notify(`Cloud repair submission failed: ${msg}`, "destructive");
+      notify(`Deep repair submission failed: ${msg}`, "destructive");
     } finally {
       setCloudRepairSubmitting(false);
     }
   };
 
   const handleDownloadRepairResult = async (fileName: string) => {
-    if (!cloudRepairJob?.jobId) return;
+    if (!deepRepairJob?.jobId) return;
     try {
-      const url = await getRepairResultUrl(cloudRepairJob.jobId, fileName);
+      const url = await getRepairResultUrl(deepRepairJob.jobId, fileName);
       window.open(url, "_blank");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1114,7 +1133,7 @@ export function KarasliceApp() {
       setSplitMessage(`${parts.length} parts ready`);
       setSelectedPartIndex(undefined);
       setExplodeAmount(0);
-      setTab("export");
+
       notify(`Split complete — ${parts.length} part${parts.length !== 1 ? "s" : ""} ready for export.`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1846,18 +1865,13 @@ export function KarasliceApp() {
     ? { id: "custom", name: "Custom", brand: "Custom", x: customPrinterX, y: customPrinterY, z: customPrinterZ }
     : selectedPrinter;
 
-  const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
-    { id: "file",    label: "File",    icon: FileBox },
-    { id: "repair",  label: "Repair",  icon: Wrench },
-    { id: "prepare", label: "Prepare", icon: Scissors },
-    { id: "export",  label: "Export",  icon: Package },
-  ];
+  // tabs removed — single-scroll accordion layout
 
   /** Is any heavy operation running? */
-  const busy = analyzing || repairing || reconstructing || splitting || cloudRepairPolling || cloudRepairSubmitting || repairingParts || generatingVariant || hollowing || addingEscapeHole;
+  const busy = analyzing || repairing || reconstructing || splitting || deepRepairPolling || deepRepairSubmitting || repairingParts || generatingVariant || hollowing || addingEscapeHole;
 
   /** Auto-open bottom drawer when operations are running */
-  const drawerHasContent = busy || postReviewing || postReview || repairResult || reconstructResult || cloudRepairJob || pipelineLog.length > 0;
+  const drawerHasContent = busy || postReviewing || postReview || repairResult || reconstructResult || deepRepairJob || pipelineLog.length > 0;
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
@@ -1920,30 +1934,8 @@ export function KarasliceApp() {
           </button>
         </div>
 
-        {/* Tab bar */}
-        <div className="flex border-b border-border">
-          {tabs.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={cn(
-                "flex flex-1 flex-col items-center gap-1 py-2 text-[10px] font-medium transition-colors",
-                tab === id
-                  ? "border-b-2 border-accent text-accent"
-                  : "text-muted-foreground hover:text-foreground border-b-2 border-transparent"
-              )}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Tab content */}
+        {/* All tools — single scrollable view */}
         <div className="flex-1 overflow-y-auto py-1 text-sm">
-
-          {/* ── FILE TAB ──────────────────────────────────────────────────── */}
-          {tab === "file" && (
             <div className="space-y-0">
               {/* Upload */}
               <div className="px-3 py-2">
@@ -2300,16 +2292,16 @@ export function KarasliceApp() {
                       {isSevere ? (
                         <>
                           <p className="text-[10px] text-muted-foreground">
-                            Significant damage detected. Cloud Repair is recommended for best results — it uses server-side topology reconstruction, non-manifold resolution, and feature-preserving remeshing.
+                            Significant damage detected. Deep Repair is recommended for best results — it uses server-side topology reconstruction, non-manifold resolution, and feature-preserving remeshing.
                           </p>
                           <Button
                             size="sm" className="w-full gap-2"
                             style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                            disabled={cloudRepairSubmitting || cloudRepairPolling}
-                            onClick={() => { setTab("repair"); handleCloudRepair(); }}
+                            disabled={deepRepairSubmitting || deepRepairPolling}
+                            onClick={() => { setOpenSections(s => ({ ...s, deepRepair: true })); handleCloudRepair(); }}
                           >
                             <Cloud className="h-3 w-3" />
-                            Start Cloud Repair
+                            Start Deep Repair
                           </Button>
                         </>
                       ) : (
@@ -2321,7 +2313,7 @@ export function KarasliceApp() {
                             size="sm" className="w-full gap-2"
                             style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
                             disabled={repairing || reconstructing}
-                            onClick={() => { setTab("repair"); handleRepairWithCompare(); }}
+                            onClick={() => { setOpenSections(s => ({ ...s, repair: true })); handleRepairWithCompare(); }}
                           >
                             <Wrench className="h-3 w-3" />
                             Start Basic Repair
@@ -2432,79 +2424,27 @@ export function KarasliceApp() {
                 </>
               )}
 
-              {/* View controls */}
-              <Separator className="my-1" />
-              <div className="px-3 py-2 space-y-2">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">View</p>
-                <div className="flex items-center justify-between">
-                  <Label className="text-[11px] flex items-center gap-1.5">
-                    <ZapOff className="h-3 w-3" /> Wireframe
-                  </Label>
-                  <Switch checked={wireframe} onCheckedChange={setWireframe} className="scale-75" />
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-[11px] flex items-center gap-1.5">
-                    <Eye className="h-3 w-3" /> Ghost
-                  </Label>
-                  <Switch checked={ghostMode} onCheckedChange={setGhostMode} className="scale-75" />
-                </div>
-                {splitParts.length > 0 && (
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[10px] text-muted-foreground">
-                      <span>Explode</span>
-                      <span className="font-mono">{Math.round(explodeAmount * 100)}%</span>
-                    </div>
-                    <Slider
-                      min={0} max={1} step={0.01}
-                      value={[explodeAmount]}
-                      onValueChange={([v]) => setExplodeAmount(v)}
-                    />
-                  </div>
-                )}
-              </div>
             </div>
-          )}
 
-          {/* ── REPAIR TAB ─────────────────────────────────────────────────── */}
-          {tab === "repair" && (
-            <div className="px-3 py-2 space-y-3">
-              {/* Quick Tools */}
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Quick Tools</p>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <Button
-                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
-                    disabled={!meshInfo || busy}
-                    onClick={handleRecalcNormals}
-                  >
-                    <RotateCw className="h-3 w-3" />
-                    Recalc Normals
-                  </Button>
-                  <Button
-                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
-                    disabled={!meshInfo || busy}
-                    onClick={handleFlipNormals}
-                  >
-                    <FlipVertical className="h-3 w-3" />
-                    Flip Normals
-                  </Button>
-                  <Button
-                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
-                    disabled={!meshInfo || busy}
-                    onClick={handleMergeVertices}
-                  >
-                    <Merge className="h-3 w-3" />
-                    Merge Vertices
-                  </Button>
-                  <Button
-                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
-                    disabled={!meshInfo || busy}
-                    onClick={handleRemoveIslands}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                    Remove Islands
-                  </Button>
-                </div>
+              {/* ── REPAIR TOOLS ─────────────────────────────────────────── */}
+              <Separator className="my-1" />
+              <SectionHeader icon={Wrench} label="Repair" open={openSections.repair} onToggle={() => toggleSection("repair")} />
+            {openSections.repair && (
+            <div className="px-3 pb-2 space-y-3">
+              {/* Quick Fix — compact icon grid */}
+              <div className="grid grid-cols-4 gap-1">
+                <Button size="sm" variant="outline" className="h-8 w-full p-0" disabled={!meshInfo || busy} onClick={handleRecalcNormals} title="Recalculate vertex normals">
+                  <RotateCw className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="sm" variant="outline" className="h-8 w-full p-0" disabled={!meshInfo || busy} onClick={handleFlipNormals} title="Flip all normals (invert winding)">
+                  <FlipVertical className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="sm" variant="outline" className="h-8 w-full p-0" disabled={!meshInfo || busy} onClick={handleMergeVertices} title="Merge duplicate vertices within 0.001 mm">
+                  <Merge className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="sm" variant="outline" className="h-8 w-full p-0" disabled={!meshInfo || busy} onClick={handleRemoveIslands} title="Remove small debris islands">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
               </div>
 
               <Separator />
@@ -2905,133 +2845,134 @@ export function KarasliceApp() {
 
               <Separator />
 
-              {/* Cloud Repair */}
-              <SectionHeader icon={Cloud} label="Cloud Repair" open={openSections.cloudRepair} onToggle={() => toggleSection("cloudRepair")} />
-              {openSections.cloudRepair && (
+              {/* Deep Repair — severely damaged meshes only */}
+              <SectionHeader icon={Cloud} label="Deep Repair" open={openSections.deepRepair} onToggle={() => toggleSection("deepRepair")} />
+              {openSections.deepRepair && (
                 <div className="px-1 pb-2 space-y-3">
-                  <p className="text-[10px] text-muted-foreground">
-                    Offload heavy mesh repair to the cloud. Uses PyMeshLab, Open3D Poisson reconstruction, and isotropic remeshing.
-                  </p>
+                  <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-2 text-[10px] text-yellow-400 flex gap-1.5 items-start">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                    <span>Only for severely damaged meshes that fail basic or reconstruction repair. Sends your file to a cloud server for heavy processing.</span>
+                  </div>
 
                   <Button
                     size="sm"
                     className="w-full gap-2"
                     style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                    disabled={cloudRepairSubmitting || cloudRepairPolling}
+                    disabled={deepRepairSubmitting || deepRepairPolling}
                     onClick={handleCloudRepair}
                   >
-                    {cloudRepairSubmitting ? (
+                    {deepRepairSubmitting ? (
                       <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : cloudRepairPolling ? (
+                    ) : deepRepairPolling ? (
                       <Loader2 className="h-3 w-3 animate-spin" />
                     ) : (
                       <Cloud className="h-3 w-3" />
                     )}
-                    {cloudRepairSubmitting
+                    {deepRepairSubmitting
                       ? "Uploading…"
-                      : cloudRepairPolling
+                      : deepRepairPolling
                       ? "Processing…"
-                      : "Send to Cloud Repair"}
+                      : "Send to Deep Repair"}
                   </Button>
 
                   {/* Job status */}
-                  {cloudRepairJob && (
+                  {deepRepairJob && (
                     <div className="rounded-md border border-border p-2 space-y-1.5 text-[11px]">
                       <div className="flex items-center gap-1.5">
-                        {cloudRepairJob.status === "finished" ? (
+                        {deepRepairJob.status === "finished" ? (
                           <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                        ) : cloudRepairJob.status === "failed" ? (
+                        ) : deepRepairJob.status === "failed" ? (
                           <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
                         ) : (
                           <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
                         )}
                         <span className={cn(
                           "font-medium",
-                          cloudRepairJob.status === "finished" && "text-green-400",
-                          cloudRepairJob.status === "failed" && "text-red-400",
-                          (cloudRepairJob.status === "queued" || cloudRepairJob.status === "running") && "text-accent",
+                          deepRepairJob.status === "finished" && "text-green-400",
+                          deepRepairJob.status === "failed" && "text-red-400",
+                          (deepRepairJob.status === "queued" || deepRepairJob.status === "running") && "text-accent",
                         )}>
-                          {cloudRepairJob.status === "finished"
+                          {deepRepairJob.status === "finished"
                             ? "Repair complete"
-                            : cloudRepairJob.status === "failed"
+                            : deepRepairJob.status === "failed"
                             ? "Repair failed"
-                            : cloudRepairJob.status === "running"
+                            : deepRepairJob.status === "running"
                             ? "Repairing…"
                             : "Queued"}
                         </span>
                       </div>
 
-                      {cloudRepairJob.stepMessage && (
-                        <p className="text-muted-foreground text-[10px]">{cloudRepairJob.stepMessage}</p>
+                      {deepRepairJob.stepMessage && (
+                        <p className="text-muted-foreground text-[10px]">{deepRepairJob.stepMessage}</p>
                       )}
 
-                      {cloudRepairJob.status === "failed" && (
-                        <p className="text-[10px] text-red-400">{cloudRepairJob.error || "Unknown error — check Cloud Run logs or re-submit."}</p>
+                      {deepRepairJob.status === "failed" && (
+                        <p className="text-[10px] text-red-400">{deepRepairJob.error || "Unknown error — check Cloud Run logs or re-submit."}</p>
                       )}
 
                       {/* Repair report */}
-                      {cloudRepairJob.status === "finished" && cloudRepairJob.report && (
+                      {deepRepairJob.status === "finished" && deepRepairJob.report && (
                         <div className="pl-4 space-y-0.5 text-muted-foreground text-[10px]">
-                          {cloudRepairJob.report.qualityScore != null && (
+                          {deepRepairJob.report.qualityScore != null && (
                             <div className="flex items-center gap-2 pb-0.5">
                               <span>Quality</span>
                               <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                                 <div
                                   className={cn(
                                     "h-full rounded-full transition-all",
-                                    cloudRepairJob.report.qualityScore >= 80 ? "bg-green-400"
-                                    : cloudRepairJob.report.qualityScore >= 50 ? "bg-yellow-400"
+                                    deepRepairJob.report.qualityScore >= 80 ? "bg-green-400"
+                                    : deepRepairJob.report.qualityScore >= 50 ? "bg-yellow-400"
                                     : "bg-red-400",
                                   )}
-                                  style={{ width: `${cloudRepairJob.report.qualityScore}%` }}
+                                  style={{ width: `${deepRepairJob.report.qualityScore}%` }}
                                 />
                               </div>
-                              <span className="font-mono">{cloudRepairJob.report.qualityScore}%</span>
+                              <span className="font-mono">{deepRepairJob.report.qualityScore}%</span>
                             </div>
                           )}
-                          {cloudRepairJob.report.damageClassification && (
-                            <p>Damage: <span className="text-accent">{cloudRepairJob.report.damageClassification}</span> → mode: <span className="text-accent">{cloudRepairJob.report.mode}</span></p>
+                          {deepRepairJob.report.damageClassification && (
+                            <p>Damage: <span className="text-accent">{deepRepairJob.report.damageClassification}</span> → mode: <span className="text-accent">{deepRepairJob.report.mode}</span></p>
                           )}
-                          <p>Input: {cloudRepairJob.report.inputFaces?.toLocaleString()} → Output: {cloudRepairJob.report.outputFaces?.toLocaleString()} faces</p>
-                          {(cloudRepairJob.report.verticesWelded ?? 0) > 0 && (
-                            <p className="text-green-400">Welded {cloudRepairJob.report.verticesWelded?.toLocaleString()} duplicate vertices</p>
+                          <p>Input: {deepRepairJob.report.inputFaces?.toLocaleString()} → Output: {deepRepairJob.report.outputFaces?.toLocaleString()} faces</p>
+                          {(deepRepairJob.report.verticesWelded ?? 0) > 0 && (
+                            <p className="text-green-400">Welded {deepRepairJob.report.verticesWelded?.toLocaleString()} duplicate vertices</p>
                           )}
-                          {cloudRepairJob.report.duplicateFacesRemoved > 0 && (
-                            <p className="text-green-400">Removed {cloudRepairJob.report.duplicateFacesRemoved} duplicate faces</p>
+                          {deepRepairJob.report.duplicateFacesRemoved > 0 && (
+                            <p className="text-green-400">Removed {deepRepairJob.report.duplicateFacesRemoved} duplicate faces</p>
                           )}
-                          {cloudRepairJob.report.componentsRemoved > 0 && (
-                            <p className="text-green-400">Removed {cloudRepairJob.report.componentsRemoved} debris components</p>
+                          {deepRepairJob.report.componentsRemoved > 0 && (
+                            <p className="text-green-400">Removed {deepRepairJob.report.componentsRemoved} debris components</p>
                           )}
-                          {cloudRepairJob.report.nonManifoldEdgesFixed > 0 && (
-                            <p className="text-green-400">Fixed {cloudRepairJob.report.nonManifoldEdgesFixed} non-manifold edges</p>
+                          {deepRepairJob.report.nonManifoldEdgesFixed > 0 && (
+                            <p className="text-green-400">Fixed {deepRepairJob.report.nonManifoldEdgesFixed} non-manifold edges</p>
                           )}
-                          {(cloudRepairJob.report.selfIntersectionsRemoved ?? 0) > 0 && (
-                            <p className="text-green-400">Removed {cloudRepairJob.report.selfIntersectionsRemoved} self-intersections</p>
+                          {(deepRepairJob.report.selfIntersectionsRemoved ?? 0) > 0 && (
+                            <p className="text-green-400">Removed {deepRepairJob.report.selfIntersectionsRemoved} self-intersections</p>
                           )}
-                          {cloudRepairJob.report.holesFilled > 0 && (
+                          {deepRepairJob.report.holesFilled > 0 && (
                             <p className="text-green-400">Filled holes</p>
                           )}
-                          {cloudRepairJob.report.reconstructionUsed && (
+                          {deepRepairJob.report.reconstructionUsed && (
                             <p className="text-green-400">
-                              Reconstruction: {cloudRepairJob.report.reconstructionMethod ?? "Poisson"}
+                              Reconstruction: {deepRepairJob.report.reconstructionMethod ?? "Poisson"}
                             </p>
                           )}
-                          {(cloudRepairJob.report.featureEdgesPreserved ?? 0) > 0 && (
-                            <p className="text-blue-400">Preserved {cloudRepairJob.report.featureEdgesPreserved?.toLocaleString()} feature edges</p>
+                          {(deepRepairJob.report.featureEdgesPreserved ?? 0) > 0 && (
+                            <p className="text-blue-400">Preserved {deepRepairJob.report.featureEdgesPreserved?.toLocaleString()} feature edges</p>
                           )}
-                          {(cloudRepairJob.report.thinWallsThickened ?? 0) > 0 && (
-                            <p className="text-blue-400">Thickened {cloudRepairJob.report.thinWallsThickened?.toLocaleString()} thin-wall vertices</p>
+                          {(deepRepairJob.report.thinWallsThickened ?? 0) > 0 && (
+                            <p className="text-blue-400">Thickened {deepRepairJob.report.thinWallsThickened?.toLocaleString()} thin-wall vertices</p>
                           )}
-                          <p className={cloudRepairJob.report.watertight ? "text-green-400" : "text-yellow-400"}>
-                            {cloudRepairJob.report.watertight ? "Watertight" : "Not watertight"}
-                            {cloudRepairJob.report.manifold != null && (cloudRepairJob.report.manifold ? " · Manifold" : " · Non-manifold")}
+                          <p className={deepRepairJob.report.watertight ? "text-green-400" : "text-yellow-400"}>
+                            {deepRepairJob.report.watertight ? "Watertight" : "Not watertight"}
+                            {deepRepairJob.report.manifold != null && (deepRepairJob.report.manifold ? " · Manifold" : " · Non-manifold")}
                           </p>
-                          <p>Completed in {cloudRepairJob.report.elapsedSeconds}s</p>
+                          <p>Completed in {deepRepairJob.report.elapsedSeconds}s</p>
                         </div>
                       )}
 
                       {/* Download buttons */}
-                      {cloudRepairJob.status === "finished" && cloudRepairJob.outputPaths && (
+                      {deepRepairJob.status === "finished" && deepRepairJob.outputPaths && (
                         <div className="flex gap-2 pt-1">
                           <Button
                             size="sm"
@@ -3060,45 +3001,31 @@ export function KarasliceApp() {
             </div>
           )}
 
-          {/* ── PREPARE TAB ────────────────────────────────────────────────── */}
-          {tab === "prepare" && (
-            <div className="px-3 py-2 space-y-3">
-              {!meshInfo && (
-                <p className="text-xs text-muted-foreground text-center py-4">
-                  Load a file first to use prepare tools.
-                </p>
-              )}
-
-              {/* Orientation */}
-              <div className="space-y-2">
+              {/* ── PREPARE ──────────────────────────────────────────── */}
+              <Separator className="my-1" />
+              <SectionHeader icon={Scissors} label="Prepare" open={openSections.scale} onToggle={() => toggleSection("scale")} />
+            {openSections.scale && (
+            <div className="px-3 pb-2 space-y-3">
+              {/* Orientation — compact grid */}
+              <div className="space-y-1.5">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orientation</p>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <Button
-                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
-                    disabled={!meshInfo || busy}
-                    onClick={handleLayFlat}
-                  >
-                    <Layers className="h-3 w-3" />
-                    Lay Flat
+                <div className="grid grid-cols-5 gap-1">
+                  <Button size="sm" variant="outline" className="h-8 w-full p-0" disabled={!meshInfo || busy} onClick={handleLayFlat} title="Orient model to lay flat on largest face">
+                    <Layers className="h-3.5 w-3.5" />
                   </Button>
-                  <Button
-                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
-                    disabled={!meshInfo || !originalGeoRef.current || busy}
-                    onClick={toggleCompare}
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                    Revert
+                  <Button size="sm" variant="outline" className="h-8 w-full p-0" disabled={!meshInfo || !originalGeoRef.current || busy} onClick={toggleCompare} title="Revert to previous geometry">
+                    <RotateCcw className="h-3.5 w-3.5" />
                   </Button>
                   {(["x", "y", "z"] as const).map((axis) => (
                     <Button
                       key={axis}
                       size="sm" variant="outline"
-                      className={cn("gap-1 text-[11px] h-8", AXIS_COLORS[axis])}
+                      className={cn("h-8 w-full p-0 text-[10px] font-mono", AXIS_COLORS[axis])}
                       disabled={!meshInfo || busy}
                       onClick={() => handleRotate90(axis)}
+                      title={`Rotate 90° on ${axis.toUpperCase()}-axis`}
                     >
-                      <RotateCw className="h-3 w-3" />
-                      Rot 90° {axis.toUpperCase()}
+                      {axis.toUpperCase()}
                     </Button>
                   ))}
                 </div>
@@ -3374,9 +3301,7 @@ export function KarasliceApp() {
               <Separator />
 
               {/* Scale */}
-              <SectionHeader icon={Maximize2} label="Scale" open={openSections.scale} onToggle={() => toggleSection("scale")} />
-              {openSections.scale && (
-                <div className="px-1 pb-2 space-y-3">
+                <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <Label className="text-xs">Uniform scale</Label>
                     <Switch checked={uniformScale} onCheckedChange={setUniformScale} className="scale-75" />
@@ -3396,14 +3321,12 @@ export function KarasliceApp() {
                     </div>
                   ))}
                 </div>
-              )}
+
 
               <Separator />
 
               {/* Rotate */}
-              <SectionHeader icon={RotateCcw} label="Rotate" open={openSections.rotate} onToggle={() => toggleSection("rotate")} />
-              {openSections.rotate && (
-                <div className="px-1 pb-2 space-y-3">
+                <div className="space-y-3">
                   {(["X", "Y", "Z"] as const).map((a) => (
                     <div key={a} className="space-y-1">
                       <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -3419,7 +3342,6 @@ export function KarasliceApp() {
                     </div>
                   ))}
                 </div>
-              )}
 
               <div className="px-1 pb-2">
                 <Button
@@ -3747,19 +3669,14 @@ export function KarasliceApp() {
             </div>
           )}
 
-          {/* ── EXPORT TAB ─────────────────────────────────────────────────── */}
-          {tab === "export" && (
-            <div className="px-3 py-2 space-y-3">
-              {splitParts.length === 0 ? (
-                <div className="rounded-md border border-border p-4 text-xs space-y-3 text-center text-muted-foreground">
-                  <Package className="h-8 w-8 mx-auto opacity-20" />
-                  <p>Run a split to generate exportable parts.</p>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setTab("prepare")}>
-                    <Cpu className="h-3 w-3" />
-                    Go to Prepare
-                  </Button>
-                </div>
-              ) : (
+              {/* ── EXPORT ─────────────────────────────────────────────── */}
+              {splitParts.length > 0 && (
+              <>
+              <Separator className="my-1" />
+              <SectionHeader icon={Package} label={`Export (${splitParts.length})`} open={openSections.splitResult} onToggle={() => toggleSection("splitResult")} />
+              {openSections.splitResult && (
+              <div className="px-3 pb-2 space-y-3">
+              {(
                 <>
                   {/* Format selector */}
                   <div className="flex items-center gap-1 rounded-md border border-border p-1">
@@ -3893,8 +3810,10 @@ export function KarasliceApp() {
                   </div>
                 </>
               )}
-            </div>
-          )}
+              </div>
+              )}
+              </>
+              )}
         </div>
 
         {/* Sidebar notification */}
@@ -3953,6 +3872,48 @@ export function KarasliceApp() {
             selectedPartIndex={selectedPartIndex}
             onPartSelect={setSelectedPartIndex}
           />
+
+          {/* ── Viewport Toolbar ─────────────────────────────────────── */}
+          {meshInfo && (
+            <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 rounded-lg border border-border bg-card/90 backdrop-blur-sm px-2 py-1.5 shadow-lg">
+              <Button size="sm" variant={wireframe ? "default" : "ghost"} className="h-7 w-7 p-0" onClick={() => setWireframe(v => !v)} title="Wireframe (W)">
+                <ZapOff className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant={ghostMode ? "default" : "ghost"} className="h-7 w-7 p-0" onClick={() => setGhostMode(v => !v)} title="Ghost mode (G)">
+                <Eye className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant={overlaysVisible ? "default" : "ghost"} className="h-7 w-7 p-0" onClick={overlaysVisible ? toggleOverlayVisibility : computeAndShowOverlays} title="Show defect overlays" disabled={busy}>
+                <ShieldAlert className="h-3.5 w-3.5" />
+              </Button>
+              <div className="w-px h-5 bg-border mx-0.5" />
+              <Button size="sm" variant={showOverhangs ? "default" : "ghost"} className="h-7 w-7 p-0" onClick={handleShowOverhangs} title="Show overhangs" disabled={!overhangResult || overhangResult.count === 0}>
+                <Gauge className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant={showSupports ? "default" : "ghost"} className="h-7 w-7 p-0" onClick={handleSupportPreview} title="Toggle support preview" disabled={!overhangResult || overhangResult.count === 0}>
+                <Layers className="h-3.5 w-3.5" />
+              </Button>
+              {originalGeoRef.current && (
+                <Button size="sm" variant={showOriginal ? "default" : "ghost"} className="h-7 w-7 p-0" onClick={toggleCompare} title="Compare before/after">
+                  <Eye className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              {splitParts.length > 0 && (
+                <>
+                  <div className="w-px h-5 bg-border mx-0.5" />
+                  <div className="flex items-center gap-1">
+                    <Zap className="h-3 w-3 text-muted-foreground" />
+                    <input
+                      type="range" min={0} max={100} step={1}
+                      value={Math.round(explodeAmount * 100)}
+                      onChange={(e) => setExplodeAmount(parseInt(e.target.value) / 100)}
+                      className="w-16 h-1 accent-[hsl(var(--accent))]"
+                      title={`Explode ${Math.round(explodeAmount * 100)}%`}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Stats overlay */}
           {meshInfo && (
@@ -4097,35 +4058,35 @@ export function KarasliceApp() {
                 <Progress value={splitProgress} className="h-1" />
               </div>
             )}
-            {(cloudRepairSubmitting || cloudRepairPolling) && (
+            {(deepRepairSubmitting || deepRepairPolling) && (
               <div className="space-y-1">
                 <div className="flex items-center gap-2 text-accent">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>{cloudRepairSubmitting ? "Uploading to cloud…" : "Cloud repair processing…"}</span>
+                  <span>{deepRepairSubmitting ? "Uploading…" : "Deep repair processing…"}</span>
                 </div>
-                {cloudRepairJob?.status === "running" && (
+                {deepRepairJob?.status === "running" && (
                   <Progress value={
-                    cloudRepairJob.step === "parse" ? 3
-                    : cloudRepairJob.step === "analyze" ? 6
-                    : cloudRepairJob.step === "weld" ? 10
-                    : cloudRepairJob.step === "sanitize" ? 15
-                    : cloudRepairJob.step === "components" ? 22
-                    : cloudRepairJob.step === "nonmanifold" ? 30
-                    : cloudRepairJob.step === "normals" ? 35
-                    : cloudRepairJob.step === "holes" ? 40
-                    : cloudRepairJob.step === "selfintersect" ? 48
-                    : cloudRepairJob.step === "reconstruct" ? 58
-                    : cloudRepairJob.step === "post_cleanup" ? 68
-                    : cloudRepairJob.step === "remesh" ? 75
-                    : cloudRepairJob.step === "thinwall" ? 82
-                    : cloudRepairJob.step === "simplify" ? 88
-                    : cloudRepairJob.step === "validate" ? 93
-                    : cloudRepairJob.step === "export" ? 97
+                    deepRepairJob.step === "parse" ? 3
+                    : deepRepairJob.step === "analyze" ? 6
+                    : deepRepairJob.step === "weld" ? 10
+                    : deepRepairJob.step === "sanitize" ? 15
+                    : deepRepairJob.step === "components" ? 22
+                    : deepRepairJob.step === "nonmanifold" ? 30
+                    : deepRepairJob.step === "normals" ? 35
+                    : deepRepairJob.step === "holes" ? 40
+                    : deepRepairJob.step === "selfintersect" ? 48
+                    : deepRepairJob.step === "reconstruct" ? 58
+                    : deepRepairJob.step === "post_cleanup" ? 68
+                    : deepRepairJob.step === "remesh" ? 75
+                    : deepRepairJob.step === "thinwall" ? 82
+                    : deepRepairJob.step === "simplify" ? 88
+                    : deepRepairJob.step === "validate" ? 93
+                    : deepRepairJob.step === "export" ? 97
                     : 3
                   } className="h-1" />
                 )}
-                {cloudRepairJob?.stepMessage && (
-                  <p className="text-[10px] text-muted-foreground">{cloudRepairJob.stepMessage}</p>
+                {deepRepairJob?.stepMessage && (
+                  <p className="text-[10px] text-muted-foreground">{deepRepairJob.stepMessage}</p>
                 )}
               </div>
             )}
@@ -4154,21 +4115,21 @@ export function KarasliceApp() {
               </div>
             )}
 
-            {/* Cloud repair job status */}
-            {!cloudRepairPolling && !cloudRepairSubmitting && cloudRepairJob && (
+            {/* Deep repair job status */}
+            {!deepRepairPolling && !deepRepairSubmitting && deepRepairJob && (
               <div className="flex items-center gap-1.5">
-                {cloudRepairJob.status === "finished"
+                {deepRepairJob.status === "finished"
                   ? <CheckCircle2 className="h-3 w-3 text-green-400" />
-                  : cloudRepairJob.status === "failed"
+                  : deepRepairJob.status === "failed"
                   ? <AlertTriangle className="h-3 w-3 text-red-400" />
                   : <Loader2 className="h-3 w-3 animate-spin text-accent" />}
                 <span className={cn(
                   "text-muted-foreground",
-                  cloudRepairJob.status === "finished" && "text-green-400",
-                  cloudRepairJob.status === "failed" && "text-red-400",
+                  deepRepairJob.status === "finished" && "text-green-400",
+                  deepRepairJob.status === "failed" && "text-red-400",
                 )}>
-                  Cloud: {cloudRepairJob.status === "finished" ? "complete" : cloudRepairJob.status}
-                  {cloudRepairJob.report && ` · ${cloudRepairJob.report.outputFaces?.toLocaleString()} faces`}
+                  Deep: {deepRepairJob.status === "finished" ? "complete" : deepRepairJob.status}
+                  {deepRepairJob.report && ` · ${deepRepairJob.report.outputFaces?.toLocaleString()} faces`}
                 </span>
               </div>
             )}

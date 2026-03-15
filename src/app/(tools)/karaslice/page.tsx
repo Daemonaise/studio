@@ -6,7 +6,7 @@ import { KarasliceSalesPage } from "./karaslice-sales";
 export const metadata: Metadata = {
   title: "Karaslice — Free 3D Mesh Repair & Slicer",
   description:
-    "AI-powered mesh analysis, repair, reconstruction, and splitting. Defect overlays, cloud repair pipeline, feature-preserving reconstruction, and variant comparison — all free.",
+    "AI-powered mesh analysis, repair, reconstruction, and splitting. Defect overlays, deep repair pipeline, feature-preserving reconstruction, and variant comparison — all free.",
 };
 
 export default async function KaraslicePage() {

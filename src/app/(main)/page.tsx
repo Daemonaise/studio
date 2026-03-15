@@ -44,8 +44,8 @@ const tools = [
   },
   {
     icon: Cloud,
-    title: 'Cloud Repair Pipeline',
-    desc: '15-stage server-side pipeline with feature edge preservation, thin wall detection, Screened Poisson reconstruction, and live pipeline log console. Results auto-load into the viewport.',
+    title: 'Deep Repair Pipeline',
+    desc: '15-stage server-side pipeline with feature edge preservation, thin wall detection, Screened Poisson reconstruction, and live pipeline log console. For severely damaged meshes only.',
   },
   {
     icon: Scissors,
@@ -219,7 +219,7 @@ export default function HomePage() {
               <span className="text-accent">Repair Workbench</span>
             </h2>
             <p className="text-foreground/60 max-w-lg mx-auto">
-              AI-powered mesh analysis, defect overlays, cloud repair pipeline, feature-preserving
+              AI-powered mesh analysis, defect overlays, deep repair pipeline, feature-preserving
               reconstruction with variant comparison, and symmetry recovery — free, in your browser.
             </p>
           </div>
@@ -242,8 +242,8 @@ export default function HomePage() {
           <div className="text-center">
             <Button
               asChild
-              variant="outline"
               size="lg"
+              style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
             >
               <Link href="/karaslice">
                 Open Karaslice

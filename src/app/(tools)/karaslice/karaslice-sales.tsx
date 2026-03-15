@@ -22,8 +22,8 @@ const features = [
   },
   {
     icon: Cloud,
-    title: "Cloud Repair Pipeline",
-    desc: "15-stage server-side pipeline with feature edge preservation, thin wall detection, Screened Poisson reconstruction, and 4-method boolean fallback chain.",
+    title: "Deep Repair Pipeline",
+    desc: "15-stage server-side pipeline with feature edge preservation, thin wall detection, Screened Poisson reconstruction, and 4-method boolean fallback chain. For severely damaged meshes.",
   },
   {
     icon: Eye,
@@ -155,7 +155,7 @@ export function KarasliceSalesPage() {
             3D Meshes
           </h1>
           <p className="max-w-2xl mx-auto text-lg text-foreground/70 leading-relaxed">
-            AI-powered mesh analysis, cloud repair pipeline, defect visualization,
+            AI-powered mesh analysis, deep repair pipeline, defect visualization,
             feature-preserving reconstruction, and variant comparison — all in your browser. Free forever.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
@@ -255,7 +255,7 @@ export function KarasliceSalesPage() {
               <tbody className="divide-y divide-border">
                 {[
                   ["AI Mesh Analysis", true, false],
-                  ["Cloud Repair Pipeline", true, false],
+                  ["Deep Repair Pipeline", true, false],
                   ["Defect Edge Overlays", true, true],
                   ["3 Reconstruction Modes", true, false],
                   ["Feature-Preserving Repair", true, true],

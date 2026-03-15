@@ -61,6 +61,7 @@ export interface RepairReport {
 export interface SubmitRepairResult {
   jobId: string;
   inputPath: string;
+  error?: string;
 }
 
 export interface SplitPart {
@@ -89,11 +90,12 @@ export interface SplitJobStatus {
 export async function submitCloudRepairJob(
   formData: FormData,
 ): Promise<SubmitRepairResult> {
+  try {
   const session = await auth();
-  if (!session?.user) throw new Error("Authentication required");
+  if (!session?.user) return { jobId: "", inputPath: "", error: "Authentication required" };
 
   const file = formData.get("file") as File | null;
-  if (!file || file.size === 0) throw new Error("No file provided");
+  if (!file || file.size === 0) return { jobId: "", inputPath: "", error: "No file provided" };
 
   const repairMode = (formData.get("repairMode") as string) || "auto";
   const paramsJson = formData.get("params") as string;
@@ -163,6 +165,9 @@ export async function submitCloudRepairJob(
   }
 
   return { jobId, inputPath };
+  } catch (err) {
+    return { jobId: "", inputPath: "", error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 async function triggerWorker(

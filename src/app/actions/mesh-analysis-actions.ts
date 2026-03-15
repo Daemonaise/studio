@@ -1048,8 +1048,8 @@ CRITICAL RULES:
 - Triangle explosion (>3x original count) is usually unacceptable — recommend simplification or parameter adjustment
 - Triangle loss (<20% remaining) means the repair destroyed geometry — escalate
 - Volume changes >50% indicate the repair altered the shape significantly
-- Non-watertight results from topology repair should escalate to cloud repair
-- Non-watertight results from cloud repair need manual review
+- Non-watertight results from topology repair should escalate to deep repair
+- Non-watertight results from deep repair need manual review
 - If the visual result (screenshot) shows obvious holes, self-intersections, or missing sections, flag it
 - "accept" means the result is good enough for 3D printing
 - "retry_with_params" means re-run with adjusted parameters (provide them)
