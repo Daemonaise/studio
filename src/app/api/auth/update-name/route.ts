@@ -1,23 +1,32 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { sanitizeName, nameUpdateLimiter } from "@/lib/security";
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Rate limit by user
+  const rateLimitKey = session.user.email ?? session.user.id ?? "unknown";
+  const rateCheck = nameUpdateLimiter.check(rateLimitKey);
+  if (!rateCheck.allowed) {
+    return NextResponse.json({ error: "Too many requests — please wait" }, { status: 429 });
+  }
+
   try {
-    const { name } = await request.json();
-    if (!name || typeof name !== "string" || name.trim().length < 2) {
-      return NextResponse.json({ error: "Name must be at least 2 characters" }, { status: 400 });
+    const body = await request.json();
+    const { name } = body;
+
+    // Sanitize name input (strips HTML, control chars, enforces length)
+    const nameCheck = sanitizeName(name);
+    if (!nameCheck.valid) {
+      return NextResponse.json({ error: nameCheck.error ?? "Invalid name" }, { status: 400 });
     }
 
-    // Store the name update in a cookie that the JWT callback will pick up.
-    // NextAuth v5 doesn't expose a direct "update session" API from a route handler,
-    // so we persist the name via a secure cookie and read it in the JWT callback.
-    const response = NextResponse.json({ success: true, name: name.trim() });
-    response.cookies.set("user_display_name", name.trim(), {
+    const response = NextResponse.json({ success: true, name: nameCheck.sanitized });
+    response.cookies.set("user_display_name", nameCheck.sanitized, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",

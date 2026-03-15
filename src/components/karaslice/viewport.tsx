@@ -38,6 +38,14 @@ export interface DefectOverlayData {
   openEdges?: Float32Array;
   /** Pairs of xyz coords for non-manifold edges (6 floats per edge). */
   nonManifoldEdges?: Float32Array;
+  /** Vertex positions for sliver triangle faces (9 floats per tri). */
+  sliverPositions?: Float32Array;
+  /** Vertex positions for inverted normal faces (9 floats per tri). */
+  invertedPositions?: Float32Array;
+  /** Vertex positions for overhang faces (9 floats per tri). */
+  overhangPositions?: Float32Array;
+  /** Per-face severity 0..1 for overhang coloring. */
+  overhangSeverity?: Float32Array;
 }
 
 export interface ViewportHandle {
@@ -52,10 +60,14 @@ export interface ViewportHandle {
   loadRepairedGeometry(geo: THREE.BufferGeometry, fileName: string): void;
   /** Capture a base64-encoded PNG screenshot of the current viewport (no data-URL prefix). */
   captureScreenshot(): string | null;
-  /** Show defect edge overlays (open edges = red, non-manifold = orange). */
+  /** Show defect edge overlays (open edges = red, non-manifold = orange, slivers = magenta, inverted = cyan, overhangs = gradient). */
   showDefectOverlays(data: DefectOverlayData): void;
   /** Remove all defect overlays from the scene. */
   clearDefectOverlays(): void;
+  /** Replace current mesh geometry in-place (for hollowing, escape holes, etc.). */
+  replaceGeometry(geo: THREE.BufferGeometry): void;
+  /** Show support column preview as green semi-transparent overlay. */
+  showSupportPreview(geo: THREE.BufferGeometry): void;
 }
 
 interface ViewportProps {
@@ -509,18 +521,91 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         defectOverlaysRef.current.push(lines);
       }
 
+      // Sliver triangles — magenta semi-transparent faces
+      if (data.sliverPositions && data.sliverPositions.length > 0) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(data.sliverPositions, 3));
+        const mat = new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthTest: true });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 998;
+        sceneRef.current.add(mesh);
+        defectOverlaysRef.current.push(mesh);
+      }
+
+      // Inverted normal faces — cyan semi-transparent faces
+      if (data.invertedPositions && data.invertedPositions.length > 0) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(data.invertedPositions, 3));
+        const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthTest: true });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 998;
+        sceneRef.current.add(mesh);
+        defectOverlaysRef.current.push(mesh);
+      }
+
+      // Overhang faces — gradient from yellow (mild) to red (severe)
+      if (data.overhangPositions && data.overhangPositions.length > 0) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(data.overhangPositions, 3));
+        // Color per vertex based on severity
+        const triCount = data.overhangPositions.length / 9;
+        const colors = new Float32Array(data.overhangPositions.length);
+        for (let i = 0; i < triCount; i++) {
+          const sev = data.overhangSeverity ? data.overhangSeverity[i] : 0.5;
+          // Yellow (1,1,0) → Red (1,0,0)
+          const r = 1, g = 1 - sev, b = 0;
+          for (let v = 0; v < 3; v++) {
+            colors[i * 9 + v * 3] = r;
+            colors[i * 9 + v * 3 + 1] = g;
+            colors[i * 9 + v * 3 + 2] = b;
+          }
+        }
+        geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+        const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthTest: true });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 997;
+        sceneRef.current.add(mesh);
+        defectOverlaysRef.current.push(mesh);
+      }
+
       invalidateRef.current();
     },
     clearDefectOverlays() {
       if (!sceneRef.current) return;
       defectOverlaysRef.current.forEach((obj) => {
         sceneRef.current!.remove(obj);
-        if (obj instanceof THREE.LineSegments) {
-          obj.geometry.dispose();
+        if ("geometry" in obj && obj.geometry) {
+          (obj.geometry as THREE.BufferGeometry).dispose();
+        }
+        if ("material" in obj && obj.material) {
           (obj.material as THREE.Material).dispose();
         }
       });
       defectOverlaysRef.current = [];
+      invalidateRef.current();
+    },
+    replaceGeometry(geo: THREE.BufferGeometry) {
+      if (!meshRef.current) return;
+      const oldGeo = meshRef.current.geometry;
+      meshRef.current.geometry = geo;
+      geo.computeVertexNormals();
+      geo.computeBoundingBox();
+      oldGeo.dispose();
+      invalidateRef.current();
+    },
+    showSupportPreview(geo: THREE.BufferGeometry) {
+      if (!sceneRef.current) return;
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x44cc44,
+        transparent: true,
+        opacity: 0.35,
+        side: THREE.DoubleSide,
+        depthTest: true,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.renderOrder = 996;
+      sceneRef.current.add(mesh);
+      defectOverlaysRef.current.push(mesh);
       invalidateRef.current();
     },
   }), [loadGeometry]);

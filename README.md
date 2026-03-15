@@ -272,8 +272,11 @@ File (STL / OBJ / 3MF)
 
 ### Karaslice UI Features
 
-- **3-Panel Layout** — Left scene panel, center viewport with bottom drawer, right Repair Workbench with Inspect/Repair/Prepare/Export tabs
-- **Defect Overlays** — Real-time open edge (red) and non-manifold edge (orange) visualization with per-type toggles and edge counts
+- **Single-Sidebar Layout** — Left sidebar with File/Repair/Prepare/Export tabs, center viewport with bottom drawer
+- **Defect Inspector** — Extended defect overlays: open edges (red), non-manifold edges (orange), sliver triangles (magenta), inverted normals (cyan) — all with per-type toggles and counts
+- **Shell Browser** — Union-Find connected component analysis with per-shell triangle count, bounding box, and one-click tiny shell removal
+- **Printability Analysis** — Overhang detection (adjustable threshold 20-70°), wall thickness estimation via inward ray sampling, and composite printability score with overhang/thickness/watertight breakdown
+- **Overhang Visualization** — Overhang faces rendered as a yellow-to-red heat gradient on the mesh surface
 - **Quality Score Breakdown** — Per-category scores (topology, watertight, normals, geometry) with color-coded progress bars
 - **Pipeline Log Console** — Timestamped, color-coded log entries in the bottom drawer showing every cloud repair step
 - **Repair History** — Saves repair candidates after each operation; click to switch between variants with side-by-side metrics comparison
@@ -282,6 +285,12 @@ File (STL / OBJ / 3MF)
 - **Symmetry Recovery** — Mirror mesh across X/Y/Z axis to reconstruct missing geometry from intact side
 - **Variant Generation** — One-click Fine Detail, Fast Preview, Alt. Mode, and Smooth variants for A/B comparison
 - **Cloud Repair** — Submit to cloud, live 15-stage progress bar, full repair report, auto-loaded results, and pipeline log
+- **Cloud Analyze** — `/analyze` endpoint for deep mesh analysis on large meshes (>2M triangles): shell decomposition, defect edges, overhang analysis, and thickness estimation via trimesh ray intersection
+- **Hollowing** — Client-side thin-wall shell creation via manifold-3d boolean subtraction with adjustable wall thickness (0.5-10mm), material savings report, and volume comparison
+- **Escape Holes** — Boolean-subtract drainage cylinders for resin/powder removal with configurable radius (1-10mm), auto-placed at lowest mesh point
+- **Support Preview** — Grid-clustered overhang columns rendered as green semi-transparent pillars with estimated support volume; toggle on/off from Prepare tab
+- **Printer Fit Check** — Build volume fit validation against 40+ printer profiles with overflow axis detection, rotation suggestions, and overhang/watertight warnings
+- **Cloud Hollow** — `/hollow` endpoint for server-side hollowing + escape holes via trimesh boolean ops with Blender/manifold engine fallback
 - **AI-Driven Reconstruction** — 3 modes (solid voxel, shell voxel, point cloud) with AI-prescribed parameters and auto-retry
 - **Unit selector** — Global mm / cm / in toggle; all dimensions, volumes, and surface areas convert in real-time
 - **Custom printer volume** — Preset / Custom toggle; manual X/Y/Z input in the current display unit

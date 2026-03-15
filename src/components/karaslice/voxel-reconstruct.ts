@@ -1009,6 +1009,15 @@ export async function postProcessVoxelOutput(
     await taubinSmooth(result, params.smoothingIterations, onProgress, lambda, mu);
   }
 
+  // Step 3: Apply creased normals so sharp edges are preserved instead of
+  // averaged across all incident faces (fixes bent/wavy edges on repaired parts).
+  const { toCreasedNormals, mergeVertices } = await import(
+    "three/examples/jsm/utils/BufferGeometryUtils.js"
+  );
+  const CREASE_ANGLE = Math.PI / 6; // 30°
+  const indexed = result.index ? result : mergeVertices(result);
+  result = mergeVertices(toCreasedNormals(indexed, CREASE_ANGLE));
+
   return result;
 }
 

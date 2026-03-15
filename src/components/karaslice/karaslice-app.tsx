@@ -7,9 +7,9 @@ import {
   Upload, FileBox, Cpu, Scissors, Package,
   ChevronDown, ChevronRight, ChevronUp, Plus, Minus, Download,
   RotateCcw, RotateCw, Info, AlertTriangle, CheckCircle2, Loader2,
-  Maximize2, Link2, Eye, ZapOff, Zap, Keyboard, X,
+  Maximize2, Link2, Eye, EyeOff, ZapOff, Zap, Keyboard, X,
   Target, Scale, Send, Menu, Wrench, ArrowLeft, Ruler, Boxes, Sparkles, Cloud, CloudOff,
-  Layers, Trash2, FlipVertical, Merge, Search,
+  Layers, Trash2, FlipVertical, Merge, Search, Box, Gauge, ShieldAlert,
   PanelBottomClose, PanelBottomOpen,
 } from "lucide-react";
 import Link from "next/link";
@@ -278,13 +278,46 @@ export function KarasliceApp() {
   const [symmetryAxis, setSymmetryAxis] = useState<"x" | "y" | "z">("x");
   const [generatingVariant, setGeneratingVariant] = useState(false);
 
+  // ── Phase 4: Shell Browser ─────────────────────────────────────────────────
+  const [shellResult, setShellResult] = useState<import("./shell-analysis").ShellAnalysisResult | null>(null);
+  const [shellAnalyzing, setShellAnalyzing] = useState(false);
+  const [hiddenShells, setHiddenShells] = useState<Set<number>>(new Set());
+  const [showSlivers, setShowSlivers] = useState(true);
+  const [showInverted, setShowInverted] = useState(true);
+
+  // ── Phase 5: Print-Prep Analysis ──────────────────────────────────────────
+  const [overhangResult, setOverhangResult] = useState<import("./print-prep-analysis").OverhangResult | null>(null);
+  const [overhangThreshold, setOverhangThreshold] = useState(45);
+  const [showOverhangs, setShowOverhangs] = useState(false);
+  const [thicknessResult, setThicknessResult] = useState<import("./print-prep-analysis").ThicknessResult | null>(null);
+  const [printScore, setPrintScore] = useState<import("./print-prep-analysis").PrintabilityScore | null>(null);
+  const [analyzingPrintPrep, setAnalyzingPrintPrep] = useState(false);
+
+  // ── Phase 5: Hollowing ──────────────────────────────────────────────────────
+  const [hollowing, setHollowing] = useState(false);
+  const [hollowWallThickness, setHollowWallThickness] = useState(2.0);
+  const [hollowResult, setHollowResult] = useState<import("./hollow-engine").HollowResult | null>(null);
+
+  // ── Phase 5: Escape Holes ───────────────────────────────────────────────────
+  const [escapeHoleRadius, setEscapeHoleRadius] = useState(3.0);
+  const [addingEscapeHole, setAddingEscapeHole] = useState(false);
+
+  // ── Phase 5: Support Preview ────────────────────────────────────────────────
+  const [supportPreview, setSupportPreview] = useState<import("./hollow-engine").SupportPreviewResult | null>(null);
+  const [showSupports, setShowSupports] = useState(false);
+  const [supportRadius, setSupportRadius] = useState(1.5);
+
+  // ── Phase 5: Printer Fit ───────────────────────────────────────────────────
+  const [printerFitResult, setPrinterFitResult] = useState<import("./hollow-engine").PrinterFitResult | null>(null);
+
   // ── Sections ────────────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState({
     fileInfo: true, repair: true, basicRepair: false, analysis: true,
     voxelReconstruct: false, cloudRepair: false,
     scale: true, rotate: true,
     printer: true, cutPlanes: true, tenon: false,
-    splitResult: true,
+    splitResult: true, shells: false, printPrep: false,
+    hollowing: false, supportPreview: false,
   });
   const toggleSection = (key: keyof typeof openSections) =>
     setOpenSections((s) => ({ ...s, [key]: !s[key] }));
@@ -324,6 +357,17 @@ export function KarasliceApp() {
     setPipelineLog([]);
     setRepairCandidates((prev) => { prev.forEach((c) => c.geometry.dispose()); return []; });
     setActiveCandidateIdx(-1);
+    // Phase 4/5: Clear shell and print-prep state
+    setShellResult(null);
+    setHiddenShells(new Set());
+    setOverhangResult(null);
+    setThicknessResult(null);
+    setPrintScore(null);
+    setShowOverhangs(false);
+    setHollowResult(null);
+    setSupportPreview(null);
+    setShowSupports(false);
+    setPrinterFitResult(null);
     // Seed the resolution slider to a sensible default for this model's bbox
     import("./voxel-reconstruct").then(({ autoVoxelResolution, minSafeResolution }) => {
       const auto = autoVoxelResolution(info.boundingBox);
@@ -1378,32 +1422,49 @@ export function KarasliceApp() {
   const computeAndShowOverlays = useCallback(async () => {
     const geo = viewportRef.current?.getRawGeometry();
     if (!geo) return;
-    const { computeEdgeDefects } = await import("./defect-overlays");
-    const result = computeEdgeDefects(geo);
-    const data: DefectOverlayData = {
+    const { computeExtendedDefects } = await import("./defect-overlays");
+    const result = computeExtendedDefects(geo);
+    const fullData: DefectOverlayData = {
+      openEdges: result.openEdges,
+      nonManifoldEdges: result.nonManifoldEdges,
+      sliverPositions: result.sliverPositions,
+      invertedPositions: result.invertedPositions,
+    };
+    setDefectOverlayData(fullData);
+    const filtered: DefectOverlayData = {
       openEdges: showOpenEdges ? result.openEdges : undefined,
       nonManifoldEdges: showNonManifoldEdges ? result.nonManifoldEdges : undefined,
+      sliverPositions: showSlivers ? result.sliverPositions : undefined,
+      invertedPositions: showInverted ? result.invertedPositions : undefined,
     };
-    setDefectOverlayData({ openEdges: result.openEdges, nonManifoldEdges: result.nonManifoldEdges });
-    viewportRef.current?.showDefectOverlays(data);
+    viewportRef.current?.showDefectOverlays(filtered);
     setOverlaysVisible(true);
-    notify(`Overlays: ${result.openEdgeCount} open edges, ${result.nonManifoldEdgeCount} non-manifold edges`);
-  }, [showOpenEdges, showNonManifoldEdges, notify]);
+    const parts = [
+      `${result.openEdgeCount} open`,
+      `${result.nonManifoldEdgeCount} non-manifold`,
+      `${result.sliverTriangles.length} slivers`,
+      `${result.invertedNormals.length} inverted`,
+    ];
+    notify(`Defects: ${parts.join(", ")}`);
+  }, [showOpenEdges, showNonManifoldEdges, showSlivers, showInverted, notify]);
 
   const toggleOverlayVisibility = useCallback(() => {
     if (overlaysVisible) {
       viewportRef.current?.clearDefectOverlays();
       setOverlaysVisible(false);
+      setShowOverhangs(false);
     } else if (defectOverlayData) {
       viewportRef.current?.showDefectOverlays({
         openEdges: showOpenEdges ? defectOverlayData.openEdges : undefined,
         nonManifoldEdges: showNonManifoldEdges ? defectOverlayData.nonManifoldEdges : undefined,
+        sliverPositions: showSlivers ? defectOverlayData.sliverPositions : undefined,
+        invertedPositions: showInverted ? defectOverlayData.invertedPositions : undefined,
       });
       setOverlaysVisible(true);
     } else {
       computeAndShowOverlays();
     }
-  }, [overlaysVisible, defectOverlayData, showOpenEdges, showNonManifoldEdges, computeAndShowOverlays]);
+  }, [overlaysVisible, defectOverlayData, showOpenEdges, showNonManifoldEdges, showSlivers, showInverted, computeAndShowOverlays]);
 
   // Re-apply overlays when filter toggles change
   useEffect(() => {
@@ -1411,8 +1472,10 @@ export function KarasliceApp() {
     viewportRef.current?.showDefectOverlays({
       openEdges: showOpenEdges ? defectOverlayData.openEdges : undefined,
       nonManifoldEdges: showNonManifoldEdges ? defectOverlayData.nonManifoldEdges : undefined,
+      sliverPositions: showSlivers ? defectOverlayData.sliverPositions : undefined,
+      invertedPositions: showInverted ? defectOverlayData.invertedPositions : undefined,
     });
-  }, [showOpenEdges, showNonManifoldEdges, overlaysVisible, defectOverlayData]);
+  }, [showOpenEdges, showNonManifoldEdges, showSlivers, showInverted, overlaysVisible, defectOverlayData]);
 
   // ── Pipeline log helpers (Phase 2) ──────────────────────────────────────────
 
@@ -1546,6 +1609,199 @@ export function KarasliceApp() {
     notify(`Symmetry mirror applied on ${symmetryAxis.toUpperCase()}-axis.`);
   }, [meshInfo, symmetryAxis, saveOriginalForCompare, addRepairCandidate, notify]);
 
+  // ── Shell Analysis ─────────────────────────────────────────────────────────
+  const handleShellAnalysis = useCallback(async () => {
+    if (!viewportRef.current || !meshInfo) return;
+    setShellAnalyzing(true);
+    try {
+      const geo = viewportRef.current.getRawGeometry();
+      if (!geo) return;
+      const { analyzeShells } = await import("./shell-analysis");
+      const result = analyzeShells(geo);
+      setShellResult(result);
+      setHiddenShells(new Set());
+      notify(`Found ${result.shellCount} shell${result.shellCount !== 1 ? "s" : ""}${result.tinyShellCount > 0 ? ` (${result.tinyShellCount} tiny)` : ""}`);
+    } finally {
+      setShellAnalyzing(false);
+    }
+  }, [meshInfo, notify]);
+
+  const handleRemoveTinyShells = useCallback(async () => {
+    if (!viewportRef.current || !meshInfo || !shellResult) return;
+    const geo = viewportRef.current.getRawGeometry();
+    if (!geo) return;
+    const tinyThreshold = Math.max(10, Math.floor(meshInfo.triangleCount * 0.01));
+    const { removeSmallShells } = await import("./shell-analysis");
+    const { geometry: cleaned, removedCount } = removeSmallShells(geo, shellResult, tinyThreshold);
+    if (removedCount > 0) {
+      viewportRef.current.loadRepairedGeometry(cleaned, meshInfo.fileName);
+      addRepairCandidate(`Removed ${removedCount} shells`, cleaned, "shell-cleanup");
+      setAnalysisResult(null);
+      setShellResult(null);
+      notify(`Removed ${removedCount} tiny shell${removedCount !== 1 ? "s" : ""}`);
+    } else {
+      notify("No tiny shells to remove");
+    }
+  }, [meshInfo, shellResult, addRepairCandidate, notify]);
+
+  // ── Print-Prep Analysis ────────────────────────────────────────────────────
+  const handlePrintPrepAnalysis = useCallback(async () => {
+    if (!viewportRef.current || !meshInfo) return;
+    setAnalyzingPrintPrep(true);
+    try {
+      const geo = viewportRef.current.getRawGeometry();
+      if (!geo) return;
+
+      const { computeOverhangs, estimateThickness, computePrintabilityScore } = await import("./print-prep-analysis");
+
+      const overhangs = computeOverhangs(geo, overhangThreshold);
+      setOverhangResult(overhangs);
+
+      const thickness = estimateThickness(geo, 0.8, 3000);
+      setThicknessResult(thickness);
+
+      const isWt = analysisResult?.isWatertight ?? false;
+      const score = computePrintabilityScore(overhangs.percentOverhang, thickness.minThickness, isWt, 0.8);
+      setPrintScore(score);
+
+      notify(`Printability score: ${score.overall}%`);
+    } finally {
+      setAnalyzingPrintPrep(false);
+    }
+  }, [meshInfo, overhangThreshold, analysisResult, notify]);
+
+  const handleShowOverhangs = useCallback(() => {
+    if (!viewportRef.current || !overhangResult) return;
+    if (showOverhangs) {
+      viewportRef.current.clearDefectOverlays();
+      setShowOverhangs(false);
+      setOverlaysVisible(false);
+    } else {
+      viewportRef.current.showDefectOverlays({
+        overhangPositions: overhangResult.positions,
+        overhangSeverity: overhangResult.severity,
+      });
+      setShowOverhangs(true);
+      setOverlaysVisible(true);
+    }
+  }, [overhangResult, showOverhangs]);
+
+  // ── Hollowing ────────────────────────────────────────────────────────────────
+  const handleHollow = useCallback(async () => {
+    if (!viewportRef.current || !meshInfo) return;
+    setHollowing(true);
+    try {
+      const geo = viewportRef.current.getRawGeometry();
+      if (!geo) throw new Error("No geometry available");
+
+      const { hollowMesh } = await import("./hollow-engine");
+      const result = await hollowMesh(geo, hollowWallThickness);
+      setHollowResult(result);
+
+      // Replace viewport geometry with hollowed version
+      viewportRef.current.replaceGeometry(result.geometry);
+      setMeshInfo((prev) => prev ? {
+        ...prev,
+        triangleCount: result.geometry.index
+          ? result.geometry.index.count / 3
+          : (result.geometry.getAttribute("position")?.count ?? 0) / 3,
+      } : null);
+
+      notify(`Hollowed — ${result.materialSavedPercent}% material saved`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "Hollowing failed", "destructive");
+    } finally {
+      setHollowing(false);
+    }
+  }, [meshInfo, hollowWallThickness, notify]);
+
+  // ── Escape Holes ─────────────────────────────────────────────────────────────
+  const handleAddEscapeHole = useCallback(async () => {
+    if (!viewportRef.current || !meshInfo) return;
+    setAddingEscapeHole(true);
+    try {
+      const geo = viewportRef.current.getRawGeometry();
+      if (!geo) throw new Error("No geometry available");
+
+      // Place escape hole at the lowest point of the mesh (most common drainage point)
+      geo.computeBoundingBox();
+      const bb = geo.boundingBox!;
+      const cx = (bb.min.x + bb.max.x) / 2;
+      const cy = (bb.min.y + bb.max.y) / 2;
+
+      const { addEscapeHoles } = await import("./hollow-engine");
+      const result = await addEscapeHoles(geo, [{
+        position: [cx, cy, bb.min.z + (bb.max.z - bb.min.z) * 0.1],
+        radius: escapeHoleRadius,
+        direction: [0, 0, -1],
+      }]);
+
+      if (result.holesAdded > 0) {
+        viewportRef.current.replaceGeometry(result.geometry);
+        notify(`Added ${result.holesAdded} escape hole (${escapeHoleRadius} mm radius)`);
+      } else {
+        notify("Could not add escape hole — try adjusting position", "destructive");
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "Escape hole failed", "destructive");
+    } finally {
+      setAddingEscapeHole(false);
+    }
+  }, [meshInfo, escapeHoleRadius, notify]);
+
+  // ── Support Preview ──────────────────────────────────────────────────────────
+  const handleSupportPreview = useCallback(async () => {
+    if (!viewportRef.current || !overhangResult || !meshInfo) return;
+
+    if (showSupports && supportPreview) {
+      viewportRef.current.clearDefectOverlays();
+      setShowSupports(false);
+      setOverlaysVisible(false);
+      return;
+    }
+
+    const geo = viewportRef.current.getRawGeometry();
+    if (!geo) return;
+
+    geo.computeBoundingBox();
+    const { generateSupportPreview } = await import("./hollow-engine");
+    const result = generateSupportPreview(overhangResult, supportRadius, 2.0, geo.boundingBox ?? undefined);
+    setSupportPreview(result);
+
+    if (result.columns.length > 0) {
+      viewportRef.current.showSupportPreview(result.geometry);
+      setShowSupports(true);
+      setOverlaysVisible(true);
+      notify(`${result.columns.length} support columns — ~${(result.volumeMM3 / 1000).toFixed(1)} cm³`);
+    } else {
+      notify("No support columns needed at current threshold");
+    }
+  }, [overhangResult, meshInfo, showSupports, supportPreview, supportRadius, notify]);
+
+  // ── Printer Fit Check ────────────────────────────────────────────────────────
+  const handlePrinterFitCheck = useCallback(async () => {
+    if (!meshInfo) return;
+    // effectivePrinter is computed in derived section, so we read it inline
+    const printer = useCustomPrinter
+      ? { x: customPrinterX, y: customPrinterY, z: customPrinterZ }
+      : selectedPrinter ? { x: selectedPrinter.x, y: selectedPrinter.y, z: selectedPrinter.z } : null;
+    if (!printer) { notify("Select a printer first"); return; }
+
+    const { checkPrinterFit } = await import("./hollow-engine");
+    const result = checkPrinterFit(
+      meshInfo.boundingBox,
+      printer,
+      overhangResult?.percentOverhang,
+      analysisResult?.isWatertight,
+    );
+    setPrinterFitResult(result);
+    if (result.fits) {
+      notify("Mesh fits within build volume");
+    } else {
+      notify(`Mesh exceeds build volume on ${result.overflowAxes.join(", ")}`, "destructive");
+    }
+  }, [meshInfo, useCustomPrinter, customPrinterX, customPrinterY, customPrinterZ, selectedPrinter, overhangResult, analysisResult, notify]);
+
   // ── Derived ───────────────────────────────────────────────────────────────────
   const isSevere = analysisResult
     ? analysisResult.triangleCount > 0 &&
@@ -1598,7 +1854,7 @@ export function KarasliceApp() {
   ];
 
   /** Is any heavy operation running? */
-  const busy = analyzing || repairing || reconstructing || splitting || cloudRepairPolling || cloudRepairSubmitting || repairingParts || generatingVariant;
+  const busy = analyzing || repairing || reconstructing || splitting || cloudRepairPolling || cloudRepairSubmitting || repairingParts || generatingVariant || hollowing || addingEscapeHole;
 
   /** Auto-open bottom drawer when operations are running */
   const drawerHasContent = busy || postReviewing || postReview || repairResult || reconstructResult || cloudRepairJob || pipelineLog.length > 0;
@@ -1942,9 +2198,93 @@ export function KarasliceApp() {
                             <span className="text-orange-400">Non-manifold edges</span>
                             {defectOverlayData?.nonManifoldEdges && <span className="text-muted-foreground ml-auto">{(defectOverlayData.nonManifoldEdges.length / 6).toLocaleString()}</span>}
                           </label>
+                          <label className="flex items-center gap-2 text-[11px] cursor-pointer">
+                            <input type="checkbox" checked={showSlivers} onChange={(e) => setShowSlivers(e.target.checked)} className="accent-fuchsia-400 h-3 w-3" />
+                            <span className="text-fuchsia-400">Sliver triangles</span>
+                            {defectOverlayData?.sliverPositions && <span className="text-muted-foreground ml-auto">{(defectOverlayData.sliverPositions.length / 9).toLocaleString()}</span>}
+                          </label>
+                          <label className="flex items-center gap-2 text-[11px] cursor-pointer">
+                            <input type="checkbox" checked={showInverted} onChange={(e) => setShowInverted(e.target.checked)} className="accent-cyan-400 h-3 w-3" />
+                            <span className="text-cyan-400">Inverted normals</span>
+                            {defectOverlayData?.invertedPositions && <span className="text-muted-foreground ml-auto">{(defectOverlayData.invertedPositions.length / 9).toLocaleString()}</span>}
+                          </label>
                         </div>
                       )}
                     </div>
+                  </>
+                )}
+
+                {/* ── Shell Browser (Phase 4) ─────────────────────────────── */}
+                {meshInfo && (
+                  <>
+                    <Separator />
+                    <SectionHeader icon={Box} label={`Shells${shellResult ? ` (${shellResult.shellCount})` : ""}`} open={openSections.shells} onToggle={() => toggleSection("shells")} />
+                    {openSections.shells && (
+                      <div className="px-1 pb-2 space-y-2">
+                        <Button
+                          size="sm" className="w-full gap-2" variant="outline"
+                          disabled={shellAnalyzing || busy}
+                          onClick={handleShellAnalysis}
+                        >
+                          {shellAnalyzing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+                          {shellAnalyzing ? "Analyzing…" : shellResult ? "Re-analyze Shells" : "Detect Shells"}
+                        </Button>
+
+                        {shellResult && (
+                          <>
+                            <div className="rounded-md border border-border p-2 space-y-1 text-[11px]">
+                              <div className="flex justify-between text-muted-foreground">
+                                <span>Total shells</span>
+                                <span className="font-mono">{shellResult.shellCount}</span>
+                              </div>
+                              <div className="flex justify-between text-muted-foreground">
+                                <span>Largest shell</span>
+                                <span className="font-mono">{shellResult.largestShellTriangles.toLocaleString()} tris</span>
+                              </div>
+                              {shellResult.tinyShellCount > 0 && (
+                                <div className="flex justify-between text-yellow-400">
+                                  <span>Tiny shells (&lt;1%)</span>
+                                  <span className="font-mono">{shellResult.tinyShellCount}</span>
+                                </div>
+                              )}
+                            </div>
+
+                            {shellResult.tinyShellCount > 0 && (
+                              <Button
+                                size="sm" variant="outline" className="w-full gap-1.5 text-[11px] h-8 text-yellow-400"
+                                disabled={busy}
+                                onClick={handleRemoveTinyShells}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                Remove {shellResult.tinyShellCount} tiny shell{shellResult.tinyShellCount !== 1 ? "s" : ""}
+                              </Button>
+                            )}
+
+                            {shellResult.shells.length <= 20 && (
+                              <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                                {shellResult.shells.map((shell) => (
+                                  <div
+                                    key={shell.id}
+                                    className="flex items-center gap-2 text-[10px] rounded px-1.5 py-1 hover:bg-muted transition-colors"
+                                  >
+                                    <span className={cn(
+                                      "w-2 h-2 rounded-full shrink-0",
+                                      shell.id === 0 ? "bg-accent" : "bg-muted-foreground/50",
+                                    )} />
+                                    <span className="flex-1 truncate text-muted-foreground">
+                                      Shell {shell.id + 1}
+                                    </span>
+                                    <span className="font-mono text-muted-foreground">
+                                      {shell.triangleCount.toLocaleString()}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
 
@@ -2766,6 +3106,273 @@ export function KarasliceApp() {
 
               <Separator />
 
+              {/* Print-Prep Analysis */}
+              <SectionHeader icon={Gauge} label="Printability" open={openSections.printPrep} onToggle={() => toggleSection("printPrep")} />
+              {openSections.printPrep && (
+                <div className="px-1 pb-2 space-y-3">
+                  <p className="text-[10px] text-muted-foreground">
+                    Analyze overhangs, wall thickness, and overall printability.
+                  </p>
+
+                  {/* Overhang threshold */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <Label className="text-[11px]">Overhang threshold</Label>
+                      <span className="font-mono text-accent">{overhangThreshold}°</span>
+                    </div>
+                    <Slider
+                      min={20} max={70} step={5}
+                      value={[overhangThreshold]}
+                      onValueChange={([v]) => setOverhangThreshold(v)}
+                      disabled={analyzingPrintPrep}
+                    />
+                  </div>
+
+                  <Button
+                    size="sm" className="w-full gap-2"
+                    style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                    disabled={!meshInfo || analyzingPrintPrep || busy}
+                    onClick={handlePrintPrepAnalysis}
+                  >
+                    {analyzingPrintPrep ? <Loader2 className="h-3 w-3 animate-spin" /> : <Gauge className="h-3 w-3" />}
+                    {analyzingPrintPrep ? "Analyzing…" : "Analyze Printability"}
+                  </Button>
+
+                  {/* Printability Score */}
+                  {printScore && (
+                    <div className="rounded-md border border-border p-2 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Print Score</p>
+                        <span className={cn(
+                          "text-sm font-bold font-mono",
+                          printScore.overall >= 80 ? "text-green-400" : printScore.overall >= 50 ? "text-yellow-400" : "text-red-400",
+                        )}>{printScore.overall}%</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {[
+                          { label: "Overhang", score: printScore.overhangScore },
+                          { label: "Thickness", score: printScore.thicknessScore },
+                          { label: "Watertight", score: printScore.watertightScore },
+                        ].map(({ label, score }) => (
+                          <div key={label} className="space-y-0.5">
+                            <div className="flex justify-between text-[10px]">
+                              <span className="text-muted-foreground">{label}</span>
+                              <span className="font-mono">{score}%</span>
+                            </div>
+                            <div className="h-1 bg-muted rounded-full overflow-hidden">
+                              <div className={cn(
+                                "h-full rounded-full transition-all",
+                                score >= 80 ? "bg-green-400" : score >= 50 ? "bg-yellow-400" : "bg-red-400",
+                              )} style={{ width: `${score}%` }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {printScore.warnings.length > 0 && (
+                        <div className="space-y-0.5 pt-1">
+                          {printScore.warnings.map((w, i) => (
+                            <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
+                              <ShieldAlert className="h-3 w-3 shrink-0 mt-0.5" />{w}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Overhang details */}
+                  {overhangResult && (
+                    <div className="rounded-md border border-border p-2 space-y-1.5 text-[11px]">
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Overhang faces</span>
+                        <span className="font-mono">{overhangResult.count.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>% of mesh</span>
+                        <span className={cn("font-mono", overhangResult.percentOverhang > 20 ? "text-yellow-400" : "text-green-400")}>
+                          {overhangResult.percentOverhang.toFixed(1)}%
+                        </span>
+                      </div>
+                      {overhangResult.maxAngle > 0 && (
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>Max angle</span>
+                          <span className="font-mono">{overhangResult.maxAngle.toFixed(0)}°</span>
+                        </div>
+                      )}
+                      <Button
+                        size="sm" variant="outline" className="w-full gap-1.5 text-[11px] h-7 mt-1"
+                        disabled={!overhangResult || overhangResult.count === 0}
+                        onClick={handleShowOverhangs}
+                      >
+                        {showOverhangs ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                        {showOverhangs ? "Hide Overhangs" : "Show Overhangs"}
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Thickness details */}
+                  {thicknessResult && thicknessResult.sampleCount > 0 && (
+                    <div className="rounded-md border border-border p-2 space-y-1 text-[11px]">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Wall Thickness</p>
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Min thickness</span>
+                        <span className={cn("font-mono", thicknessResult.minThickness < 0.8 ? "text-red-400" : "text-green-400")}>
+                          {thicknessResult.minThickness.toFixed(2)} mm
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Avg thickness</span>
+                        <span className="font-mono">{thicknessResult.avgThickness.toFixed(2)} mm</span>
+                      </div>
+                      {thicknessResult.thinRegionCount > 0 && (
+                        <div className="flex justify-between text-yellow-400">
+                          <span>Thin regions</span>
+                          <span className="font-mono">{thicknessResult.thinRegionCount}</span>
+                        </div>
+                      )}
+                      <p className="text-[9px] text-muted-foreground pt-0.5">Sampled {thicknessResult.sampleCount} points</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <Separator />
+
+              {/* Hollowing */}
+              <SectionHeader icon={Box} label="Hollowing" open={openSections.hollowing} onToggle={() => toggleSection("hollowing")} />
+              {openSections.hollowing && (
+                <div className="px-1 pb-2 space-y-3">
+                  <p className="text-[10px] text-muted-foreground">
+                    Create a hollow shell to save material. Mesh must be watertight.
+                  </p>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <Label className="text-[11px]">Wall thickness</Label>
+                      <span className="font-mono text-accent">{hollowWallThickness} mm</span>
+                    </div>
+                    <Slider
+                      min={0.5} max={10} step={0.5}
+                      value={[hollowWallThickness]}
+                      onValueChange={([v]) => setHollowWallThickness(v)}
+                      disabled={hollowing}
+                    />
+                  </div>
+
+                  <Button
+                    size="sm" className="w-full gap-2"
+                    style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                    disabled={!meshInfo || hollowing || busy}
+                    onClick={handleHollow}
+                  >
+                    {hollowing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Box className="h-3 w-3" />}
+                    {hollowing ? "Hollowing…" : "Hollow Mesh"}
+                  </Button>
+
+                  {hollowResult && (
+                    <div className="rounded-md border border-border p-2 space-y-1 text-[11px]">
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Wall thickness</span>
+                        <span className="font-mono">{hollowResult.wallThickness} mm</span>
+                      </div>
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Original volume</span>
+                        <span className="font-mono">{(hollowResult.originalVolumeMM3 / 1000).toFixed(1)} cm³</span>
+                      </div>
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Hollow volume</span>
+                        <span className="font-mono">{(hollowResult.hollowVolumeMM3 / 1000).toFixed(1)} cm³</span>
+                      </div>
+                      <div className="flex justify-between text-green-400">
+                        <span>Material saved</span>
+                        <span className="font-mono font-semibold">{hollowResult.materialSavedPercent}%</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Escape Holes */}
+                  {hollowResult && (
+                    <>
+                      <Separator />
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Escape Holes</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        Add drainage holes for resin or powder removal.
+                      </p>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <Label className="text-[11px]">Hole radius</Label>
+                          <span className="font-mono text-accent">{escapeHoleRadius} mm</span>
+                        </div>
+                        <Slider
+                          min={1} max={10} step={0.5}
+                          value={[escapeHoleRadius]}
+                          onValueChange={([v]) => setEscapeHoleRadius(v)}
+                          disabled={addingEscapeHole}
+                        />
+                      </div>
+                      <Button
+                        size="sm" variant="outline" className="w-full gap-1.5 text-[11px] h-7"
+                        disabled={!meshInfo || addingEscapeHole || busy}
+                        onClick={handleAddEscapeHole}
+                      >
+                        {addingEscapeHole ? <Loader2 className="h-3 w-3 animate-spin" /> : <Target className="h-3 w-3" />}
+                        {addingEscapeHole ? "Adding…" : "Add Escape Hole (Bottom)"}
+                      </Button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              <Separator />
+
+              {/* Support Preview */}
+              <SectionHeader icon={Layers} label="Support Preview" open={openSections.supportPreview} onToggle={() => toggleSection("supportPreview")} />
+              {openSections.supportPreview && (
+                <div className="px-1 pb-2 space-y-3">
+                  <p className="text-[10px] text-muted-foreground">
+                    Preview support columns for overhang areas. Run printability analysis first.
+                  </p>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <Label className="text-[11px]">Column radius</Label>
+                      <span className="font-mono text-accent">{supportRadius} mm</span>
+                    </div>
+                    <Slider
+                      min={0.5} max={5} step={0.5}
+                      value={[supportRadius]}
+                      onValueChange={([v]) => setSupportRadius(v)}
+                    />
+                  </div>
+
+                  <Button
+                    size="sm" className="w-full gap-2"
+                    style={!showSupports ? { backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" } : undefined}
+                    variant={showSupports ? "outline" : "default"}
+                    disabled={!overhangResult || overhangResult.count === 0}
+                    onClick={handleSupportPreview}
+                  >
+                    {showSupports ? <EyeOff className="h-3 w-3" /> : <Layers className="h-3 w-3" />}
+                    {showSupports ? "Hide Supports" : "Show Support Preview"}
+                  </Button>
+
+                  {supportPreview && supportPreview.columns.length > 0 && (
+                    <div className="rounded-md border border-border p-2 space-y-1 text-[11px]">
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Support columns</span>
+                        <span className="font-mono">{supportPreview.columns.length}</span>
+                      </div>
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Est. volume</span>
+                        <span className="font-mono">{(supportPreview.volumeMM3 / 1000).toFixed(1)} cm³</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <Separator />
+
               {/* Scale */}
               <SectionHeader icon={Maximize2} label="Scale" open={openSections.scale} onToggle={() => toggleSection("scale")} />
               {openSections.scale && (
@@ -2936,6 +3543,40 @@ export function KarasliceApp() {
                     <RotateCcw className="h-3 w-3" />
                     Auto-calculate Cuts
                   </Button>
+
+                  <Button
+                    size="sm" variant="outline" className="w-full gap-1.5"
+                    disabled={!meshInfo || !effectivePrinter}
+                    onClick={handlePrinterFitCheck}
+                  >
+                    <ShieldAlert className="h-3 w-3" />
+                    Check Fit &amp; Warnings
+                  </Button>
+
+                  {printerFitResult && (
+                    <div className={cn(
+                      "rounded-md border p-2 space-y-1.5 text-[11px]",
+                      printerFitResult.fits ? "border-green-500/30" : "border-red-500/30"
+                    )}>
+                      <div className="flex items-center gap-1.5">
+                        {printerFitResult.fits
+                          ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                          : <AlertTriangle className="h-3.5 w-3.5 text-red-400" />}
+                        <span className={printerFitResult.fits ? "text-green-400 font-semibold" : "text-red-400 font-semibold"}>
+                          {printerFitResult.fits ? "Fits build volume" : "Exceeds build volume"}
+                        </span>
+                      </div>
+                      {printerFitResult.suggestions.length > 0 && (
+                        <div className="space-y-0.5 pt-0.5">
+                          {printerFitResult.suggestions.map((s, i) => (
+                            <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
+                              <Info className="h-3 w-3 shrink-0 mt-0.5" />{s}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

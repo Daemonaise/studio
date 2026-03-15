@@ -763,8 +763,88 @@ function marchingCubesOnSDF(
   // Return indexed geometry directly (Bug 6 fix — avoids 3× vertex expansion)
   const triCount = Math.floor(indices.length / 3);
   const positions = new Float32Array(positionsList);
+  const rawIndices = new Uint32Array(indices);
 
-  return { positions, indices: new Uint32Array(indices), triCount, vertexCount };
+  // Post-MC cleanup: remove triangles that create non-manifold edges.
+  // Standard Lorensen MC has ambiguous face configurations in cases 3, 6, 7,
+  // 10, 12, 13. Adjacent cubes resolving differently produce edges shared by
+  // 3+ faces. Fix: scan for edges with 3+ faces, remove lowest-area triangle.
+  const cleanedIndices = fixMCNonManifoldEdges(positions, rawIndices, vertexCount);
+
+  return {
+    positions,
+    indices: cleanedIndices,
+    triCount: Math.floor(cleanedIndices.length / 3),
+    vertexCount,
+  };
+}
+
+/**
+ * Post-MC non-manifold edge repair.
+ * Scans for edges with 3+ incident faces and removes the triangle with
+ * the smallest area at each conflict edge until all edges have ≤2 faces.
+ */
+function fixMCNonManifoldEdges(
+  positions: Float32Array,
+  indices: Uint32Array,
+  vertexCount: number,
+): Uint32Array {
+  const triCount = Math.floor(indices.length / 3);
+  if (triCount === 0) return indices;
+
+  // Build edge → triangle list map (undirected edge key: lo * V + hi)
+  const edgeTris = new Map<number, number[]>();
+  for (let t = 0; t < triCount; t++) {
+    const a = indices[t * 3], b = indices[t * 3 + 1], c = indices[t * 3 + 2];
+    for (const [u, v] of [[a, b], [b, c], [c, a]] as [number, number][]) {
+      const lo = Math.min(u, v), hi = Math.max(u, v);
+      const key = lo * vertexCount + hi;
+      const arr = edgeTris.get(key);
+      if (arr) arr.push(t); else edgeTris.set(key, [t]);
+    }
+  }
+
+  // Find non-manifold edges (3+ faces)
+  const removedTris = new Set<number>();
+
+  for (const [, tris] of edgeTris) {
+    if (tris.length <= 2) continue;
+
+    // Compute area for each incident triangle, remove the smallest
+    const triAreas: { tri: number; area: number }[] = [];
+    for (const t of tris) {
+      if (removedTris.has(t)) continue;
+      const i0 = indices[t * 3], i1 = indices[t * 3 + 1], i2 = indices[t * 3 + 2];
+      // Cross product area
+      const ax = positions[i1 * 3] - positions[i0 * 3];
+      const ay = positions[i1 * 3 + 1] - positions[i0 * 3 + 1];
+      const az = positions[i1 * 3 + 2] - positions[i0 * 3 + 2];
+      const bx = positions[i2 * 3] - positions[i0 * 3];
+      const by = positions[i2 * 3 + 1] - positions[i0 * 3 + 1];
+      const bz = positions[i2 * 3 + 2] - positions[i0 * 3 + 2];
+      const cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
+      const area = Math.sqrt(cx * cx + cy * cy + cz * cz);
+      triAreas.push({ tri: t, area });
+    }
+
+    // Sort by area ascending, remove smallest until ≤2 remain
+    triAreas.sort((a, b) => a.area - b.area);
+    while (triAreas.length > 2) {
+      removedTris.add(triAreas.shift()!.tri);
+    }
+  }
+
+  if (removedTris.size === 0) return indices;
+
+  // Rebuild index array without removed triangles
+  const newIndices: number[] = [];
+  for (let t = 0; t < triCount; t++) {
+    if (!removedTris.has(t)) {
+      newIndices.push(indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2]);
+    }
+  }
+
+  return new Uint32Array(newIndices);
 }
 
 // ─── Main pipeline ───────────────────────────────────────────────────────────
@@ -979,10 +1059,16 @@ export async function pointCloudReconstruct(
   onProgress(6, 6, "Finalizing geometry…");
   await yieldToUI();
 
-  const outGeo = new THREE.BufferGeometry();
+  let outGeo = new THREE.BufferGeometry();
   outGeo.setAttribute("position", new THREE.BufferAttribute(mc.positions, 3));
   outGeo.setIndex(new THREE.BufferAttribute(mc.indices, 1));
-  outGeo.computeVertexNormals();
+
+  // Apply creased normals so sharp edges are preserved instead of averaged
+  const { toCreasedNormals, mergeVertices } = await import(
+    "three/examples/jsm/utils/BufferGeometryUtils.js"
+  );
+  const CREASE_ANGLE = Math.PI / 6; // 30°
+  outGeo = mergeVertices(toCreasedNormals(outGeo, CREASE_ANGLE));
 
   g.dispose();
 

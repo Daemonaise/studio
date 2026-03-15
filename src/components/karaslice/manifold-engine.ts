@@ -837,7 +837,21 @@ async function fixWinding(geo: THREE.BufferGeometry): Promise<THREE.BufferGeomet
  * Ear-clip a 2D polygon.  Preserves the polygon's winding order in the output.
  * Returns a flat array of indices into pts (triplets = triangles).
  */
-function earClip2D(pts: [number, number][]): number[] {
+/**
+ * @param pts 2D polygon vertices
+ * @param origIndices Optional original mesh vertex indices (parallel to pts).
+ *                    Used with `interiorEdges` to reject ears whose diagonal
+ *                    would create a non-manifold edge.
+ * @param interiorEdges Optional set of canonical edge keys (lo*N+hi) that
+ *                      already exist as interior mesh edges.
+ * @param nVerts Vertex count for edge key computation.
+ */
+function earClip2D(
+  pts: [number, number][],
+  origIndices?: number[],
+  interiorEdges?: Set<number>,
+  nVerts?: number,
+): number[] {
   const n = pts.length;
   if (n < 3) return [];
   if (n === 3) return [0, 1, 2];
@@ -862,6 +876,8 @@ function earClip2D(pts: [number, number][]): number[] {
     return !((d1 < -eps || d2 < -eps || d3 < -eps) && (d1 > eps || d2 > eps || d3 > eps));
   };
 
+  const hasInteriorCheck = origIndices && interiorEdges && interiorEdges.size > 0 && nVerts;
+
   const poly = Array.from({ length: n }, (_, i) => i);
   const result: number[] = [];
   let maxIter = n * n + n + 10;
@@ -884,6 +900,13 @@ function earClip2D(pts: [number, number][]): number[] {
         if (inTriangle(pts[k][0], pts[k][1], ax, ay, bx, by, cx, cy)) { inside = true; break; }
       }
       if (inside) continue;
+      // Check if diagonal (prev→next) already exists as an interior mesh edge.
+      // If so, adding this ear would create a third face on that edge → non-manifold.
+      if (hasInteriorCheck) {
+        const oi = origIndices[pi], oj = origIndices[ni];
+        const lo = Math.min(oi, oj), hi = Math.max(oi, oj);
+        if (interiorEdges.has(lo * nVerts + hi)) continue;
+      }
       result.push(pi, ci, ni);
       poly.splice(i, 1);
       found = true;
@@ -901,7 +924,12 @@ function earClip2D(pts: [number, number][]): number[] {
  * Output triangles are wound outward (CCW from outside the mesh).
  * Returns [] on degenerate input or loops with > 500 vertices (use centroid fan fallback).
  */
-function triangulatePlanar(loop: number[], pos: THREE.BufferAttribute): number[] {
+function triangulatePlanar(
+  loop: number[],
+  pos: THREE.BufferAttribute,
+  interiorEdges?: Set<number>,
+  nVerts?: number,
+): number[] {
   const n = loop.length;
   if (n < 3) return [];
   if (n === 3) return [loop[1], loop[0], loop[2]]; // single triangle, reversed for outward winding
@@ -933,7 +961,7 @@ function triangulatePlanar(loop: number[], pos: THREE.BufferAttribute): number[]
     pos.getX(vi) * vx + pos.getY(vi) * vy + pos.getZ(vi) * vz,
   ]);
 
-  const localTris = earClip2D(pts);
+  const localTris = earClip2D(pts, loop, interiorEdges, nVerts);
   if (localTris.length === 0) return [];
 
   // earClip2D preserves the polygon's winding (CW from outside for boundary loops).
@@ -990,6 +1018,20 @@ async function fillHoles(geo: THREE.BufferGeometry): Promise<THREE.BufferGeometr
 
   if (boundaryAdj.size === 0) return geo; // already closed
 
+  // Build interior edge set: edges where BOTH directions exist in halfEdgeSet.
+  // These are fully-interior edges. If an ear diagonal would coincide with one,
+  // we'd create a third face on that edge → non-manifold. We pass this set to
+  // earClip2D so it can reject such ears.
+  const interiorEdges = new Set<number>();
+  for (const key of halfEdgeSet) {
+    const from = Math.floor(key / nVerts);
+    const to = key - from * nVerts;
+    if (halfEdgeSet.has(to * nVerts + from)) {
+      const lo = Math.min(from, to), hi = Math.max(from, to);
+      interiorEdges.add(lo * nVerts + hi);
+    }
+  }
+
   // Walk boundary loops — consume each directed boundary edge exactly once.
   const usedEdges = new Set<number>(); // key = from * nVerts + to
   const loops: number[][] = [];
@@ -1034,7 +1076,8 @@ async function fillHoles(geo: THREE.BufferGeometry): Promise<THREE.BufferGeometr
 
   for (const loop of loops) {
     // Prefer proper 2D triangulation — correct for non-convex cross-sections.
-    const tris = triangulatePlanar(loop, pos);
+    // Pass interior edge set to prevent ear diagonals from creating non-manifold edges.
+    const tris = triangulatePlanar(loop, pos, interiorEdges, nVerts);
     if (tris.length > 0) {
       for (const vi of tris) fillIdx.push(vi);
     } else {
@@ -1285,10 +1328,18 @@ export async function repairMesh(
 
   stats.isWatertight = diagAfter.openEdges === 0 && diagAfter.nonManifoldEdges === 0;
 
-  onProgress(6, 6, "Done");
+  onProgress(6, 6, "Applying creased normals…");
   await yieldToUI();
 
-  g.computeVertexNormals();
+  // Apply creased normals so sharp edges (cap boundaries, feature edges) are
+  // preserved instead of averaged across all incident faces.
+  const { toCreasedNormals, mergeVertices: mergeVerts2 } = await import(
+    "three/examples/jsm/utils/BufferGeometryUtils.js"
+  );
+  const REPAIR_CREASE_ANGLE = Math.PI / 6; // 30° — same as split path
+  const indexed = g.index ? g : mergeVerts2(g);
+  g = mergeVerts2(toCreasedNormals(indexed, REPAIR_CREASE_ANGLE));
+
   return { geometry: g, stats };
 }
 

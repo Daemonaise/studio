@@ -2,6 +2,7 @@
 
 import { auth } from "@/auth";
 import { getAdminStorage } from "@/lib/firebase-admin";
+import { validateUpload, validateFileContent, sanitizeStoragePath, uploadLimiter, MAX_UPLOAD_BYTES } from "@/lib/security";
 
 const BUCKET_FOLDER = "Karaslice";
 
@@ -29,10 +30,24 @@ export async function uploadToKaraslice(formData: FormData): Promise<string> {
   const session = await auth();
   if (!session?.user) throw new Error("Authentication required");
 
+  // Rate limit by user
+  const rateLimitKey = session.user.email ?? session.user.id ?? "unknown";
+  const rateCheck = uploadLimiter.check(rateLimitKey);
+  if (!rateCheck.allowed) throw new Error("Too many uploads — please wait a moment");
+
   const file = formData.get("file") as File | null;
   const subfolder = (formData.get("subfolder") as string) || "uploads";
   const jobId = (formData.get("jobId") as string) || "";
   if (!file || file.size === 0) throw new Error("No file provided");
+
+  // Validate upload (file type, size, filename)
+  const validation = validateUpload(file);
+  if (!validation.valid) throw new Error(validation.error ?? "Invalid file");
+
+  // Validate file content (magic bytes)
+  const buffer = await file.arrayBuffer();
+  const contentValidation = validateFileContent(buffer, file.name);
+  if (!contentValidation.valid) throw new Error(contentValidation.error ?? "Invalid file content");
 
   const folder = userFolder(session.user.email, session.user.id);
   const storage = getAdminStorage();
@@ -46,9 +61,9 @@ export async function uploadToKaraslice(formData: FormData): Promise<string> {
   const gcsPath = `${basePath}/${file.name}`;
 
   const bucketFile = bucket.file(gcsPath);
-  const buffer = Buffer.from(await file.arrayBuffer());
+  const uploadBuffer = Buffer.from(buffer);
 
-  await bucketFile.save(buffer, {
+  await bucketFile.save(uploadBuffer, {
     contentType: file.type || "application/octet-stream",
     metadata: {
       uploadedBy: session.user.email ?? session.user.id ?? "unknown",

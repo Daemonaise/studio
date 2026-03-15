@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { ArrowRight, Check, Wand2, Car, Layers, Upload, Settings2, PackageCheck, Zap, Ruler, Clock, Scissors, Cpu, Shield, Cloud, Wrench, Box } from 'lucide-react';
+import { ArrowRight, Check, Wand2, Car, Layers, Upload, Settings2, PackageCheck, Zap, Ruler, Clock, Scissors, Cpu, Shield, Cloud, Wrench, Box, Target } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 const stats = [
@@ -54,13 +54,23 @@ const tools = [
   },
   {
     icon: Box,
-    title: 'Defect Overlays & Viewport',
-    desc: 'PBR Three.js viewport with real-time defect edge visualization (open = red, non-manifold = orange), ghost mode, wireframe, and unit conversion across mm/cm/in.',
+    title: 'Shell Browser & Defect Inspector',
+    desc: 'Connected component analysis with per-shell stats. Extended defect overlays: open edges, non-manifold, sliver triangles, and inverted normals — all color-coded in the viewport.',
   },
   {
     icon: Shield,
-    title: 'Export & Quote',
-    desc: 'Export repaired or split parts as STL, OBJ, or ZIP. Send parts directly to the AI quote wizard with one click — no re-upload needed.',
+    title: 'Printability Analysis',
+    desc: 'Overhang detection with adjustable threshold, wall thickness estimation, and printability scoring. Visualize overhang faces as a heat gradient directly on the mesh.',
+  },
+  {
+    icon: Target,
+    title: 'Hollowing & Escape Holes',
+    desc: 'Create thin-walled shells via manifold boolean subtraction, add drainage holes for resin printing, and preview estimated material savings — all client-side.',
+  },
+  {
+    icon: Layers,
+    title: 'Support Preview & Printer Fit',
+    desc: 'Visualize support columns from overhang analysis, check build volume fit against 40+ printer profiles, and get actionable warnings before you slice.',
   },
 ];
 
