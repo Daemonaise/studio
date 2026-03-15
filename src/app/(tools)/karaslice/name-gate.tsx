@@ -31,8 +31,9 @@ export function NameGate({ email }: { email: string }) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to update name");
       }
-      // Reload the page to pick up the updated session
-      router.refresh();
+      // Hard reload to pick up the cookie — router.refresh() doesn't re-run
+      // server components reliably when only cookies change
+      window.location.reload();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {

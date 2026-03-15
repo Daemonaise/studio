@@ -230,6 +230,20 @@ src/components/karaslice/
 └── validate-reconstruction.ts # Output validation (NaN, degenerates, topology, Euler)
 ```
 
+### Karaslice Testing
+
+Key test entry points:
+
+- `npx vitest run tests/frontend/karaslice-app-flow.test.tsx`
+- `npx vitest run tests/frontend/karaslice-pages.test.tsx tests/frontend/karaslice-name-gate.test.tsx`
+- `node --test tests/repair-modules.test.mjs`
+- `node --test tests/manifold-engine.test.mjs`
+
+Test docs:
+
+- [docs/karaslice-app-test-cases.md](/home/user/studio/docs/karaslice-app-test-cases.md) — app-level upload, analysis, and repair-mode selection flow
+- [docs/manifold-test-cases.md](/home/user/studio/docs/manifold-test-cases.md) — manifold repair and geometry engine coverage
+
 ### Client-Side Geometry Pipeline
 
 ```

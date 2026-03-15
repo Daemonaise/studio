@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { KarasliceClient } from "../karaslice-client";
@@ -22,16 +23,20 @@ export default async function KarasliceAppPage() {
     recordLoginAndCheckDuplicates({
       email: session.user.email,
       name: session.user.name ?? null,
-      provider: "oauth", // generic — exact provider not available in session
+      provider: "oauth",
       providerId: session.user.email,
     }).catch(() => {});
   }
 
-  // If user has no name or name equals their email, force them to set a name
+  // Check both the NextAuth session name AND the cookie-based name override
+  const cookieStore = await cookies();
+  const cookieName = cookieStore.get("user_display_name")?.value;
+  const effectiveName = cookieName || session.user.name;
+
   const needsName =
-    !session.user.name ||
-    session.user.name.trim() === "" ||
-    session.user.name === session.user.email;
+    !effectiveName ||
+    effectiveName.trim() === "" ||
+    effectiveName === session.user.email;
 
   if (needsName) {
     return <NameGate email={session.user.email ?? ""} />;
