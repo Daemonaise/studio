@@ -46,7 +46,10 @@ export default function LoginPage() {
 
   const handleSignIn = (providerId: string) => {
     setLoading(providerId);
-    signIn(providerId, { callbackUrl: "/portal" });
+    // Detect if the user came from karaslice and redirect back there
+    const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const callbackUrl = params?.get("callbackUrl") || "/portal";
+    signIn(providerId, { callbackUrl });
   };
 
   return (

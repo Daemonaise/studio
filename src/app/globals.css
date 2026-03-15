@@ -75,64 +75,6 @@
   }
 }
 
-/* ── Holographic grid background ─────────────────────────────────────── */
-
-@keyframes holo-shimmer {
-  0%   { opacity: 0.035; filter: hue-rotate(0deg); }
-  25%  { opacity: 0.07;  filter: hue-rotate(15deg); }
-  50%  { opacity: 0.04;  filter: hue-rotate(30deg); }
-  75%  { opacity: 0.065; filter: hue-rotate(10deg); }
-  100% { opacity: 0.035; filter: hue-rotate(0deg); }
-}
-
-@keyframes holo-scan {
-  0%   { background-position: 0 0, 0 0, 0 -100vh; }
-  100% { background-position: 0 0, 0 0, 0 100vh; }
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image:
-    /* vertical grid lines */
-    repeating-linear-gradient(
-      90deg,
-      hsl(183 91% 55% / 0.06) 0px,
-      hsl(183 91% 55% / 0.06) 1px,
-      transparent 1px,
-      transparent 60px
-    ),
-    /* horizontal grid lines */
-    repeating-linear-gradient(
-      0deg,
-      hsl(183 91% 55% / 0.06) 0px,
-      hsl(183 91% 55% / 0.06) 1px,
-      transparent 1px,
-      transparent 60px
-    ),
-    /* shimmer sweep */
-    linear-gradient(
-      180deg,
-      transparent 0%,
-      hsl(183 91% 60% / 0.08) 40%,
-      hsl(200 80% 65% / 0.06) 50%,
-      hsl(183 91% 60% / 0.08) 60%,
-      transparent 100%
-    );
-  background-size: 60px 60px, 60px 60px, 100% 200vh;
-  animation:
-    holo-shimmer 8s ease-in-out infinite,
-    holo-scan 12s linear infinite;
-}
-
-/* Exclude the Karaslice 3D viewport canvas from the grid overlay */
-[data-karaslice-viewport] {
-  position: relative;
-  isolation: isolate;
-}
 
 @layer components {
   .btn-3d {
@@ -193,8 +135,8 @@ body::before {
   top: 0;
   left: 0;
   height: 100%;
-  background: hsl(183 91% 43% / 0.85);
-  box-shadow: 0 0 8px hsl(183 91% 43% / 0.6), 0 0 2px hsl(183 91% 43%);
+  background: hsla(183, 91%, 43%, 0.85);
+  box-shadow: 0 0 8px hsla(183, 91%, 43%, 0.6), 0 0 2px hsl(183, 91%, 43%);
   border-radius: inherit;
   animation: kl-bar-fill 2.2s cubic-bezier(0.25, 0.1, 0.25, 1) forwards;
 }
@@ -206,7 +148,7 @@ body::before {
   background: linear-gradient(
     to right,
     transparent,
-    hsl(183 91% 43% / 0.55),
+    hsla(183, 91%, 43%, 0.55),
     transparent
   );
   animation: kl-scan-h 3.5s linear infinite;
@@ -216,9 +158,9 @@ body::before {
   background: linear-gradient(
     to right,
     transparent 0%,
-    hsl(183 91% 43%) 40%,
-    hsl(183 91% 85% / 0.8) 50%,
-    hsl(183 91% 43%) 60%,
+    hsl(183, 91%, 43%) 40%,
+    hsla(183, 91%, 85%, 0.8) 50%,
+    hsl(183, 91%, 43%) 60%,
     transparent 100%
   );
   animation: kl-page-sweep 0.65s cubic-bezier(0.4, 0, 0.2, 1) forwards;

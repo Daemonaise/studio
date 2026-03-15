@@ -1,12 +1,21 @@
 import type { Metadata } from "next";
-import { KarasliceClient } from "./karaslice-client";
+import { auth } from "@/auth";
+import { redirect } from "next/navigation";
+import { KarasliceSalesPage } from "./karaslice-sales";
 
 export const metadata: Metadata = {
-  title: "Karaslice — 3D Model Slicer",
+  title: "Karaslice — Free 3D Mesh Repair & Slicer",
   description:
-    "Browser-based 3D model splitter. Upload oversized STL/OBJ files, configure cut planes, and export print-ready split parts.",
+    "AI-powered mesh analysis, repair, reconstruction, and splitting. Defect overlays, cloud repair pipeline, feature-preserving reconstruction, and variant comparison — all free.",
 };
 
-export default function KaraslicePage() {
-  return <KarasliceClient />;
+export default async function KaraslicePage() {
+  const session = await auth();
+
+  // If already logged in, go straight to the app
+  if (session?.user) {
+    redirect("/karaslice/app");
+  }
+
+  return <KarasliceSalesPage />;
 }

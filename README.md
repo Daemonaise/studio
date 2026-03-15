@@ -19,12 +19,14 @@ Precision 3D printing and automotive manufacturing platform — from rapid proto
 ## Key Features
 
 - **AI Quote Wizard** — Upload STL/OBJ/3MF, pick a material and nozzle size, receive an AI-generated cost breakdown and lead time estimate
-- **Karaslice** — In-browser 3D mesh slicer and analyzer: AI-driven mesh repair with auto-retry, boolean splits via manifold-3d, OBJ/STL/ZIP export, unit conversion (mm/cm/in), custom printer volume input, and send-to-quote integration
-- **Cloud Mesh Repair** — Server-side 15-stage repair pipeline with feature edge preservation, thin wall detection/thickening, and 4-method reconstruction fallback chain; auto-loads results into the Karaslice viewport
+- **Karaslice Repair Workbench** — In-browser 3D mesh repair studio with AI-driven analysis, defect edge overlays, quality score breakdown, feature-preserving reconstruction (3 modes), symmetry recovery, variant generation with A/B comparison, cloud repair pipeline console, and send-to-quote integration
+- **Karaslice Sales Page** — Public marketing page at `/karaslice` for non-authenticated users; authenticated users redirect to `/karaslice/app`
+- **Cloud Mesh Repair** — Server-side 15-stage repair pipeline with feature edge preservation, thin wall detection/thickening, and 4-method reconstruction fallback chain; live pipeline log console; auto-loads results into the Karaslice viewport
 - **Stripe Checkout** — Full payment flow with shipping info collected pre-checkout; metadata forwarded to fulfilment
 - **Shippo Integration** — Automatic shipment creation and label purchase on order success; tracking info surfaced in the customer portal
 - **Customer Portal** — Order history, status badges, and shipment tracking stored client-side (localStorage)
 - **AI Engineering Assistant** — Chat interface powered by Gemini for material and design advice
+- **Auth & Account Management** — OAuth sign-in (Google, Apple, Microsoft, Facebook) with name enforcement gate and Firestore-based duplicate account detection
 - **Splash Screen and Page Transitions** — Futuristic animated loading screen on every visit; teal sweep transition between routes
 
 ## Project Structure
@@ -48,14 +50,21 @@ src/
 │   │   ├── portal/           # Customer order portal
 │   │   └── quote/
 │   ├── (tools)/              # Tool pages (bare layout, no site header)
-│   │   └── karaslice/        # Karaslice page (shell + dynamic client)
+│   │   └── karaslice/        # Karaslice sales page + app
+│   │       ├── page.tsx      # Public sales page (redirects if logged in)
+│   │       ├── karaslice-sales.tsx  # Sales page component
+│   │       ├── karaslice-client.tsx # App client wrapper
+│   │       ├── name-gate.tsx # Name enforcement gate
+│   │       └── app/page.tsx  # Protected Karaslice app (auth required)
 │   ├── actions/
 │   │   ├── assistant-actions.ts      # AI assistant server action
 │   │   ├── checkout-actions.ts       # Stripe + Shippo server actions
 │   │   ├── cloud-repair-actions.ts   # Cloud mesh repair + split server actions
 │   │   ├── mesh-analysis-actions.ts  # Mesh file analysis server action
+│   │   ├── account-actions.ts        # Duplicate account detection + user records
 │   │   └── quote-actions.ts          # Quote generation server action
 │   ├── api/
+│   │   ├── auth/update-name/route.ts    # Name update API for profile gate
 │   │   └── repair-job/[jobId]/route.ts  # Job status GET + worker PATCH endpoint
 │   ├── data/
 │   │   ├── materials.ts
@@ -210,8 +219,9 @@ Karaslice is a 3D mesh slicer and analyzer at `/karaslice`. Basic topology repai
 
 ```
 src/components/karaslice/
-├── karaslice-app.tsx          # Main UI (sidebar tabs, state, cloud repair polling)
-├── viewport.tsx               # Three.js WebGL viewport (forwardRef, OrbitControls)
+├── karaslice-app.tsx          # Main UI (3-panel layout, repair workbench, phase 1-3 features)
+├── viewport.tsx               # Three.js WebGL viewport (forwardRef, OrbitControls, defect overlays)
+├── defect-overlays.ts         # Edge topology analysis for open/non-manifold edge detection
 ├── manifold-engine.ts         # Core geometry engine (repair, split, booleans)
 ├── stl-utils.ts               # Binary STL / OBJ export, mesh analysis + diagnostics
 ├── voxel-reconstruct.ts       # Voxel-based mesh reconstruction (solid + shell)
@@ -248,13 +258,20 @@ File (STL / OBJ / 3MF)
 
 ### Karaslice UI Features
 
+- **3-Panel Layout** — Left scene panel, center viewport with bottom drawer, right Repair Workbench with Inspect/Repair/Prepare/Export tabs
+- **Defect Overlays** — Real-time open edge (red) and non-manifold edge (orange) visualization with per-type toggles and edge counts
+- **Quality Score Breakdown** — Per-category scores (topology, watertight, normals, geometry) with color-coded progress bars
+- **Pipeline Log Console** — Timestamped, color-coded log entries in the bottom drawer showing every cloud repair step
+- **Repair History** — Saves repair candidates after each operation; click to switch between variants with side-by-side metrics comparison
+- **Guided Repair Routing** — AI analysis recommends Cloud Repair (severe) or Basic Repair (minor) with one-click action buttons
+- **Feature Preservation** — Sharp edge angle threshold slider (10-60 degrees) and organic/mechanical/auto surface mode selector
+- **Symmetry Recovery** — Mirror mesh across X/Y/Z axis to reconstruct missing geometry from intact side
+- **Variant Generation** — One-click Fine Detail, Fast Preview, Alt. Mode, and Smooth variants for A/B comparison
+- **Cloud Repair** — Submit to cloud, live 15-stage progress bar, full repair report, auto-loaded results, and pipeline log
+- **AI-Driven Reconstruction** — 3 modes (solid voxel, shell voxel, point cloud) with AI-prescribed parameters and auto-retry
 - **Unit selector** — Global mm / cm / in toggle; all dimensions, volumes, and surface areas convert in real-time
-- **Custom printer volume** — Preset / Custom toggle in Pre-Split tab; manual X/Y/Z input in the current display unit, stored internally as mm
-- **Auto-calculate cuts** — Compares mesh bounding box to printer volume and places cut planes where needed
+- **Custom printer volume** — Preset / Custom toggle; manual X/Y/Z input in the current display unit
 - **Weight estimate** — Material density selector (PLA, PETG, ABS, ASA, TPU, Nylon, Resin, CF) with per-part and total weight
-- **Cloud Repair panel** — Submit to cloud, live 15-stage progress bar, full repair report with quality score, damage classification, feature edge count, thin wall stats, and download buttons
-- **AI-Driven Reconstruction** — Gemini 3.1 Pro analyzes geometry diagnostics and prescribes exact parameters; auto-retry loop validates output and adjusts on failure
-- **Pre-Reconstruction Sanitation** — Deterministic cleanup: duplicate face removal, debris component classification, non-manifold edge resolution via normal clustering
 - **Slice Lines Toggle** — Show/hide cut plane lines in the 3D viewport
 
 ### manifold-engine exports
@@ -287,6 +304,9 @@ interface ViewportHandle {
   getBakedGeometry(): { geo: BufferGeometry; bbox: Box3 } | null;
   getRawGeometry(): BufferGeometry | null;
   loadRepairedGeometry(geo: BufferGeometry, fileName: string): void;
+  captureScreenshot(): string | null;
+  showDefectOverlays(data: DefectOverlayData): void;
+  clearDefectOverlays(): void;
 }
 ```
 
@@ -305,6 +325,23 @@ The Three.js viewport uses physically-based rendering throughout:
 | Lighting | `HemisphereLight` + warm key directional + cool fill directional |
 | Resize | `ResizeObserver` on the mount div; `window resize` as fallback |
 | Post-split normals | `toCreasedNormals` (30° crease angle) + `mergeVertices` for sharp cap edges |
+
+## Karaslice Access Flow
+
+```
+/karaslice (public)
+  └─ Not logged in → Sales page with features + sign-in buttons
+  └─ Logged in → Redirect to /karaslice/app
+
+/karaslice/app (protected by middleware)
+  └─ Not logged in → Redirect to /login?callbackUrl=/karaslice/app
+  └─ Logged in, no name → Name gate (must enter first + last name)
+  └─ Logged in, has name → Karaslice app
+```
+
+### Duplicate Account Detection
+
+On each OAuth sign-in, the system records the user's email + provider in Firestore (`users` collection). If the same email has accounts across multiple OAuth providers (e.g., Google + Apple), a warning is logged server-side. The `findAccountsByEmail` server action can be used to look up all accounts for a given email.
 
 ## Cloud Worker Deployment
 

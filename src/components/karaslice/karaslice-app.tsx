@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   Upload, FileBox, Cpu, Scissors, Package,
-  ChevronDown, ChevronRight, Plus, Minus, Download,
-  RotateCcw, Info, AlertTriangle, CheckCircle2, Loader2,
+  ChevronDown, ChevronRight, ChevronUp, Plus, Minus, Download,
+  RotateCcw, RotateCw, Info, AlertTriangle, CheckCircle2, Loader2,
   Maximize2, Link2, Eye, ZapOff, Zap, Keyboard, X,
   Target, Scale, Send, Menu, Wrench, ArrowLeft, Ruler, Boxes, Sparkles, Cloud, CloudOff,
+  Layers, Trash2, FlipVertical, Merge, Search,
+  PanelBottomClose, PanelBottomOpen, ScanLine,
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -20,7 +22,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 // toast removed — using sidebar notifications instead
-import type { MeshInfo, CutPlane, TransformState, SplitPartVisual, ViewportHandle } from "./viewport";
+import type { MeshInfo, CutPlane, TransformState, SplitPartVisual, ViewportHandle, DefectOverlayData } from "./viewport";
 import type { SplitPart } from "./manifold-engine";
 import printerProfiles from "@/app/data/printer-profiles.json";
 import { cn } from "@/lib/utils";
@@ -44,6 +46,7 @@ const Viewport = dynamic(
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Tab = "file" | "prepare" | "presplit" | "split" | "export";
+type WorkbenchTab = "inspect" | "repair" | "prepare" | "export";
 
 interface PrinterProfile {
   id: string; name: string; brand: string;
@@ -207,6 +210,10 @@ export function KarasliceApp() {
   const [analyzingAI, setAnalyzingAI] = useState(false);
   const [reconstructMode, setReconstructMode] = useState<"solid_voxel" | "shell_voxel" | "point_cloud">("solid_voxel");
 
+  // ── Post-repair AI review (auto-triggered on quality check failure) ────────
+  const [postReview, setPostReview] = useState<import("@/app/actions/mesh-analysis-actions").PostRepairReviewResult | null>(null);
+  const [postReviewing, setPostReviewing] = useState(false);
+
   // ── Prepare ─────────────────────────────────────────────────────────────────
   const [transforms, setTransforms] = useState<TransformState>(DEFAULT_TRANSFORMS);
   const [uniformScale, setUniformScale] = useState(true);
@@ -243,6 +250,37 @@ export function KarasliceApp() {
   const [wireframe, setWireframe] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // ── Workbench (right panel) ───────────────────────────────────────────────
+  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>("inspect");
+  const [workbenchOpen, setWorkbenchOpen] = useState(false); // mobile toggle
+  const [bottomDrawerOpen, setBottomDrawerOpen] = useState(false);
+
+  // ── Compare mode ──────────────────────────────────────────────────────────
+  const [showOriginal, setShowOriginal] = useState(false);
+  const originalGeoRef = useRef<import("three").BufferGeometry | null>(null);
+
+  // ── Defect overlays (Phase 2) ─────────────────────────────────────────────
+  const [defectOverlayData, setDefectOverlayData] = useState<DefectOverlayData | null>(null);
+  const [showOpenEdges, setShowOpenEdges] = useState(true);
+  const [showNonManifoldEdges, setShowNonManifoldEdges] = useState(true);
+  const [overlaysVisible, setOverlaysVisible] = useState(false);
+
+  // ── Pipeline log (Phase 2) ────────────────────────────────────────────────
+  type PipelineLogEntry = { ts: number; step: string; message: string; status: "running" | "done" | "error" };
+  const [pipelineLog, setPipelineLog] = useState<PipelineLogEntry[]>([]);
+
+  // ── Repair candidates (Phase 2) ───────────────────────────────────────────
+  type RepairCandidate = { label: string; geometry: import("three").BufferGeometry; source: string; metrics?: Record<string, unknown> };
+  const [repairCandidates, setRepairCandidates] = useState<RepairCandidate[]>([]);
+  const [activeCandidateIdx, setActiveCandidateIdx] = useState(-1);
+
+  // ── Phase 3: Reconstruction Studio ──────────────────────────────────────────
+  const [featureAngleThreshold, setFeatureAngleThreshold] = useState(30); // degrees
+  const [surfaceMode, setSurfaceMode] = useState<"auto" | "organic" | "mechanical">("auto");
+  const [symmetryMirror, setSymmetryMirror] = useState(false);
+  const [symmetryAxis, setSymmetryAxis] = useState<"x" | "y" | "z">("x");
+  const [generatingVariant, setGeneratingVariant] = useState(false);
 
   // ── Sections ────────────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState({
@@ -284,6 +322,12 @@ export function KarasliceApp() {
     setReconstructResult(null);
     setAiAnalysis(null);
     setReconstructMode("solid_voxel");
+    // Phase 2: Clear overlays, pipeline log, and candidates on new mesh
+    setDefectOverlayData(null);
+    setOverlaysVisible(false);
+    setPipelineLog([]);
+    setRepairCandidates((prev) => { prev.forEach((c) => c.geometry.dispose()); return []; });
+    setActiveCandidateIdx(-1);
     // Seed the resolution slider to a sensible default for this model's bbox
     import("./voxel-reconstruct").then(({ autoVoxelResolution, minSafeResolution }) => {
       const auto = autoVoxelResolution(info.boundingBox);
@@ -398,15 +442,91 @@ export function KarasliceApp() {
     }
   };
 
+  // ── Auto AI review (triggered when quality checks fail after repair) ────────
+  const runPostRepairReview = async (
+    operationType: "topology_repair" | "cloud_repair" | "voxel_reconstruct",
+    beforeMetrics: { triangles: number; vertices: number; openEdges: number; nonManifoldEdges: number; boundingBox: { x: number; y: number; z: number }; surfaceAreaMM2: number; volumeMM3: number },
+    afterGeo: import("three").BufferGeometry,
+    extras?: { repairStats?: Record<string, unknown>; cloudReport?: Record<string, unknown> },
+  ) => {
+    if (!viewportRef.current || !meshInfo) return;
+    setPostReviewing(true);
+    setPostReview(null);
+    try {
+      const { analyzeGeometry } = await import("./stl-utils");
+      const afterAnalysis = analyzeGeometry(afterGeo);
+
+      // Quick check: if watertight with reasonable triangle count, skip AI
+      const triRatio = afterAnalysis.triangleCount / Math.max(beforeMetrics.triangles, 1);
+      if (afterAnalysis.isWatertight && triRatio <= 3 && triRatio >= 0.1 && afterAnalysis.nonManifoldEdgeCount === 0) {
+        setPostReview({ passed: true, issues: [], recommendation: "accept", reasoning: "All quality checks passed." });
+        return;
+      }
+
+      // Quality issues detected — capture screenshot and send to AI
+      notify("Quality issues detected — AI reviewing result…");
+      const screenshot = viewportRef.current.captureScreenshot() ?? undefined;
+      const { postRepairReview } = await import("@/app/actions/mesh-analysis-actions");
+      const review = await postRepairReview({
+        operationType,
+        fileName: meshInfo.fileName,
+        screenshotBase64: screenshot,
+        before: beforeMetrics,
+        after: {
+          triangles: afterAnalysis.triangleCount,
+          vertices: afterAnalysis.vertexCount,
+          openEdges: afterAnalysis.openEdgeCount,
+          nonManifoldEdges: afterAnalysis.nonManifoldEdgeCount,
+          isWatertight: afterAnalysis.isWatertight,
+          surfaceAreaMM2: afterAnalysis.surfaceAreaMM2,
+          volumeMM3: afterAnalysis.volumeMM3,
+        },
+        repairStats: extras?.repairStats,
+        cloudReport: extras?.cloudReport,
+      });
+
+      setPostReview(review);
+      if (!review.passed) {
+        if (review.recommendation === "escalate_to_cloud") {
+          notify("AI recommends Cloud Repair for better results.", "destructive");
+          setOpenSections((s) => ({ ...s, cloudRepair: true }));
+        } else if (review.recommendation === "retry_with_params") {
+          notify(`AI suggests parameter adjustments: ${review.reasoning}`);
+        } else {
+          notify(`AI review: ${review.reasoning}`);
+        }
+      }
+    } catch (err) {
+      console.error("[postRepairReview] failed:", err);
+    } finally {
+      setPostReviewing(false);
+    }
+  };
+
   // ── Repair ────────────────────────────────────────────────────────────────────
   const handleRepair = async () => {
     if (!viewportRef.current || !meshInfo) return;
     setRepairing(true);
     setRepairResult(null);
+    setPostReview(null);
     setRepairMessage("Starting repair…");
     try {
       const geo = viewportRef.current.getRawGeometry();
       if (!geo) return;
+
+      // Capture before-metrics for post-repair AI review
+      const { analyzeGeometry } = await import("./stl-utils");
+      const beforeAnalysis = analyzeGeometry(geo);
+      const beforeMetrics = {
+        triangles: meshInfo.triangleCount,
+        vertices: beforeAnalysis.vertexCount,
+        openEdges: beforeAnalysis.openEdgeCount,
+        nonManifoldEdges: beforeAnalysis.nonManifoldEdgeCount,
+        boundingBox: meshInfo.boundingBox,
+        surfaceAreaMM2: beforeAnalysis.surfaceAreaMM2,
+        volumeMM3: beforeAnalysis.volumeMM3,
+      };
+
       const { repairMesh } = await import("./manifold-engine");
       const { geometry, stats } = await repairMesh(geo, (step, total, msg) => {
         void step; void total;
@@ -415,7 +535,16 @@ export function KarasliceApp() {
       setRepairResult(stats);
       viewportRef.current.loadRepairedGeometry(geometry, meshInfo.fileName);
       setAnalysisResult(null); // invalidate stale analysis
+      // Phase 2: Save as repair candidate
+      addRepairCandidate("Topology Repair", geometry, "topology", stats as unknown as Record<string, unknown>);
+      // Clear defect overlays since geometry changed
+      viewportRef.current?.clearDefectOverlays();
+      setOverlaysVisible(false);
+      setDefectOverlayData(null);
       notify(stats.isWatertight ? "Repair complete — mesh is watertight. Ready to split." : "Repair complete — some issues may remain.");
+
+      // Auto AI review if quality checks fail (non-blocking)
+      runPostRepairReview("topology_repair", beforeMetrics, geometry, { repairStats: stats as unknown as Record<string, unknown> });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       notify(`Repair failed: ${msg}`, "destructive");
@@ -670,6 +799,12 @@ export function KarasliceApp() {
       const modeLabel = currentMode === "point_cloud" ? "Point cloud" : currentMode === "shell_voxel" ? "Shell" : "Solid";
       setReconstructResult(result);
       viewportRef.current.loadRepairedGeometry(result.geometry, meshInfo.fileName);
+      // Phase 2: Save as repair candidate
+      addRepairCandidate(`${modeLabel} Reconstruction`, result.geometry, currentMode, { resolution: result.resolution, triangles: result.outputTriangles });
+      // Clear defect overlays since geometry changed
+      viewportRef.current?.clearDefectOverlays();
+      setOverlaysVisible(false);
+      setDefectOverlayData(null);
       setAnalysisResult(null);
       setAiAnalysis(null);
 
@@ -712,6 +847,13 @@ export function KarasliceApp() {
       return;
     }
 
+    // Phase 2: Save original for compare + auto-open drawer + clear log
+    saveOriginalForCompare();
+    setShowOriginal(false);
+    setBottomDrawerOpen(true);
+    clearPipelineLog();
+    appendPipelineLog("submit", "Preparing cloud repair submission…", "running");
+
     setCloudRepairSubmitting(true);
     setCloudRepairJob(null);
     stopCloudPolling();
@@ -733,9 +875,11 @@ export function KarasliceApp() {
         status: "queued",
         stepMessage: "Job submitted — waiting for worker…",
       });
+      appendPipelineLog("submit", "Job submitted — waiting for worker…", "done");
 
       // Start polling with timeout and error counting
       setCloudRepairPolling(true);
+      let lastStep = "";
       let pollErrors = 0;
       const pollStartTime = Date.now();
       const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes max
@@ -750,6 +894,7 @@ export function KarasliceApp() {
             status: "failed",
             error: "Cloud repair timed out after 15 minutes. The worker may have crashed — check Cloud Run logs.",
           } : null);
+          appendPipelineLog("timeout", "Timed out after 15 minutes", "error");
           notify("Cloud repair timed out after 15 minutes.", "destructive");
           return;
         }
@@ -760,10 +905,19 @@ export function KarasliceApp() {
           pollErrors = 0; // reset on success
           setCloudRepairJob(status);
 
+          // Phase 2: Log each new pipeline step
+          if (status.step && status.step !== lastStep) {
+            if (lastStep) appendPipelineLog(lastStep, `${lastStep} complete`, "done");
+            appendPipelineLog(status.step, status.stepMessage || status.step, "running");
+            lastStep = status.step;
+          }
+
           if (status.status === "finished" || status.status === "failed") {
             stopCloudPolling();
+            if (lastStep) appendPipelineLog(lastStep, `${lastStep} complete`, "done");
 
             if (status.status === "finished") {
+              appendPipelineLog("finished", "Cloud repair complete — loading result…", "running");
               // Auto-load repaired mesh into viewport
               try {
                 const url = await getRepairResultUrl(result.jobId, "repaired.stl");
@@ -773,11 +927,32 @@ export function KarasliceApp() {
                 const loader = new STLLoader();
                 const geometry = loader.parse(arrayBuffer);
                 viewportRef.current?.loadRepairedGeometry(geometry, "cloud_repaired.stl");
+                // Phase 2: Save as repair candidate
+                addRepairCandidate("Cloud Repair", geometry, "cloud", status.report as Record<string, unknown> | undefined);
+                appendPipelineLog("finished", "Repaired mesh loaded into viewport", "done");
                 notify("Cloud repair complete — repaired mesh loaded.");
+
+                // Auto AI review — capture before-metrics from meshInfo
+                if (meshInfo) {
+                  const beforeMetrics = {
+                    triangles: meshInfo.triangleCount,
+                    vertices: meshInfo.triangleCount * 3,
+                    openEdges: analysisResult?.openEdgeCount ?? 0,
+                    nonManifoldEdges: analysisResult?.nonManifoldEdgeCount ?? 0,
+                    boundingBox: meshInfo.boundingBox,
+                    surfaceAreaMM2: analysisResult?.surfaceAreaMM2 ?? 0,
+                    volumeMM3: analysisResult?.volumeMM3 ?? 0,
+                  };
+                  runPostRepairReview("cloud_repair", beforeMetrics, geometry, {
+                    cloudReport: status.report as Record<string, unknown> | undefined,
+                  });
+                }
               } catch {
+                appendPipelineLog("finished", "Auto-load failed — use download buttons", "error");
                 notify("Cloud repair complete — auto-load failed. Use download buttons.", "destructive");
               }
             } else {
+              appendPipelineLog("failed", status.error ?? "Unknown error", "error");
               notify(`Cloud repair failed: ${status.error ?? "Unknown error"}`, "destructive");
             }
           }
@@ -1022,6 +1197,359 @@ export function KarasliceApp() {
     router.push("/quote?from=karaslice");
   };
 
+  // ── Quick Repair Tools ─────────────────────────────────────────────────────────
+
+  /** Save current geometry as "original" for compare mode */
+  const saveOriginalForCompare = useCallback(() => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (geo) {
+      originalGeoRef.current?.dispose();
+      originalGeoRef.current = geo.clone();
+    }
+  }, []);
+
+  /** Toggle between original and repaired geometry */
+  const toggleCompare = useCallback(() => {
+    if (!viewportRef.current || !meshInfo || !originalGeoRef.current) return;
+    if (showOriginal) {
+      // Switch back to repaired (current mesh was saved before we swapped)
+      const geo = viewportRef.current.getRawGeometry();
+      if (geo) {
+        viewportRef.current.loadRepairedGeometry(originalGeoRef.current, meshInfo.fileName);
+        originalGeoRef.current = geo.clone();
+      }
+    } else {
+      // Switch to original — save current first
+      const currentGeo = viewportRef.current.getRawGeometry();
+      if (currentGeo) {
+        const temp = currentGeo.clone();
+        viewportRef.current.loadRepairedGeometry(originalGeoRef.current, `${meshInfo.fileName} (original)`);
+        originalGeoRef.current = temp;
+      }
+    }
+    setShowOriginal((v) => !v);
+  }, [meshInfo, showOriginal]);
+
+  const handleRecalcNormals = useCallback(() => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (!geo || !meshInfo) return;
+    saveOriginalForCompare();
+    const cloned = geo.clone();
+    cloned.computeVertexNormals();
+    viewportRef.current!.loadRepairedGeometry(cloned, meshInfo.fileName);
+    setAnalysisResult(null);
+    notify("Normals recalculated.");
+  }, [meshInfo, notify, saveOriginalForCompare]);
+
+  const handleFlipNormals = useCallback(() => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (!geo || !meshInfo) return;
+    saveOriginalForCompare();
+    const cloned = geo.clone();
+    const index = cloned.index;
+    if (index) {
+      const arr = index.array as Uint32Array;
+      for (let i = 0; i < arr.length; i += 3) {
+        const tmp = arr[i + 1];
+        arr[i + 1] = arr[i + 2];
+        arr[i + 2] = tmp;
+      }
+      index.needsUpdate = true;
+    } else {
+      const pos = cloned.attributes.position;
+      for (let i = 0; i < pos.count; i += 3) {
+        const x1 = pos.getX(i + 1), y1 = pos.getY(i + 1), z1 = pos.getZ(i + 1);
+        pos.setXYZ(i + 1, pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2));
+        pos.setXYZ(i + 2, x1, y1, z1);
+      }
+      pos.needsUpdate = true;
+    }
+    // Invert normal vectors
+    if (cloned.attributes.normal) {
+      const norm = cloned.attributes.normal;
+      for (let i = 0; i < norm.count; i++) {
+        norm.setXYZ(i, -norm.getX(i), -norm.getY(i), -norm.getZ(i));
+      }
+      norm.needsUpdate = true;
+    }
+    viewportRef.current!.loadRepairedGeometry(cloned, meshInfo.fileName);
+    setAnalysisResult(null);
+    notify("Normals flipped.");
+  }, [meshInfo, notify, saveOriginalForCompare]);
+
+  const handleMergeVertices = useCallback(async () => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (!geo || !meshInfo) return;
+    saveOriginalForCompare();
+    const { mergeVertices } = await import("three/examples/jsm/utils/BufferGeometryUtils.js");
+    const merged = mergeVertices(geo.clone(), 0.001);
+    const before = geo.attributes.position.count;
+    const after = merged.attributes.position.count;
+    viewportRef.current!.loadRepairedGeometry(merged, meshInfo.fileName);
+    setAnalysisResult(null);
+    notify(`Merged vertices: ${before.toLocaleString()} → ${after.toLocaleString()}`);
+  }, [meshInfo, notify, saveOriginalForCompare]);
+
+  const handleRemoveIslands = useCallback(async () => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (!geo || !meshInfo) return;
+    saveOriginalForCompare();
+    const { sanitizeMesh } = await import("./mesh-sanitize");
+    const result = sanitizeMesh(geo.clone());
+    viewportRef.current!.loadRepairedGeometry(result.geometry, meshInfo.fileName);
+    setAnalysisResult(null);
+    if (result.stats.debrisComponentsRemoved > 0) {
+      notify(`Removed ${result.stats.debrisComponentsRemoved} islands (${result.stats.debrisTrianglesRemoved} triangles)`);
+    } else {
+      notify("No debris islands found.");
+    }
+  }, [meshInfo, notify, saveOriginalForCompare]);
+
+  const handleLayFlat = useCallback(async () => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (!geo || !meshInfo) return;
+    saveOriginalForCompare();
+    const THREE = await import("three");
+    const cloned = geo.clone();
+    const pos = cloned.attributes.position;
+    const triCount = cloned.index ? cloned.index.count / 3 : pos.count / 3;
+
+    // Find largest-area face normal cluster
+    const buckets = new Map<string, { normal: import("three").Vector3; area: number }>();
+    const v0 = new THREE.Vector3(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
+    const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), fn = new THREE.Vector3();
+
+    for (let t = 0; t < triCount; t++) {
+      const i0 = cloned.index ? cloned.index.getX(t * 3) : t * 3;
+      const i1 = cloned.index ? cloned.index.getX(t * 3 + 1) : t * 3 + 1;
+      const i2 = cloned.index ? cloned.index.getX(t * 3 + 2) : t * 3 + 2;
+      v0.fromBufferAttribute(pos, i0);
+      v1.fromBufferAttribute(pos, i1);
+      v2.fromBufferAttribute(pos, i2);
+      e1.subVectors(v1, v0);
+      e2.subVectors(v2, v0);
+      fn.crossVectors(e1, e2);
+      const area = fn.length() * 0.5;
+      fn.normalize();
+      const key = `${Math.round(fn.x * 5)},${Math.round(fn.y * 5)},${Math.round(fn.z * 5)}`;
+      const ex = buckets.get(key);
+      if (ex) ex.area += area;
+      else buckets.set(key, { normal: fn.clone(), area });
+    }
+
+    let maxArea = 0;
+    let flatNormal = new THREE.Vector3(0, -1, 0);
+    for (const b of buckets.values()) {
+      if (b.area > maxArea) { maxArea = b.area; flatNormal = b.normal; }
+    }
+
+    const q = new THREE.Quaternion().setFromUnitVectors(flatNormal, new THREE.Vector3(0, -1, 0));
+    cloned.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q));
+    cloned.computeBoundingBox();
+    cloned.translate(0, -cloned.boundingBox!.min.y, 0);
+
+    viewportRef.current!.loadRepairedGeometry(cloned, meshInfo.fileName);
+    setAnalysisResult(null);
+    notify("Model laid flat on largest face.");
+  }, [meshInfo, notify, saveOriginalForCompare]);
+
+  const handleRotate90 = useCallback(async (axis: "x" | "y" | "z") => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (!geo || !meshInfo) return;
+    saveOriginalForCompare();
+    const THREE = await import("three");
+    const cloned = geo.clone();
+    const angle = Math.PI / 2;
+    const matrix = new THREE.Matrix4();
+    if (axis === "x") matrix.makeRotationX(angle);
+    else if (axis === "y") matrix.makeRotationY(angle);
+    else matrix.makeRotationZ(angle);
+    cloned.applyMatrix4(matrix);
+    viewportRef.current!.loadRepairedGeometry(cloned, meshInfo.fileName);
+    setAnalysisResult(null);
+    notify(`Rotated 90° on ${axis.toUpperCase()}-axis.`);
+  }, [meshInfo, notify, saveOriginalForCompare]);
+
+  // Also save original before repair operations
+  const handleRepairWithCompare = async () => {
+    saveOriginalForCompare();
+    setShowOriginal(false);
+    await handleRepair();
+  };
+
+  // ── Defect overlays (Phase 2) ───────────────────────────────────────────────
+
+  const computeAndShowOverlays = useCallback(async () => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (!geo) return;
+    const { computeEdgeDefects } = await import("./defect-overlays");
+    const result = computeEdgeDefects(geo);
+    const data: DefectOverlayData = {
+      openEdges: showOpenEdges ? result.openEdges : undefined,
+      nonManifoldEdges: showNonManifoldEdges ? result.nonManifoldEdges : undefined,
+    };
+    setDefectOverlayData({ openEdges: result.openEdges, nonManifoldEdges: result.nonManifoldEdges });
+    viewportRef.current?.showDefectOverlays(data);
+    setOverlaysVisible(true);
+    notify(`Overlays: ${result.openEdgeCount} open edges, ${result.nonManifoldEdgeCount} non-manifold edges`);
+  }, [showOpenEdges, showNonManifoldEdges, notify]);
+
+  const toggleOverlayVisibility = useCallback(() => {
+    if (overlaysVisible) {
+      viewportRef.current?.clearDefectOverlays();
+      setOverlaysVisible(false);
+    } else if (defectOverlayData) {
+      viewportRef.current?.showDefectOverlays({
+        openEdges: showOpenEdges ? defectOverlayData.openEdges : undefined,
+        nonManifoldEdges: showNonManifoldEdges ? defectOverlayData.nonManifoldEdges : undefined,
+      });
+      setOverlaysVisible(true);
+    } else {
+      computeAndShowOverlays();
+    }
+  }, [overlaysVisible, defectOverlayData, showOpenEdges, showNonManifoldEdges, computeAndShowOverlays]);
+
+  // Re-apply overlays when filter toggles change
+  useEffect(() => {
+    if (!overlaysVisible || !defectOverlayData) return;
+    viewportRef.current?.showDefectOverlays({
+      openEdges: showOpenEdges ? defectOverlayData.openEdges : undefined,
+      nonManifoldEdges: showNonManifoldEdges ? defectOverlayData.nonManifoldEdges : undefined,
+    });
+  }, [showOpenEdges, showNonManifoldEdges, overlaysVisible, defectOverlayData]);
+
+  // ── Pipeline log helpers (Phase 2) ──────────────────────────────────────────
+
+  const appendPipelineLog = useCallback((step: string, message: string, status: PipelineLogEntry["status"]) => {
+    setPipelineLog((prev) => {
+      // Update existing entry for same step if running→done/error, else append
+      const existing = prev.findIndex((e) => e.step === step && e.status === "running");
+      if (existing >= 0 && status !== "running") {
+        const updated = [...prev];
+        updated[existing] = { ts: Date.now(), step, message, status };
+        return updated;
+      }
+      return [...prev, { ts: Date.now(), step, message, status }];
+    });
+  }, []);
+
+  const clearPipelineLog = useCallback(() => setPipelineLog([]), []);
+
+  // ── Repair candidate management (Phase 2) ──────────────────────────────────
+
+  const addRepairCandidate = useCallback((label: string, geo: import("three").BufferGeometry, source: string, metrics?: Record<string, unknown>) => {
+    setRepairCandidates((prev) => [...prev, { label, geometry: geo.clone(), source, metrics }]);
+  }, []);
+
+  const switchToCandidate = useCallback((idx: number) => {
+    const candidate = repairCandidates[idx];
+    if (!candidate) return;
+    viewportRef.current?.loadRepairedGeometry(candidate.geometry.clone(), candidate.label);
+    setActiveCandidateIdx(idx);
+    notify(`Switched to: ${candidate.label}`);
+  }, [repairCandidates, notify]);
+
+  // ── Phase 3: Variant generation ──────────────────────────────────────────────
+
+  /** Generate a reconstruction variant with tweaked params for A/B comparison. */
+  const generateVariant = useCallback(async (variantLabel: string, resOverride?: number, modeOverride?: "solid_voxel" | "shell_voxel" | "point_cloud") => {
+    if (!viewportRef.current || !meshInfo) return;
+    setGeneratingVariant(true);
+    const mode = modeOverride ?? reconstructMode;
+    const res = resOverride ?? reconstructResolutionMM;
+    try {
+      const geo = viewportRef.current.getRawGeometry();
+      if (!geo) return;
+      const smoothIter = surfaceMode === "organic" ? Math.max(smoothingIterations, 5) : surfaceMode === "mechanical" ? Math.min(smoothingIterations, 1) : smoothingIterations;
+      const simpTarget = simplifyEnabled ? Math.round(meshInfo.triangleCount * 0.8) : 0;
+      const result = await runSingleReconstruction(geo, mode, {
+        voxel: mode !== "point_cloud" ? { resolution: res, smoothingIterations: smoothIter, simplifyTarget: simpTarget, dilationVoxels: 1 } : null,
+        pointCloud: mode === "point_cloud" ? { resolution: res, smoothingIterations: smoothIter, simplifyTarget: simpTarget, sdfSharpness: surfaceMode === "mechanical" ? 5.0 : 3.0, radiusMultiplier: 2.5, gapBridgingFactor: 1.0 } : null,
+      }, meshInfo.triangleCount);
+      if (result) {
+        addRepairCandidate(variantLabel, result.geometry, mode, { resolution: res, triangles: result.outputTriangles });
+        notify(`Variant "${variantLabel}" generated — ${result.outputTriangles.toLocaleString()} tris`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      notify(`Variant failed: ${msg}`, "destructive");
+    } finally {
+      setGeneratingVariant(false);
+      setReconstructMessage("");
+    }
+  }, [meshInfo, reconstructMode, reconstructResolutionMM, smoothingIterations, simplifyEnabled, featureAngleThreshold, runSingleReconstruction, addRepairCandidate, notify]);
+
+  /** Compute quality breakdown from analysis results. */
+  const computeQualityBreakdown = useCallback(() => {
+    if (!analysisResult) return null;
+    const approxEdges = analysisResult.triangleCount * 1.5;
+    const openPct = approxEdges > 0 ? (analysisResult.openEdgeCount / approxEdges) * 100 : 0;
+    const nmPct = approxEdges > 0 ? (analysisResult.nonManifoldEdgeCount / approxEdges) * 100 : 0;
+
+    const topologyScore = Math.max(0, 100 - openPct * 10 - nmPct * 20);
+    const watertightScore = analysisResult.isWatertight ? 100 : Math.max(0, 100 - openPct * 5);
+    const normalScore = analysisResult.issues.some((i) => i.toLowerCase().includes("normal")) ? 50 : 100;
+    const geometryScore = analysisResult.volumeMM3 > 0 ? 100 : 60;
+    const overall = Math.round((topologyScore + watertightScore + normalScore + geometryScore) / 4);
+    return { topology: Math.round(topologyScore), watertight: Math.round(watertightScore), normals: Math.round(normalScore), geometry: Math.round(geometryScore), overall };
+  }, [analysisResult]);
+
+  /** Apply symmetry mirror to the current geometry. */
+  const handleSymmetryMirror = useCallback(async () => {
+    const geo = viewportRef.current?.getRawGeometry();
+    if (!geo || !meshInfo) return;
+    saveOriginalForCompare();
+    const THREE = await import("three");
+    const pos = geo.getAttribute("position");
+    if (!pos) return;
+    const original = pos.array as Float32Array;
+    const vtxCount = pos.count;
+    const idx = geo.getIndex();
+    const triCount = idx ? Math.floor(idx.count / 3) : Math.floor(vtxCount / 3);
+
+    // Find bounding box center on the mirror axis
+    geo.computeBoundingBox();
+    const center = new THREE.Vector3();
+    geo.boundingBox!.getCenter(center);
+    const axisIdx = symmetryAxis === "x" ? 0 : symmetryAxis === "y" ? 1 : 2;
+
+    // Mirror: duplicate all vertices and triangles, reflecting across center
+    const newPositions = new Float32Array(original.length * 2);
+    newPositions.set(original, 0);
+    for (let i = 0; i < vtxCount; i++) {
+      const base = i * 3;
+      newPositions[original.length + base] = original[base] + (axisIdx === 0 ? 2 * (center.x - original[base]) : 0);
+      newPositions[original.length + base + 1] = original[base + 1] + (axisIdx === 1 ? 2 * (center.y - original[base + 1]) : 0);
+      newPositions[original.length + base + 2] = original[base + 2] + (axisIdx === 2 ? 2 * (center.z - original[base + 2]) : 0);
+    }
+
+    // Build mirrored index (reversed winding)
+    const origIndices: number[] = [];
+    if (idx) {
+      const arr = idx.array;
+      for (let i = 0; i < arr.length; i++) origIndices.push(arr[i]);
+    } else {
+      for (let i = 0; i < vtxCount; i++) origIndices.push(i);
+    }
+    const mirrorIndices: number[] = [];
+    for (let t = 0; t < triCount; t++) {
+      // Reverse winding for mirror
+      mirrorIndices.push(vtxCount + origIndices[t * 3 + 2]);
+      mirrorIndices.push(vtxCount + origIndices[t * 3 + 1]);
+      mirrorIndices.push(vtxCount + origIndices[t * 3]);
+    }
+
+    const combined = new THREE.BufferGeometry();
+    combined.setAttribute("position", new THREE.BufferAttribute(newPositions, 3));
+    combined.setIndex([...origIndices, ...mirrorIndices]);
+    combined.computeVertexNormals();
+
+    viewportRef.current!.loadRepairedGeometry(combined, meshInfo.fileName);
+    addRepairCandidate(`Mirror ${symmetryAxis.toUpperCase()}`, combined, "symmetry");
+    setAnalysisResult(null);
+    notify(`Symmetry mirror applied on ${symmetryAxis.toUpperCase()}-axis.`);
+  }, [meshInfo, symmetryAxis, saveOriginalForCompare, addRepairCandidate, notify]);
+
   // ── Derived ───────────────────────────────────────────────────────────────────
   const isSevere = analysisResult
     ? analysisResult.triangleCount > 0 &&
@@ -1074,6 +1602,19 @@ export function KarasliceApp() {
     { id: "export",   label: "Export",    icon: Package },
   ];
 
+  const wbTabs: { id: WorkbenchTab; label: string; icon: React.ElementType }[] = [
+    { id: "inspect", label: "Inspect", icon: ScanLine },
+    { id: "repair",  label: "Repair",  icon: Wrench },
+    { id: "prepare", label: "Prepare", icon: Scissors },
+    { id: "export",  label: "Export",  icon: Package },
+  ];
+
+  /** Is any heavy operation running? */
+  const busy = analyzing || repairing || reconstructing || splitting || cloudRepairPolling || cloudRepairSubmitting || repairingParts || generatingVariant;
+
+  /** Auto-open bottom drawer when operations are running */
+  const drawerHasContent = busy || postReviewing || postReview || repairResult || reconstructResult || cloudRepairJob || pipelineLog.length > 0;
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
 
@@ -1095,26 +1636,32 @@ export function KarasliceApp() {
         }}
       />
 
-      {/* ── Mobile backdrop ─────────────────────────────────────────────────── */}
+      {/* ── Mobile backdrops ──────────────────────────────────────────────────── */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-20 bg-black/50 md:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
+      {workbenchOpen && (
+        <div
+          className="fixed inset-0 z-20 bg-black/50 md:hidden"
+          onClick={() => setWorkbenchOpen(false)}
+        />
+      )}
 
-      {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
+      {/* ══════════════════════════════════════════════════════════════════════════
+          LEFT RAIL — Scene panel (w-60)
+          ══════════════════════════════════════════════════════════════════════════ */}
       <aside className={cn(
-        "flex w-72 max-w-[85vw] flex-shrink-0 flex-col border-r border-border bg-card transition-transform duration-200",
-        // On desktop: always visible (normal flow)
-        // On mobile: fixed overlay, slide in/out
+        "flex w-60 max-w-[80vw] flex-shrink-0 flex-col border-r border-border bg-card transition-transform duration-200",
         "md:relative md:translate-x-0 md:z-auto",
         "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-30",
         sidebarOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full",
       )}>
 
         {/* Header */}
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
           <Link
             href="/"
             className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground transition-colors"
@@ -1125,9 +1672,8 @@ export function KarasliceApp() {
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent/10 text-accent">
             <Scissors className="h-4 w-4" />
           </div>
-          <span className="font-semibold tracking-tight">Karaslice</span>
+          <span className="font-semibold tracking-tight text-sm">Karaslice</span>
           <Badge variant="secondary" className="ml-auto text-[10px]">Beta</Badge>
-          {/* Close button — mobile only */}
           <button
             className="ml-1 flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground transition-colors md:hidden"
             onClick={() => setSidebarOpen(false)}
@@ -1137,15 +1683,519 @@ export function KarasliceApp() {
           </button>
         </div>
 
-        {/* Tabs */}
+        {/* Panel content */}
+        <div className="flex-1 overflow-y-auto py-1 text-sm">
+
+          {/* Upload */}
+          <div className="px-3 py-2">
+            <Button
+              size="sm"
+              className="w-full gap-2"
+              style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+              disabled={fileLoading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {fileLoading
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <Upload className="h-3.5 w-3.5" />}
+              {fileLoading ? "Processing…" : meshInfo ? "Load New File" : "Upload STL / OBJ / 3MF"}
+            </Button>
+          </div>
+          <Separator className="my-1" />
+
+          {/* File Info */}
+          <SectionHeader icon={Info} label="File Info" open={openSections.fileInfo} onToggle={() => toggleSection("fileInfo")} />
+          {openSections.fileInfo && (
+            <div className="px-3 pb-2 space-y-1.5">
+              {meshInfo ? (
+                <>
+                  <Row label="Name"      value={meshInfo.fileName} mono />
+                  <Row label="Format"    value={meshInfo.format.toUpperCase()} />
+                  <Row label="Size"      value={`${meshInfo.fileSizeMB} MB`} />
+                  <Row label="Triangles" value={meshInfo.triangleCount.toLocaleString()} />
+                  <Row label="Dim X"     value={`${fmtDim(meshInfo.boundingBox.x, u)} ${UNIT_LABELS[u]}`} />
+                  <Row label="Dim Y"     value={`${fmtDim(meshInfo.boundingBox.y, u)} ${UNIT_LABELS[u]}`} />
+                  <Row label="Dim Z"     value={`${fmtDim(meshInfo.boundingBox.z, u)} ${UNIT_LABELS[u]}`} />
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground py-2 text-center">No file loaded</p>
+              )}
+            </div>
+          )}
+          <Separator className="my-1" />
+
+          {/* Unit selector */}
+          <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+            <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Ruler className="h-3 w-3" /> Units
+            </span>
+            <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+              {(["mm", "cm", "in"] as const).map((unit) => (
+                <button
+                  key={unit}
+                  onClick={() => setDisplayUnit(unit)}
+                  className={cn(
+                    "rounded px-2 py-0.5 text-[10px] font-semibold transition-colors",
+                    displayUnit === unit
+                      ? "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {unit}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Parts / Shell list */}
+          {splitParts.length > 0 && (
+            <>
+              <SectionHeader
+                icon={Package}
+                label={`Parts (${splitParts.length})`}
+                open={openSections.splitResult}
+                onToggle={() => toggleSection("splitResult")}
+              />
+              {openSections.splitResult && (
+                <div className="px-3 pb-2 space-y-1">
+                  {splitParts.map((part, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setSelectedPartIndex(i === selectedPartIndex ? undefined : i)}
+                      className={cn(
+                        "w-full rounded-md border p-1.5 text-left text-[11px] transition-colors",
+                        selectedPartIndex === i
+                          ? "border-accent bg-accent/10 text-accent"
+                          : "border-border hover:bg-muted"
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium truncate">{part.label}</span>
+                        <span className="font-mono text-[9px] text-muted-foreground ml-1">
+                          {part.triangleCount.toLocaleString()} tri
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <Separator className="my-1" />
+            </>
+          )}
+
+          {/* View controls */}
+          <div className="px-3 py-2 space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">View</p>
+            <div className="flex items-center justify-between">
+              <Label className="text-[11px] flex items-center gap-1.5">
+                <ZapOff className="h-3 w-3" /> Wireframe
+              </Label>
+              <Switch checked={wireframe} onCheckedChange={setWireframe} className="scale-75" />
+            </div>
+            <div className="flex items-center justify-between">
+              <Label className="text-[11px] flex items-center gap-1.5">
+                <Eye className="h-3 w-3" /> Ghost
+              </Label>
+              <Switch checked={ghostMode} onCheckedChange={setGhostMode} className="scale-75" />
+            </div>
+            {splitParts.length > 0 && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px] text-muted-foreground">
+                  <span>Explode</span>
+                  <span className="font-mono">{Math.round(explodeAmount * 100)}%</span>
+                </div>
+                <Slider
+                  min={0} max={1} step={0.01}
+                  value={[explodeAmount]}
+                  onValueChange={([v]) => setExplodeAmount(v)}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Sidebar notification */}
+        {sidebarNotice && (
+          <div
+            className={cn(
+              "mx-2 mb-1 rounded-md px-3 py-2 text-xs font-medium transition-all animate-in fade-in slide-in-from-bottom-2 duration-200",
+              sidebarNotice.variant === "destructive"
+                ? "bg-destructive/15 text-destructive border border-destructive/30"
+                : "bg-accent/15 text-accent-foreground border border-accent/30"
+            )}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <span className="leading-snug">{sidebarNotice.message}</span>
+              <button onClick={() => setSidebarNotice(null)} className="shrink-0 mt-0.5 opacity-60 hover:opacity-100">
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="border-t border-border px-3 py-2 text-[10px] text-muted-foreground/50 flex items-center justify-between">
+          <span>Karaslice · Local</span>
+          <button
+            onClick={() => setShowShortcuts((v) => !v)}
+            className="hover:text-muted-foreground transition-colors"
+            title="Keyboard shortcuts"
+          >
+            <Keyboard className="h-3 w-3" />
+          </button>
+        </div>
+      </aside>
+
+      {/* ══════════════════════════════════════════════════════════════════════════
+          CENTER — Viewport + Bottom Drawer
+          ══════════════════════════════════════════════════════════════════════════ */}
+      <main className="relative flex flex-1 flex-col overflow-hidden">
+        {/* Viewport */}
+        <div className="relative flex-1 overflow-hidden">
+          <Viewport
+            ref={viewportRef}
+            onMeshLoaded={handleMeshLoaded}
+            onLoadStart={() => setFileLoading(true)}
+            onFileSelected={(file) => { pendingUploadFile.current = file; loadedFileRef.current = file; }}
+            cutPlanes={cutPlanes}
+            printerVolume={effectivePrinter
+              ? { x: effectivePrinter.x, y: effectivePrinter.y, z: effectivePrinter.z }
+              : null}
+            transforms={transforms}
+            splitParts={splitPartsVisual}
+            explodeAmount={explodeAmount}
+            showSliceLines={showSliceLines}
+            ghostMode={ghostMode}
+            wireframe={wireframe}
+            selectedPartIndex={selectedPartIndex}
+            onPartSelect={setSelectedPartIndex}
+          />
+
+          {/* Stats overlay */}
+          {meshInfo && (
+            <div className="absolute top-3 right-3 rounded-md border border-border bg-card px-3 py-2 text-xs font-mono space-y-0.5 pointer-events-none shadow-md">
+              <p className="text-muted-foreground truncate max-w-[200px]">{meshInfo.fileName}</p>
+              <p><span className="text-accent">{meshInfo.triangleCount.toLocaleString()}</span> triangles</p>
+              <p>
+                <span className="text-accent">{fmtDim(meshInfo.boundingBox.x, u)}</span> ×{" "}
+                <span className="text-accent">{fmtDim(meshInfo.boundingBox.y, u)}</span> ×{" "}
+                <span className="text-accent">{fmtDim(meshInfo.boundingBox.z, u)}</span> {UNIT_LABELS[u]}
+              </p>
+              {enabledPlaneCount > 0 && (
+                <p><span className="text-accent">{enabledPlaneCount}</span> cut plane{enabledPlaneCount !== 1 ? "s" : ""}</p>
+              )}
+              {splitParts.length > 0 && (
+                <p><span className="text-accent">{splitParts.length}</span> parts</p>
+              )}
+            </div>
+          )}
+
+          {/* Mobile toggles */}
+          <button
+            className="absolute top-3 left-3 z-10 flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card shadow-md text-muted-foreground hover:text-foreground transition-colors md:hidden"
+            onClick={() => setSidebarOpen((v) => !v)}
+            aria-label={sidebarOpen ? "Close menu" : "Open menu"}
+          >
+            {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+          </button>
+          <button
+            className="absolute top-3 right-3 z-10 flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 shadow-md text-muted-foreground hover:text-foreground transition-colors md:hidden text-xs"
+            onClick={() => setWorkbenchOpen((v) => !v)}
+            aria-label="Toggle workbench"
+          >
+            <Wrench className="h-3.5 w-3.5" />
+            <span>Tools</span>
+          </button>
+
+          {/* View mode badges */}
+          {(ghostMode || wireframe || explodeAmount > 0) && (
+            <div className="absolute top-3 left-14 md:left-3 flex gap-1.5">
+              {ghostMode && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Eye className="h-2.5 w-2.5" /> Ghost
+                </Badge>
+              )}
+              {wireframe && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <ZapOff className="h-2.5 w-2.5" /> Wireframe
+                </Badge>
+              )}
+              {explodeAmount > 0 && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Zap className="h-2.5 w-2.5" /> Explode {Math.round(explodeAmount * 100)}%
+                </Badge>
+              )}
+            </div>
+          )}
+
+          {/* Keyboard shortcuts overlay */}
+          {showShortcuts && (
+            <div className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-sm z-10">
+              <div className="rounded-xl border border-border bg-card/95 p-5 min-w-[240px] shadow-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <p className="text-sm font-semibold">Keyboard Shortcuts</p>
+                  <button
+                    onClick={() => setShowShortcuts(false)}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="space-y-2.5">
+                  {KEYBOARD_SHORTCUTS.map(([key, desc]) => (
+                    <div key={key} className="flex items-center justify-between gap-8 text-xs">
+                      <kbd className="rounded bg-muted px-2 py-0.5 font-mono text-[10px]">{key}</kbd>
+                      <span className="text-muted-foreground">{desc}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Bottom Drawer toggle ───────────────────────────────────────────── */}
+        <button
+          onClick={() => setBottomDrawerOpen((v) => !v)}
+          className="flex items-center justify-center gap-1.5 border-t border-border bg-card/80 px-3 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {bottomDrawerOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+          {busy ? "Operation running…" : pipelineLog.length > 0 ? "Pipeline Log" : drawerHasContent ? "Results" : "Activity"}
+        </button>
+
+        {/* ── Bottom Drawer content ──────────────────────────────────────────── */}
+        {bottomDrawerOpen && (
+          <div className="max-h-44 overflow-y-auto border-t border-border bg-card px-4 py-2 space-y-2 text-xs">
+            {/* Active operations */}
+            {analyzing && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-accent">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span className="font-medium">{analyzeStep || "Analyzing…"}</span>
+                </div>
+                <Progress value={
+                  analyzeStep.includes("wall") ? 40
+                  : analyzeStep.includes("AI") ? 70
+                  : 15
+                } className="h-1" />
+              </div>
+            )}
+            {repairing && (
+              <div className="flex items-center gap-2 text-accent">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>{repairMessage || "Repairing…"}</span>
+              </div>
+            )}
+            {reconstructing && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-accent">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>{reconstructMessage || "Reconstructing…"}</span>
+                </div>
+                {reconstructMessage && (
+                  <Progress value={
+                    reconstructMessage.includes("Validating") ? 90
+                    : reconstructMessage.includes("consulting AI") || reconstructMessage.includes("Consulting") ? 95
+                    : reconstructMessage.includes("Retry") ? 5
+                    : reconstructMessage.includes("Simplif") ? 70
+                    : reconstructMessage.includes("Smooth") ? 85
+                    : reconstructMessage.includes("Extract") || reconstructMessage.includes("Marching") ? 50
+                    : reconstructMessage.includes("Flood") ? 30
+                    : reconstructMessage.includes("Voxeliz") || reconstructMessage.includes("Rasteriz") ? 15
+                    : reconstructMessage.includes("SDF") || reconstructMessage.includes("distance") ? 40
+                    : reconstructMessage.includes("point cloud") || reconstructMessage.includes("spatial") ? 15
+                    : reconstructMessage.includes("Re-sorting") ? 75
+                    : reconstructMessage.includes("Finaliz") ? 95
+                    : 10
+                  } className="h-1" />
+                )}
+                {retryAttempt > 0 && (
+                  <p className="text-[10px] text-amber-500 font-semibold">Attempt {retryAttempt + 1}/{MAX_RECONSTRUCT_RETRIES + 1}</p>
+                )}
+              </div>
+            )}
+            {splitting && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-accent">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>{splitMessage || "Splitting…"}</span>
+                </div>
+                <Progress value={splitProgress} className="h-1" />
+              </div>
+            )}
+            {(cloudRepairSubmitting || cloudRepairPolling) && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-accent">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>{cloudRepairSubmitting ? "Uploading to cloud…" : "Cloud repair processing…"}</span>
+                </div>
+                {cloudRepairJob?.status === "running" && (
+                  <Progress value={
+                    cloudRepairJob.step === "parse" ? 3
+                    : cloudRepairJob.step === "analyze" ? 6
+                    : cloudRepairJob.step === "weld" ? 10
+                    : cloudRepairJob.step === "sanitize" ? 15
+                    : cloudRepairJob.step === "components" ? 22
+                    : cloudRepairJob.step === "nonmanifold" ? 30
+                    : cloudRepairJob.step === "normals" ? 35
+                    : cloudRepairJob.step === "holes" ? 40
+                    : cloudRepairJob.step === "selfintersect" ? 48
+                    : cloudRepairJob.step === "reconstruct" ? 58
+                    : cloudRepairJob.step === "post_cleanup" ? 68
+                    : cloudRepairJob.step === "remesh" ? 75
+                    : cloudRepairJob.step === "thinwall" ? 82
+                    : cloudRepairJob.step === "simplify" ? 88
+                    : cloudRepairJob.step === "validate" ? 93
+                    : cloudRepairJob.step === "export" ? 97
+                    : 3
+                  } className="h-1" />
+                )}
+                {cloudRepairJob?.stepMessage && (
+                  <p className="text-[10px] text-muted-foreground">{cloudRepairJob.stepMessage}</p>
+                )}
+              </div>
+            )}
+
+            {/* Repair result summary */}
+            {!repairing && repairResult && (
+              <div className="flex items-center gap-1.5">
+                {repairResult.isWatertight
+                  ? <CheckCircle2 className="h-3 w-3 text-green-400" />
+                  : <AlertTriangle className="h-3 w-3 text-yellow-400" />}
+                <span className="text-muted-foreground">
+                  Repair: {repairResult.isWatertight ? "watertight" : "partial"} ·
+                  {repairResult.holesFilled > 0 && ` ${repairResult.holesFilled} holes filled ·`}
+                  {repairResult.degeneratesRemoved > 0 && ` ${repairResult.degeneratesRemoved} degens removed`}
+                </span>
+              </div>
+            )}
+
+            {/* Reconstruct result summary */}
+            {!reconstructing && reconstructResult && (
+              <div className="flex items-center gap-1.5">
+                <CheckCircle2 className="h-3 w-3 text-green-400" />
+                <span className="text-muted-foreground">
+                  Reconstruction: {reconstructResult.outputTriangles.toLocaleString()} tris · {reconstructResult.resolution} mm
+                </span>
+              </div>
+            )}
+
+            {/* Cloud repair job status */}
+            {!cloudRepairPolling && !cloudRepairSubmitting && cloudRepairJob && (
+              <div className="flex items-center gap-1.5">
+                {cloudRepairJob.status === "finished"
+                  ? <CheckCircle2 className="h-3 w-3 text-green-400" />
+                  : cloudRepairJob.status === "failed"
+                  ? <AlertTriangle className="h-3 w-3 text-red-400" />
+                  : <Loader2 className="h-3 w-3 animate-spin text-accent" />}
+                <span className={cn(
+                  "text-muted-foreground",
+                  cloudRepairJob.status === "finished" && "text-green-400",
+                  cloudRepairJob.status === "failed" && "text-red-400",
+                )}>
+                  Cloud: {cloudRepairJob.status === "finished" ? "complete" : cloudRepairJob.status}
+                  {cloudRepairJob.report && ` · ${cloudRepairJob.report.outputFaces?.toLocaleString()} faces`}
+                </span>
+              </div>
+            )}
+
+            {/* Post-repair AI review */}
+            {postReviewing && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>AI reviewing repair quality…</span>
+              </div>
+            )}
+            {postReview && !postReview.passed && (
+              <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-2 space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <Sparkles className="h-3 w-3 text-yellow-400" />
+                  <span className="font-medium text-yellow-400">AI Quality Review</span>
+                  <Badge variant="outline" className="ml-auto text-[9px] h-4">
+                    {postReview.recommendation.replace(/_/g, " ")}
+                  </Badge>
+                </div>
+                <p className="text-[10px] text-muted-foreground">{postReview.reasoning}</p>
+              </div>
+            )}
+            {postReview?.passed && (
+              <div className="flex items-center gap-1.5 text-green-400">
+                <CheckCircle2 className="h-3 w-3" />
+                <span>AI review passed</span>
+              </div>
+            )}
+
+            {/* Pipeline log (Phase 2) */}
+            {pipelineLog.length > 0 && (
+              <div className="space-y-0.5 border-t border-border pt-2 mt-1">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pipeline Log</p>
+                  <button onClick={clearPipelineLog} className="text-[9px] text-muted-foreground hover:text-foreground transition-colors">Clear</button>
+                </div>
+                {pipelineLog.map((entry, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-[10px]">
+                    <span className="text-muted-foreground font-mono shrink-0 w-14">
+                      {new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                    </span>
+                    {entry.status === "running" ? (
+                      <Loader2 className="h-3 w-3 animate-spin text-accent shrink-0 mt-0.5" />
+                    ) : entry.status === "done" ? (
+                      <CheckCircle2 className="h-3 w-3 text-green-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertTriangle className="h-3 w-3 text-red-400 shrink-0 mt-0.5" />
+                    )}
+                    <span className={cn(
+                      entry.status === "done" && "text-green-400/80",
+                      entry.status === "error" && "text-red-400",
+                      entry.status === "running" && "text-accent",
+                    )}>
+                      <span className="font-semibold">{entry.step}</span>
+                      {" — "}{entry.message}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!busy && !drawerHasContent && pipelineLog.length === 0 && (
+              <p className="text-muted-foreground text-center py-2">No active operations.</p>
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* ══════════════════════════════════════════════════════════════════════════
+          RIGHT WORKBENCH — Tabbed repair tools (w-80)
+          ══════════════════════════════════════════════════════════════════════════ */}
+      <aside className={cn(
+        "flex w-80 max-w-[90vw] flex-shrink-0 flex-col border-l border-border bg-card transition-transform duration-200",
+        "md:relative md:translate-x-0 md:z-auto",
+        "max-md:fixed max-md:inset-y-0 max-md:right-0 max-md:z-30",
+        workbenchOpen ? "max-md:translate-x-0" : "max-md:translate-x-full",
+      )}>
+
+        {/* Workbench header */}
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+          <Wrench className="h-4 w-4 text-accent" />
+          <span className="font-semibold tracking-tight text-sm">Repair Workbench</span>
+          <button
+            className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground transition-colors md:hidden"
+            onClick={() => setWorkbenchOpen(false)}
+            aria-label="Close workbench"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Workbench tab bar */}
         <div className="flex border-b border-border">
-          {tabs.map(({ id, label, icon: Icon }) => (
+          {wbTabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
-              onClick={() => setTab(id)}
+              onClick={() => setWorkbenchTab(id)}
               className={cn(
                 "flex flex-1 flex-col items-center gap-1 py-2 text-[10px] font-medium transition-colors",
-                tab === id
+                workbenchTab === id
                   ? "border-b-2 border-accent text-accent"
                   : "text-muted-foreground hover:text-foreground border-b-2 border-transparent"
               )}
@@ -1156,710 +2206,954 @@ export function KarasliceApp() {
           ))}
         </div>
 
-        {/* Unit selector */}
-        <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-          <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <Ruler className="h-3 w-3" /> Units
-          </span>
-          <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
-            {(["mm", "cm", "in"] as const).map((unit) => (
-              <button
-                key={unit}
-                onClick={() => setDisplayUnit(unit)}
-                className={cn(
-                  "rounded px-2 py-0.5 text-[10px] font-semibold transition-colors",
-                  displayUnit === unit
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {unit}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Panel content */}
+        {/* Workbench panel content */}
         <div className="flex-1 overflow-y-auto py-1 text-sm">
 
-          {/* ── FILE TAB ──────────────────────────────────────────────────── */}
-          {tab === "file" && (
-            <>
-              <div className="px-3 py-2">
-                <Button
-                  size="sm"
-                  className="w-full gap-2"
-                  style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                  disabled={fileLoading}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  {fileLoading
-                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    : <Upload className="h-3.5 w-3.5" />}
-                  {fileLoading ? "Processing file…" : meshInfo ? "Load New File" : "Upload STL / OBJ / 3MF"}
-                </Button>
-              </div>
-              <Separator className="my-1" />
-
-              <SectionHeader icon={Info} label="File Info" open={openSections.fileInfo} onToggle={() => toggleSection("fileInfo")} />
-              {openSections.fileInfo && (
-                <div className="px-3 pb-2 space-y-1.5">
-                  {meshInfo ? (
-                    <>
-                      <Row label="Name"      value={meshInfo.fileName} mono />
-                      <Row label="Format"    value={meshInfo.format.toUpperCase()} />
-                      <Row label="Size"      value={`${meshInfo.fileSizeMB} MB`} />
-                      <Row label="Triangles" value={meshInfo.triangleCount.toLocaleString()} />
-                      <Row label="Dim X"     value={`${fmtDim(meshInfo.boundingBox.x, u)} ${UNIT_LABELS[u]}`} />
-                      <Row label="Dim Y"     value={`${fmtDim(meshInfo.boundingBox.y, u)} ${UNIT_LABELS[u]}`} />
-                      <Row label="Dim Z"     value={`${fmtDim(meshInfo.boundingBox.z, u)} ${UNIT_LABELS[u]}`} />
-                    </>
-                  ) : (
-                    <p className="text-xs text-muted-foreground py-2 text-center">No file loaded</p>
+          {/* ── INSPECT TAB ────────────────────────────────────────────────── */}
+          {workbenchTab === "inspect" && (
+            <div className="px-3 py-2 space-y-3">
+              {/* Analyze button */}
+              {!aiAnalysis ? (
+                <div className="space-y-2">
+                  {!analyzing && (
+                    <p className="text-[10px] text-muted-foreground">
+                      Analyzes mesh geometry, classifies the type, and recommends the best repair path.
+                    </p>
+                  )}
+                  <Button
+                    size="sm" className="w-full gap-2"
+                    style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                    disabled={!meshInfo || analyzing}
+                    onClick={handleAnalyze}
+                  >
+                    {analyzing
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <Sparkles className="h-3 w-3" />}
+                    {analyzing ? (analyzeStep || "Analyzing…") : "Analyze Mesh"}
+                  </Button>
+                  {analyzing && (
+                    <div className="space-y-1.5">
+                      <Progress value={
+                        analyzeStep.includes("wall") ? 40
+                        : analyzeStep.includes("AI") ? 70
+                        : 15
+                      } className="h-1" />
+                      <p className="text-[10px] text-muted-foreground text-center">{analyzeStep}</p>
+                    </div>
                   )}
                 </div>
-              )}
-              <Separator className="my-1" />
-
-              {/* ── STEP 1: ANALYZE ────────────────────────────────────── */}
-              <SectionHeader icon={Sparkles} label="Analyze & Repair" open={openSections.analysis} onToggle={() => toggleSection("analysis")} />
-              {openSections.analysis && (
-                <div className="px-3 pb-3 space-y-3">
-                  {/* Analyze button */}
-                  {!aiAnalysis ? (
-                    <div className="space-y-2">
-                      {!analyzing && (
-                        <p className="text-[10px] text-muted-foreground">
-                          Analyzes mesh geometry, classifies the type, and recommends the best repair path.
-                        </p>
-                      )}
-                      <Button
-                        size="sm" className="w-full gap-2"
-                        style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                        disabled={!meshInfo || analyzing}
-                        onClick={handleAnalyze}
-                      >
-                        {analyzing
-                          ? <Loader2 className="h-3 w-3 animate-spin" />
-                          : <Sparkles className="h-3 w-3" />}
-                        {analyzing ? (analyzeStep || "Analyzing…") : "Analyze Mesh"}
-                      </Button>
-                      {analyzing && (
-                        <div className="space-y-1.5">
-                          <Progress value={
-                            analyzeStep.includes("wall") ? 40
-                            : analyzeStep.includes("AI") ? 70
-                            : 15
-                          } className="h-1" />
-                          <p className="text-[10px] text-muted-foreground text-center">{analyzeStep}</p>
-                        </div>
-                      )}
+              ) : (
+                <div className="space-y-2">
+                  {/* Analysis results */}
+                  <div className="rounded-md border border-border p-2 space-y-2 text-xs">
+                    {/* Health status */}
+                    <div className="flex items-center gap-1.5">
+                      {analysisResult?.isWatertight
+                        ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                        : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
+                      <span className="font-medium">
+                        {analysisResult?.isWatertight ? "Mesh is watertight" : "Issues detected"}
+                      </span>
                     </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {/* Analysis results */}
-                      <div className="rounded-md border border-border p-2 space-y-2 text-xs">
-                        {/* Health status */}
-                        <div className="flex items-center gap-1.5">
-                          {analysisResult?.isWatertight
-                            ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                            : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
-                          <span className="font-medium">
-                            {analysisResult?.isWatertight ? "Mesh is watertight" : "Issues detected"}
-                          </span>
-                        </div>
 
-                        {/* Basic stats */}
-                        {analysisResult && (
-                          <div className="pl-5 space-y-0.5 text-muted-foreground text-[11px]">
-                            <p>Vertices: {analysisResult.vertexCount.toLocaleString()}</p>
-                            <p>Surface: {u === "in"
-                              ? (analysisResult.surfaceAreaMM2 / 645.16).toFixed(2) + " in²"
-                              : u === "cm"
-                              ? (analysisResult.surfaceAreaMM2 / 100).toFixed(1) + " cm²"
-                              : analysisResult.surfaceAreaMM2.toFixed(0) + " mm²"
-                            }</p>
-                            <p>Volume: {u === "in"
-                              ? (analysisResult.volumeMM3 / 16387.064).toFixed(2) + " in³"
-                              : u === "cm"
-                              ? (analysisResult.volumeMM3 / 1000).toFixed(1) + " cm³"
-                              : analysisResult.volumeMM3.toFixed(0) + " mm³"
-                            }</p>
-                            {analysisResult.openEdgeCount > 0 && (
-                              <p className="text-yellow-400">{analysisResult.openEdgeCount.toLocaleString()} open edges</p>
-                            )}
-                            {analysisResult.nonManifoldEdgeCount > 0 && (
-                              <p className="text-red-400">{analysisResult.nonManifoldEdgeCount.toLocaleString()} non-manifold edges</p>
-                            )}
-                          </div>
+                    {/* Stats */}
+                    {analysisResult && (
+                      <div className="pl-5 space-y-0.5 text-muted-foreground text-[11px]">
+                        <p>Vertices: {analysisResult.vertexCount.toLocaleString()}</p>
+                        <p>Surface: {u === "in"
+                          ? (analysisResult.surfaceAreaMM2 / 645.16).toFixed(2) + " in\u00B2"
+                          : u === "cm"
+                          ? (analysisResult.surfaceAreaMM2 / 100).toFixed(1) + " cm\u00B2"
+                          : analysisResult.surfaceAreaMM2.toFixed(0) + " mm\u00B2"
+                        }</p>
+                        <p>Volume: {u === "in"
+                          ? (analysisResult.volumeMM3 / 16387.064).toFixed(2) + " in\u00B3"
+                          : u === "cm"
+                          ? (analysisResult.volumeMM3 / 1000).toFixed(1) + " cm\u00B3"
+                          : analysisResult.volumeMM3.toFixed(0) + " mm\u00B3"
+                        }</p>
+                        {analysisResult.openEdgeCount > 0 && (
+                          <p className="text-yellow-400">{analysisResult.openEdgeCount.toLocaleString()} open edges</p>
                         )}
-
-                        {/* AI classification badges */}
-                        <div className="flex flex-wrap gap-1.5 pt-1">
-                          <span className={cn(
-                            "rounded px-1.5 py-0.5 text-[10px] font-semibold",
-                            aiAnalysis.meshType === "thin_shell"    && "bg-accent/20 text-accent",
-                            aiAnalysis.meshType === "solid_body"    && "bg-blue-900/40 text-blue-300",
-                            aiAnalysis.meshType === "multi_body"    && "bg-purple-900/40 text-purple-300",
-                            aiAnalysis.meshType === "surface_patch" && "bg-orange-900/40 text-orange-300",
-                          )}>
-                            {aiAnalysis.meshType.replace("_", " ")}
-                          </span>
-                          <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-muted text-muted-foreground">
-                            {aiAnalysis.repairStrategy.replace(/_/g, " ")}
-                          </span>
-                          <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {Math.round(aiAnalysis.confidence * 100)}%
-                          </span>
-                        </div>
-
-                        {/* Compact reasoning + model ID */}
-                        {aiAnalysis.modelId && (
-                          <p className="text-[10px] text-accent font-medium">
-                            {aiAnalysis.modelId.description}
-                          </p>
-                        )}
-                        <p className="text-[10px] text-muted-foreground leading-snug">
-                          {aiAnalysis.reasoning}
-                        </p>
-                        {aiAnalysis.warnings.length > 0 && (
-                          <div className="space-y-0.5">
-                            {aiAnalysis.warnings.slice(0, 2).map((w, i) => (
-                              <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
-                                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
-                              </p>
-                            ))}
-                          </div>
-                        )}
-                        {aiAnalysis.heuristic && !aiAnalysis.error && (
-                          <p className="text-[10px] text-muted-foreground">
-                            Heuristic analysis — add ANTHROPIC_API_KEY for AI classification.
-                          </p>
-                        )}
-                        {aiAnalysis.error && (
-                          <p className="text-[10px] text-yellow-500">{aiAnalysis.error}</p>
+                        {analysisResult.nonManifoldEdgeCount > 0 && (
+                          <p className="text-red-400">{analysisResult.nonManifoldEdgeCount.toLocaleString()} non-manifold edges</p>
                         )}
                       </div>
+                    )}
 
-                      {/* Re-analyze */}
-                      <Button
-                        size="sm" variant="ghost" className="w-full gap-2 text-[11px] text-muted-foreground"
-                        disabled={analyzing || reconstructing || repairing}
-                        onClick={handleAnalyze}
-                      >
-                        <Sparkles className="h-3 w-3" />
-                        Re-analyze
-                      </Button>
+                    {/* AI classification badges */}
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <span className={cn(
+                        "rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                        aiAnalysis.meshType === "thin_shell"    && "bg-accent/20 text-accent",
+                        aiAnalysis.meshType === "solid_body"    && "bg-blue-900/40 text-blue-300",
+                        aiAnalysis.meshType === "multi_body"    && "bg-purple-900/40 text-purple-300",
+                        aiAnalysis.meshType === "surface_patch" && "bg-orange-900/40 text-orange-300",
+                      )}>
+                        {aiAnalysis.meshType.replace("_", " ")}
+                      </span>
+                      <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-muted text-muted-foreground">
+                        {aiAnalysis.repairStrategy.replace(/_/g, " ")}
+                      </span>
+                      <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        {Math.round(aiAnalysis.confidence * 100)}%
+                      </span>
+                    </div>
+
+                    {/* Reasoning + model */}
+                    {aiAnalysis.modelId && (
+                      <p className="text-[10px] text-accent font-medium">
+                        {aiAnalysis.modelId.description}
+                      </p>
+                    )}
+                    <p className="text-[10px] text-muted-foreground leading-snug">
+                      {aiAnalysis.reasoning}
+                    </p>
+                    {aiAnalysis.warnings.length > 0 && (
+                      <div className="space-y-0.5">
+                        {aiAnalysis.warnings.slice(0, 2).map((w, i) => (
+                          <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
+                            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                    {aiAnalysis.heuristic && !aiAnalysis.error && (
+                      <p className="text-[10px] text-muted-foreground">
+                        Heuristic analysis — add ANTHROPIC_API_KEY for AI classification.
+                      </p>
+                    )}
+                    {aiAnalysis.error && (
+                      <p className="text-[10px] text-yellow-500">{aiAnalysis.error}</p>
+                    )}
+                  </div>
+
+                  {/* ── Quality Breakdown (Phase 3) ───────────────────── */}
+                  {analysisResult && (() => {
+                    const qb = computeQualityBreakdown();
+                    if (!qb) return null;
+                    const categories = [
+                      { label: "Topology", score: qb.topology, color: qb.topology >= 80 ? "bg-green-400" : qb.topology >= 50 ? "bg-yellow-400" : "bg-red-400" },
+                      { label: "Watertight", score: qb.watertight, color: qb.watertight >= 80 ? "bg-green-400" : qb.watertight >= 50 ? "bg-yellow-400" : "bg-red-400" },
+                      { label: "Normals", score: qb.normals, color: qb.normals >= 80 ? "bg-green-400" : qb.normals >= 50 ? "bg-yellow-400" : "bg-red-400" },
+                      { label: "Geometry", score: qb.geometry, color: qb.geometry >= 80 ? "bg-green-400" : qb.geometry >= 50 ? "bg-yellow-400" : "bg-red-400" },
+                    ];
+                    return (
+                      <div className="rounded-md border border-border p-2 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Quality Score</p>
+                          <span className={cn(
+                            "text-sm font-bold font-mono",
+                            qb.overall >= 80 ? "text-green-400" : qb.overall >= 50 ? "text-yellow-400" : "text-red-400",
+                          )}>{qb.overall}%</span>
+                        </div>
+                        <div className="space-y-1.5">
+                          {categories.map(({ label, score, color }) => (
+                            <div key={label} className="space-y-0.5">
+                              <div className="flex justify-between text-[10px]">
+                                <span className="text-muted-foreground">{label}</span>
+                                <span className="font-mono">{score}%</span>
+                              </div>
+                              <div className="h-1 bg-muted rounded-full overflow-hidden">
+                                <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${score}%` }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Re-analyze */}
+                  <Button
+                    size="sm" variant="ghost" className="w-full gap-2 text-[11px] text-muted-foreground"
+                    disabled={analyzing || reconstructing || repairing}
+                    onClick={handleAnalyze}
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    Re-analyze
+                  </Button>
+                </div>
+              )}
+
+              {/* ── Defect Overlays (Phase 2) ────────────────────────────── */}
+              {meshInfo && (
+                <>
+                  <Separator />
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Defect Overlays</p>
+                    <Button
+                      size="sm" className="w-full gap-2" variant={overlaysVisible ? "default" : "outline"}
+                      disabled={busy}
+                      onClick={overlaysVisible ? toggleOverlayVisibility : computeAndShowOverlays}
+                    >
+                      <Eye className="h-3 w-3" />
+                      {overlaysVisible ? "Hide Overlays" : "Show Defect Edges"}
+                    </Button>
+                    {overlaysVisible && (
+                      <div className="space-y-1.5 pl-1">
+                        <label className="flex items-center gap-2 text-[11px] cursor-pointer">
+                          <input type="checkbox" checked={showOpenEdges} onChange={(e) => setShowOpenEdges(e.target.checked)} className="accent-red-400 h-3 w-3" />
+                          <span className="text-red-400">Open edges</span>
+                          {defectOverlayData?.openEdges && <span className="text-muted-foreground ml-auto">{(defectOverlayData.openEdges.length / 6).toLocaleString()}</span>}
+                        </label>
+                        <label className="flex items-center gap-2 text-[11px] cursor-pointer">
+                          <input type="checkbox" checked={showNonManifoldEdges} onChange={(e) => setShowNonManifoldEdges(e.target.checked)} className="accent-orange-400 h-3 w-3" />
+                          <span className="text-orange-400">Non-manifold edges</span>
+                          {defectOverlayData?.nonManifoldEdges && <span className="text-muted-foreground ml-auto">{(defectOverlayData.nonManifoldEdges.length / 6).toLocaleString()}</span>}
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* ── Guided Repair Recommendation (Phase 2) ───────────────── */}
+              {aiAnalysis && analysisResult && !analysisResult.isWatertight && (
+                <>
+                  <Separator />
+                  <div className="rounded-md border border-accent/30 bg-accent/5 p-2.5 space-y-2">
+                    <p className="text-[11px] font-semibold text-accent flex items-center gap-1.5">
+                      <Sparkles className="h-3 w-3" />
+                      Recommended Repair Path
+                    </p>
+                    {isSevere ? (
+                      <>
+                        <p className="text-[10px] text-muted-foreground">
+                          Significant damage detected. Cloud Repair is recommended for best results — it uses server-side topology reconstruction, non-manifold resolution, and feature-preserving remeshing.
+                        </p>
+                        <Button
+                          size="sm" className="w-full gap-2"
+                          style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                          disabled={cloudRepairSubmitting || cloudRepairPolling}
+                          onClick={() => { setWorkbenchTab("repair"); handleCloudRepair(); }}
+                        >
+                          <Cloud className="h-3 w-3" />
+                          Start Cloud Repair
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-[10px] text-muted-foreground">
+                          Minor issues detected ({analysisResult.openEdgeCount} open edges, {analysisResult.nonManifoldEdgeCount} non-manifold). Try basic topology repair first.
+                        </p>
+                        <Button
+                          size="sm" className="w-full gap-2"
+                          style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                          disabled={repairing || reconstructing}
+                          onClick={() => { setWorkbenchTab("repair"); handleRepairWithCompare(); }}
+                        >
+                          <Wrench className="h-3 w-3" />
+                          Start Basic Repair
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* ── Repair Candidates / Variant Compare (Phase 3) ─────── */}
+              {repairCandidates.length > 0 && (
+                <>
+                  <Separator />
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Repair History</p>
+                      <span className="text-[9px] text-muted-foreground">{repairCandidates.length} variant{repairCandidates.length !== 1 ? "s" : ""}</span>
+                    </div>
+                    <div className="space-y-1">
+                      {repairCandidates.map((candidate, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => switchToCandidate(idx)}
+                          className={cn(
+                            "w-full flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors",
+                            activeCandidateIdx === idx
+                              ? "bg-accent/15 text-accent border border-accent/30"
+                              : "hover:bg-muted text-muted-foreground",
+                          )}
+                        >
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <CheckCircle2 className="h-3 w-3 shrink-0" />
+                            <span className="truncate font-medium">{candidate.label}</span>
+                            <Badge variant="outline" className="ml-auto text-[8px] h-3.5 px-1">{candidate.source}</Badge>
+                          </div>
+                          {candidate.metrics && (
+                            <div className="flex gap-3 pl-5 text-[9px] text-muted-foreground">
+                              {candidate.metrics.triangles != null && <span>{Number(candidate.metrics.triangles).toLocaleString()} tris</span>}
+                              {candidate.metrics.resolution != null && <span>{String(candidate.metrics.resolution)} mm</span>}
+                              {candidate.metrics.qualityScore != null && <span>Q: {String(candidate.metrics.qualityScore)}%</span>}
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                    {repairCandidates.length >= 2 && (
+                      <div className="rounded-md border border-border p-2 space-y-1.5 text-[10px]">
+                        <p className="font-semibold text-muted-foreground uppercase tracking-wider">Quick Compare</p>
+                        <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 gap-y-0.5 text-muted-foreground">
+                          <span />
+                          {repairCandidates.slice(-2).map((c, i) => (
+                            <span key={i} className="font-medium text-foreground truncate">{c.label}</span>
+                          ))}
+                          <span>Source</span>
+                          {repairCandidates.slice(-2).map((c, i) => (
+                            <span key={i}>{c.source}</span>
+                          ))}
+                          <span>Triangles</span>
+                          {repairCandidates.slice(-2).map((c, i) => (
+                            <span key={i} className="font-mono">{c.metrics?.triangles != null ? Number(c.metrics.triangles).toLocaleString() : "—"}</span>
+                          ))}
+                          <span>Resolution</span>
+                          {repairCandidates.slice(-2).map((c, i) => (
+                            <span key={i} className="font-mono">{c.metrics?.resolution != null ? `${c.metrics.resolution} mm` : "—"}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── REPAIR TAB ─────────────────────────────────────────────────── */}
+          {workbenchTab === "repair" && (
+            <div className="px-3 py-2 space-y-3">
+              {/* Quick Tools */}
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Quick Tools</p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
+                    disabled={!meshInfo || busy}
+                    onClick={handleRecalcNormals}
+                  >
+                    <RotateCw className="h-3 w-3" />
+                    Recalc Normals
+                  </Button>
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
+                    disabled={!meshInfo || busy}
+                    onClick={handleFlipNormals}
+                  >
+                    <FlipVertical className="h-3 w-3" />
+                    Flip Normals
+                  </Button>
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
+                    disabled={!meshInfo || busy}
+                    onClick={handleMergeVertices}
+                  >
+                    <Merge className="h-3 w-3" />
+                    Merge Vertices
+                  </Button>
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
+                    disabled={!meshInfo || busy}
+                    onClick={handleRemoveIslands}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Remove Islands
+                  </Button>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Topology Repair */}
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Topology Repair</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Fix degenerate triangles, duplicate faces, inconsistent winding, inverted normals, and small holes.
+                </p>
+                <Button
+                  size="sm" className="w-full gap-2"
+                  style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                  disabled={repairing || reconstructing || !meshInfo}
+                  onClick={handleRepairWithCompare}
+                >
+                  {repairing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                  {repairing ? repairMessage || "Repairing…" : "Repair Mesh"}
+                </Button>
+
+                {repairResult && (
+                  <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
+                    <div className="flex items-center gap-1.5">
+                      {repairResult.isWatertight
+                        ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                        : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
+                      <span className="font-medium">
+                        {repairResult.isWatertight ? "Mesh is watertight" : "Partial repair"}
+                      </span>
+                    </div>
+                    <div className="pl-5 space-y-0.5 text-muted-foreground">
+                      {repairResult.degeneratesRemoved > 0 && (
+                        <p className="text-green-400">Removed {repairResult.degeneratesRemoved} degenerate tri{repairResult.degeneratesRemoved !== 1 ? "s" : ""}</p>
+                      )}
+                      {repairResult.duplicatesRemoved > 0 && (
+                        <p className="text-green-400">Removed {repairResult.duplicatesRemoved} duplicate tri{repairResult.duplicatesRemoved !== 1 ? "s" : ""}</p>
+                      )}
+                      {repairResult.windingFixed > 0 && (
+                        <p className="text-green-400">Fixed winding on {repairResult.windingFixed} tri{repairResult.windingFixed !== 1 ? "s" : ""}</p>
+                      )}
+                      {repairResult.invertedNormalsFixed && (
+                        <p className="text-green-400">Corrected inverted normals</p>
+                      )}
+                      {repairResult.holesFilled > 0 && (
+                        <p className="text-green-400">Filled {repairResult.holesFilled} hole{repairResult.holesFilled !== 1 ? "s" : ""}</p>
+                      )}
+                      {repairResult.weldToleranceMM > 1e-3 && (
+                        <p className="text-muted-foreground">Welded vertices +/-{repairResult.weldToleranceMM.toFixed(repairResult.weldToleranceMM < 0.01 ? 4 : 2)} mm</p>
+                      )}
+                      {!repairResult.isWatertight && (
+                        <p className="text-yellow-400">Some issues remain — try reconstruction below</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Compare mode */}
+              {originalGeoRef.current && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm" variant="outline" className="flex-1 gap-1.5 text-[11px] h-8"
+                    onClick={toggleCompare}
+                    disabled={busy}
+                  >
+                    <Eye className="h-3 w-3" />
+                    {showOriginal ? "Show Repaired" : "Show Original"}
+                  </Button>
+                </div>
+              )}
+
+              {/* Post-repair AI review */}
+              {(postReviewing || postReview) && (
+                <div>
+                  {postReviewing && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <span>AI reviewing repair quality…</span>
+                    </div>
+                  )}
+                  {postReview && !postReview.passed && (
+                    <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-2 space-y-1.5 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <Sparkles className="h-3.5 w-3.5 text-yellow-400" />
+                        <span className="font-medium text-yellow-400">AI Quality Review</span>
+                        <Badge variant="outline" className="ml-auto text-[9px] h-4">
+                          {postReview.recommendation.replace(/_/g, " ")}
+                        </Badge>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">{postReview.reasoning}</p>
+                      {postReview.issues.length > 0 && (
+                        <ul className="pl-3 space-y-0.5 text-[10px] text-yellow-400/80">
+                          {postReview.issues.slice(0, 3).map((issue, i) => (
+                            <li key={i}>- {issue}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                  {postReview?.passed && (
+                    <div className="flex items-center gap-1.5 text-xs text-green-400">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      <span>AI review passed</span>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* ── STEP 2: REPAIR (routed by analysis) ───────────────── */}
-              {meshInfo && (
-                <>
-                  <Separator className="my-1" />
+              <Separator />
 
-                  {/* BASIC MESH REPAIR — always available */}
-                  <SectionHeader icon={Wrench} label="Basic Mesh Repair" open={openSections.basicRepair} onToggle={() => toggleSection("basicRepair")} />
-                  {openSections.basicRepair && (
-                    <div className="px-3 pb-3 space-y-2">
+              {/* Reconstruction */}
+              <SectionHeader icon={Boxes} label="Reconstruction" open={openSections.voxelReconstruct} onToggle={() => toggleSection("voxelReconstruct")} />
+              {openSections.voxelReconstruct && (
+                <div className="px-1 pb-2 space-y-3">
+                  {/* AI plan summary */}
+                  {aiAnalysis?.repairPlan && (
+                    <div className="rounded-md border border-accent/30 bg-accent/5 p-2 space-y-1 text-[11px]">
+                      <p className="font-medium text-accent flex items-center gap-1.5">
+                        <Sparkles className="h-3 w-3" />
+                        AI Repair Plan
+                      </p>
+                      <p className="text-muted-foreground">{aiAnalysis.repairPlan.userMessage}</p>
+                    </div>
+                  )}
+
+                  {/* Mode toggle */}
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">Reconstruction mode</Label>
+                    <div className="flex rounded-md border border-border overflow-hidden text-[11px] font-semibold">
+                      {(["solid_voxel", "shell_voxel", "point_cloud"] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          onClick={() => setReconstructMode(mode)}
+                          disabled={reconstructing}
+                          className={cn(
+                            "flex-1 py-1.5 transition-colors",
+                            reconstructMode === mode
+                              ? "bg-accent text-accent-foreground"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {mode === "solid_voxel" ? "Solid" : mode === "shell_voxel" ? "Shell" : "Point Cloud"}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      {reconstructMode === "point_cloud"
+                        ? "MLS/SDF reconstruction from point cloud. Best for thin shells and car bodies."
+                        : reconstructMode === "shell_voxel"
+                        ? "Surface rasterization + dilation. Preserves openings."
+                        : "Parity fill + flood fill. Best for enclosed solid parts."}
+                    </p>
+                  </div>
+
+                  {/* Resolution slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <Label className="text-[11px]">{reconstructMode === "point_cloud" ? "Grid resolution" : "Voxel resolution"}</Label>
+                      <span className="font-mono text-accent">{reconstructResolutionMM} mm</span>
+                    </div>
+                    <Slider
+                      min={minSafeRes} max={20} step={0.5}
+                      value={[Math.max(reconstructResolutionMM, minSafeRes)]}
+                      onValueChange={([v]) => setReconstructResolutionMM(v)}
+                      disabled={reconstructing}
+                    />
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>{minSafeRes} mm — finest</span>
+                      <span>20 mm — fast</span>
+                    </div>
+                    {minSafeRes > 1 && (
+                      <p className="text-[10px] text-yellow-400">
+                        Min {minSafeRes} mm for this mesh size (grid limit).
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Post-processing */}
+                  <Separator className="my-0.5" />
+                  <p className="text-[11px] font-medium text-muted-foreground">Post-processing</p>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <Label className="text-[11px]">Taubin smoothing</Label>
+                      <span className="font-mono text-accent">
+                        {smoothingIterations === 0 ? "off" : `${smoothingIterations} pass${smoothingIterations !== 1 ? "es" : ""}`}
+                      </span>
+                    </div>
+                    <Slider
+                      min={0} max={15} step={1}
+                      value={[smoothingIterations]}
+                      onValueChange={([v]) => setSmoothingIterations(v)}
+                      disabled={reconstructing}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label className="text-[11px]">Simplify mesh</Label>
                       <p className="text-[10px] text-muted-foreground">
-                        Fix topology issues: degenerate triangles, duplicate faces, inconsistent winding, inverted normals, and small holes.
-                      </p>
-                      <Button
-                        size="sm" className="w-full gap-2"
-                        style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                        disabled={repairing || reconstructing}
-                        onClick={handleRepair}
-                      >
-                        {repairing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
-                        {repairing ? repairMessage || "Repairing…" : "Repair Mesh"}
-                      </Button>
-
-                      {repairResult && (
-                        <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
-                          <div className="flex items-center gap-1.5">
-                            {repairResult.isWatertight
-                              ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                              : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
-                            <span className="font-medium">
-                              {repairResult.isWatertight ? "Mesh is watertight" : "Partial repair"}
-                            </span>
-                          </div>
-                          <div className="pl-5 space-y-0.5 text-muted-foreground">
-                            {repairResult.degeneratesRemoved > 0 && (
-                              <p className="text-green-400">Removed {repairResult.degeneratesRemoved} degenerate tri{repairResult.degeneratesRemoved !== 1 ? "s" : ""}</p>
-                            )}
-                            {repairResult.duplicatesRemoved > 0 && (
-                              <p className="text-green-400">Removed {repairResult.duplicatesRemoved} duplicate tri{repairResult.duplicatesRemoved !== 1 ? "s" : ""}</p>
-                            )}
-                            {repairResult.windingFixed > 0 && (
-                              <p className="text-green-400">Fixed winding on {repairResult.windingFixed} tri{repairResult.windingFixed !== 1 ? "s" : ""}</p>
-                            )}
-                            {repairResult.invertedNormalsFixed && (
-                              <p className="text-green-400">Corrected inverted normals</p>
-                            )}
-                            {repairResult.holesFilled > 0 && (
-                              <p className="text-green-400">Filled {repairResult.holesFilled} hole{repairResult.holesFilled !== 1 ? "s" : ""}</p>
-                            )}
-                            {repairResult.weldToleranceMM > 1e-3 && (
-                              <p className="text-muted-foreground">Welded vertices ±{repairResult.weldToleranceMM.toFixed(repairResult.weldToleranceMM < 0.01 ? 4 : 2)} mm</p>
-                            )}
-                            {!repairResult.isWatertight && (
-                              <p className="text-yellow-400">Some issues remain — try reconstruction below</p>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* TOPOLOGY REPAIR — shown when AI recommends topology_repair AND mesh has defects */}
-                  {aiAnalysis?.repairStrategy === "topology_repair" && analysisResult &&
-                   (analysisResult.openEdgeCount > 0 || analysisResult.nonManifoldEdgeCount > 0) && (
-                    <>
-                      <SectionHeader icon={Wrench} label="Topology Repair" open={openSections.repair} onToggle={() => toggleSection("repair")} />
-                      {openSections.repair && (
-                        <div className="px-3 pb-3 space-y-2">
-                          <p className="text-[10px] text-muted-foreground">
-                            Minor defects detected. Fast topology repair should fix this without geometry loss.
-                          </p>
-                          <Button
-                            size="sm" className="w-full gap-2"
-                            style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                            disabled={repairing}
-                            onClick={handleRepair}
-                          >
-                            {repairing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
-                            {repairing ? repairMessage || "Repairing…" : "Auto-Repair"}
-                          </Button>
-
-                          {repairResult && (
-                            <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
-                              <div className="flex items-center gap-1.5">
-                                {repairResult.isWatertight
-                                  ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                                  : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
-                                <span className="font-medium">
-                                  {repairResult.isWatertight ? "Mesh is watertight" : "Partial repair"}
-                                </span>
-                              </div>
-                              <div className="pl-5 space-y-0.5 text-muted-foreground">
-                                {repairResult.degeneratesRemoved > 0 && (
-                                  <p className="text-green-400">Removed {repairResult.degeneratesRemoved} degenerate tri{repairResult.degeneratesRemoved !== 1 ? "s" : ""}</p>
-                                )}
-                                {repairResult.duplicatesRemoved > 0 && (
-                                  <p className="text-green-400">Removed {repairResult.duplicatesRemoved} duplicate tri{repairResult.duplicatesRemoved !== 1 ? "s" : ""}</p>
-                                )}
-                                {repairResult.windingFixed > 0 && (
-                                  <p className="text-green-400">Fixed winding on {repairResult.windingFixed} tri{repairResult.windingFixed !== 1 ? "s" : ""}</p>
-                                )}
-                                {repairResult.invertedNormalsFixed && (
-                                  <p className="text-green-400">Corrected inverted normals</p>
-                                )}
-                                {repairResult.holesFilled > 0 && (
-                                  <p className="text-green-400">Filled {repairResult.holesFilled} hole{repairResult.holesFilled !== 1 ? "s" : ""}</p>
-                                )}
-                                {repairResult.weldToleranceMM > 1e-3 && (
-                                  <p className="text-muted-foreground">Welded vertices ±{repairResult.weldToleranceMM.toFixed(repairResult.weldToleranceMM < 0.01 ? 4 : 2)} mm</p>
-                                )}
-                                {!repairResult.isWatertight && (
-                                  <p className="text-yellow-400">Some issues remain — try voxel reconstruction</p>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {/* RECONSTRUCTION — shown when AI recommends solid_voxel, shell_voxel, or point_cloud */}
-                  {(aiAnalysis?.repairStrategy === "solid_voxel" || aiAnalysis?.repairStrategy === "shell_voxel" || aiAnalysis?.repairStrategy === "point_cloud") && (
-                    <>
-                      <SectionHeader icon={Boxes} label="Mesh Reconstruction" open={openSections.voxelReconstruct} onToggle={() => toggleSection("voxelReconstruct")} />
-                      {openSections.voxelReconstruct && (
-                        <div className="px-3 pb-3 space-y-3">
-
-                          {/* AI plan summary */}
-                          {aiAnalysis?.repairPlan && (
-                            <div className="rounded-md border border-accent/30 bg-accent/5 p-2 space-y-1 text-[11px]">
-                              <p className="font-medium text-accent flex items-center gap-1.5">
-                                <Sparkles className="h-3 w-3" />
-                                AI Repair Plan
-                              </p>
-                              <p className="text-muted-foreground">{aiAnalysis.repairPlan.userMessage}</p>
-                            </div>
-                          )}
-
-                          {/* Mode toggle */}
-                          <div className="space-y-1">
-                            <Label className="text-[11px]">Reconstruction mode</Label>
-                            <div className="flex rounded-md border border-border overflow-hidden text-[11px] font-semibold">
-                              {(["solid_voxel", "shell_voxel", "point_cloud"] as const).map((mode) => (
-                                <button
-                                  key={mode}
-                                  onClick={() => setReconstructMode(mode)}
-                                  disabled={reconstructing}
-                                  className={cn(
-                                    "flex-1 py-1.5 transition-colors",
-                                    reconstructMode === mode
-                                      ? "bg-accent text-accent-foreground"
-                                      : "text-muted-foreground hover:text-foreground",
-                                  )}
-                                >
-                                  {mode === "solid_voxel" ? "Solid" : mode === "shell_voxel" ? "Shell" : "Point Cloud"}
-                                </button>
-                              ))}
-                            </div>
-                            <p className="text-[10px] text-muted-foreground">
-                              {reconstructMode === "point_cloud"
-                                ? "MLS/SDF reconstruction from point cloud. Best for thin shells and car bodies."
-                                : reconstructMode === "shell_voxel"
-                                ? "Surface rasterization + dilation. Preserves openings."
-                                : "Parity fill + flood fill. Best for enclosed solid parts."}
-                            </p>
-                          </div>
-
-                          {/* Resolution slider */}
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between text-[11px]">
-                              <Label className="text-[11px]">{reconstructMode === "point_cloud" ? "Grid resolution" : "Voxel resolution"}</Label>
-                              <span className="font-mono text-accent">{reconstructResolutionMM} mm</span>
-                            </div>
-                            <Slider
-                              min={minSafeRes} max={20} step={0.5}
-                              value={[Math.max(reconstructResolutionMM, minSafeRes)]}
-                              onValueChange={([v]) => setReconstructResolutionMM(v)}
-                              disabled={reconstructing}
-                            />
-                            <div className="flex justify-between text-[10px] text-muted-foreground">
-                              <span>{minSafeRes} mm — finest</span>
-                              <span>20 mm — fast</span>
-                            </div>
-                            {minSafeRes > 1 && (
-                              <p className="text-[10px] text-yellow-400">
-                                Min {minSafeRes} mm for this mesh size (grid limit).
-                              </p>
-                            )}
-                          </div>
-
-                          {/* Post-processing */}
-                          <Separator className="my-0.5" />
-                          <p className="text-[11px] font-medium text-muted-foreground">Post-processing</p>
-
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between text-[11px]">
-                              <Label className="text-[11px]">Taubin smoothing</Label>
-                              <span className="font-mono text-accent">
-                                {smoothingIterations === 0 ? "off" : `${smoothingIterations} pass${smoothingIterations !== 1 ? "es" : ""}`}
-                              </span>
-                            </div>
-                            <Slider
-                              min={0} max={15} step={1}
-                              value={[smoothingIterations]}
-                              onValueChange={([v]) => setSmoothingIterations(v)}
-                              disabled={reconstructing}
-                            />
-                          </div>
-
-                          <div className="flex items-center justify-between">
-                            <div className="space-y-0.5">
-                              <Label className="text-[11px]">Simplify mesh</Label>
-                              <p className="text-[10px] text-muted-foreground">
-                                Reduce to ~{meshInfo ? Math.round(meshInfo.triangleCount * 0.8).toLocaleString() : "80%"} triangles
-                              </p>
-                            </div>
-                            <Switch
-                              checked={simplifyEnabled}
-                              onCheckedChange={setSimplifyEnabled}
-                              disabled={reconstructing}
-                            />
-                          </div>
-
-                          {/* Estimated output */}
-                          <div className="rounded-md border border-border p-2 space-y-0.5 text-[11px] text-muted-foreground">
-                            <div className="flex justify-between">
-                              <span>Est. output{simplifyEnabled ? " (after simplify)" : ""}</span>
-                              <span className="font-mono">{estimatedReconstructTris.toLocaleString()} tris</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span>Detail loss</span>
-                              <span className={reconstructResolutionMM <= 2 ? "text-green-400" : reconstructResolutionMM <= 6 ? "text-yellow-400" : "text-orange-400"}>
-                                {reconstructResolutionMM <= 2 ? "minimal" : reconstructResolutionMM <= 6 ? "minor" : "noticeable"}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Reconstruct button */}
-                          <Button
-                            size="sm"
-                            className="w-full gap-2"
-                            style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                            disabled={!meshInfo || reconstructing}
-                            onClick={handleVoxelReconstruct}
-                          >
-                            {reconstructing
-                              ? <Loader2 className="h-3 w-3 animate-spin" />
-                              : <Boxes className="h-3 w-3" />}
-                            {reconstructing
-                              ? "Reconstructing…"
-                              : `Reconstruct (${reconstructMode === "point_cloud" ? "Point Cloud" : reconstructMode === "shell_voxel" ? "Shell" : "Solid"})`}
-                          </Button>
-                          {reconstructing && reconstructMessage && (
-                            <div className="space-y-1">
-                              <Progress value={
-                                reconstructMessage.includes("Validating") ? 90
-                                : reconstructMessage.includes("consulting AI") || reconstructMessage.includes("Consulting") ? 95
-                                : reconstructMessage.includes("Retry") ? 5
-                                : reconstructMessage.includes("Simplif") ? 70
-                                : reconstructMessage.includes("Smooth") ? 85
-                                : reconstructMessage.includes("Extract") || reconstructMessage.includes("Marching") ? 50
-                                : reconstructMessage.includes("Flood") ? 30
-                                : reconstructMessage.includes("Voxeliz") || reconstructMessage.includes("Rasteriz") ? 15
-                                : reconstructMessage.includes("SDF") || reconstructMessage.includes("distance") ? 40
-                                : reconstructMessage.includes("point cloud") || reconstructMessage.includes("spatial") ? 15
-                                : reconstructMessage.includes("Re-sorting") ? 75
-                                : reconstructMessage.includes("Finaliz") ? 95
-                                : 10
-                              } className="h-1" />
-                              <p className="text-[10px] text-muted-foreground text-center">
-                                {retryAttempt > 0 && <span className="font-semibold text-amber-500">Attempt {retryAttempt + 1}/{MAX_RECONSTRUCT_RETRIES + 1} · </span>}
-                                {reconstructMessage}
-                              </p>
-                            </div>
-                          )}
-
-                          {/* Result */}
-                          {reconstructResult && (
-                            <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
-                              <div className="flex items-center gap-1.5">
-                                <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                                <span className="font-medium text-green-400">Reconstruction complete</span>
-                              </div>
-                              <div className="pl-5 space-y-0.5 text-muted-foreground">
-                                <p className="text-green-400">Mesh is watertight (0 open edges)</p>
-                                <p className="text-green-400">0 non-manifold edges</p>
-                                <p>Mode: {reconstructMode === "point_cloud" ? "Point Cloud" : reconstructMode === "shell_voxel" ? "Shell" : "Solid"}</p>
-                                <p>{reconstructMode === "point_cloud" ? "Grid" : "Voxel"} size: {reconstructResult.resolution} mm</p>
-                                <p>Output: {reconstructResult.outputTriangles.toLocaleString()} triangles</p>
-                                {smoothingIterations > 0 && <p className="text-green-400">Smoothed ({smoothingIterations} Taubin passes)</p>}
-                                {simplifyEnabled && <p className="text-green-400">Simplified (quadric edge collapse)</p>}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {/* CLOUD REPAIR — offload heavy repair to server */}
-                  {meshInfo && (
-                    <>
-                      <SectionHeader icon={Cloud} label="Cloud Repair" open={openSections.cloudRepair} onToggle={() => toggleSection("cloudRepair")} />
-                      {openSections.cloudRepair && (
-                        <div className="px-3 pb-3 space-y-3">
-                          <p className="text-[10px] text-muted-foreground">
-                            Offload heavy mesh repair to the cloud. Uses PyMeshLab, Open3D Poisson reconstruction, and isotropic remeshing — handles meshes that are too large for the browser.
-                          </p>
-
-                          {/* Submit button */}
-                          <Button
-                            size="sm"
-                            className="w-full gap-2"
-                            style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                            disabled={cloudRepairSubmitting || cloudRepairPolling}
-                            onClick={handleCloudRepair}
-                          >
-                            {cloudRepairSubmitting ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : cloudRepairPolling ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : (
-                              <Cloud className="h-3 w-3" />
-                            )}
-                            {cloudRepairSubmitting
-                              ? "Uploading…"
-                              : cloudRepairPolling
-                              ? "Processing…"
-                              : "Send to Cloud Repair"}
-                          </Button>
-
-                          {/* Job status */}
-                          {cloudRepairJob && (
-                            <div className="rounded-md border border-border p-2 space-y-1.5 text-[11px]">
-                              <div className="flex items-center gap-1.5">
-                                {cloudRepairJob.status === "finished" ? (
-                                  <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                                ) : cloudRepairJob.status === "failed" ? (
-                                  <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
-                                ) : (
-                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
-                                )}
-                                <span className={cn(
-                                  "font-medium",
-                                  cloudRepairJob.status === "finished" && "text-green-400",
-                                  cloudRepairJob.status === "failed" && "text-red-400",
-                                  (cloudRepairJob.status === "queued" || cloudRepairJob.status === "running") && "text-accent",
-                                )}>
-                                  {cloudRepairJob.status === "finished"
-                                    ? "Repair complete"
-                                    : cloudRepairJob.status === "failed"
-                                    ? "Repair failed"
-                                    : cloudRepairJob.status === "running"
-                                    ? "Repairing…"
-                                    : "Queued"}
-                                </span>
-                              </div>
-
-                              {cloudRepairJob.stepMessage && (
-                                <p className="text-muted-foreground text-[10px]">{cloudRepairJob.stepMessage}</p>
-                              )}
-
-                              {cloudRepairJob.status === "running" && (
-                                <Progress value={
-                                  cloudRepairJob.step === "parse" ? 3
-                                  : cloudRepairJob.step === "analyze" ? 6
-                                  : cloudRepairJob.step === "weld" ? 10
-                                  : cloudRepairJob.step === "sanitize" ? 15
-                                  : cloudRepairJob.step === "components" ? 22
-                                  : cloudRepairJob.step === "nonmanifold" ? 30
-                                  : cloudRepairJob.step === "normals" ? 35
-                                  : cloudRepairJob.step === "holes" ? 40
-                                  : cloudRepairJob.step === "selfintersect" ? 48
-                                  : cloudRepairJob.step === "reconstruct" ? 58
-                                  : cloudRepairJob.step === "post_cleanup" ? 68
-                                  : cloudRepairJob.step === "remesh" ? 75
-                                  : cloudRepairJob.step === "thinwall" ? 82
-                                  : cloudRepairJob.step === "simplify" ? 88
-                                  : cloudRepairJob.step === "validate" ? 93
-                                  : cloudRepairJob.step === "export" ? 97
-                                  : 3
-                                } className="h-1" />
-                              )}
-
-                              {cloudRepairJob.status === "failed" && (
-                                <p className="text-[10px] text-red-400">{cloudRepairJob.error || "Unknown error — check Cloud Run logs or re-submit."}</p>
-                              )}
-
-                              {/* Repair report */}
-                              {cloudRepairJob.status === "finished" && cloudRepairJob.report && (
-                                <div className="pl-4 space-y-0.5 text-muted-foreground text-[10px]">
-                                  {/* Quality score bar */}
-                                  {cloudRepairJob.report.qualityScore != null && (
-                                    <div className="flex items-center gap-2 pb-0.5">
-                                      <span>Quality</span>
-                                      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                                        <div
-                                          className={cn(
-                                            "h-full rounded-full transition-all",
-                                            cloudRepairJob.report.qualityScore >= 80 ? "bg-green-400"
-                                            : cloudRepairJob.report.qualityScore >= 50 ? "bg-yellow-400"
-                                            : "bg-red-400",
-                                          )}
-                                          style={{ width: `${cloudRepairJob.report.qualityScore}%` }}
-                                        />
-                                      </div>
-                                      <span className="font-mono">{cloudRepairJob.report.qualityScore}%</span>
-                                    </div>
-                                  )}
-                                  {cloudRepairJob.report.damageClassification && (
-                                    <p>Damage: <span className="text-accent">{cloudRepairJob.report.damageClassification}</span> → mode: <span className="text-accent">{cloudRepairJob.report.mode}</span></p>
-                                  )}
-                                  <p>Input: {cloudRepairJob.report.inputFaces?.toLocaleString()} → Output: {cloudRepairJob.report.outputFaces?.toLocaleString()} faces</p>
-                                  {(cloudRepairJob.report.verticesWelded ?? 0) > 0 && (
-                                    <p className="text-green-400">Welded {cloudRepairJob.report.verticesWelded?.toLocaleString()} duplicate vertices</p>
-                                  )}
-                                  {cloudRepairJob.report.duplicateFacesRemoved > 0 && (
-                                    <p className="text-green-400">Removed {cloudRepairJob.report.duplicateFacesRemoved} duplicate faces</p>
-                                  )}
-                                  {cloudRepairJob.report.componentsRemoved > 0 && (
-                                    <p className="text-green-400">Removed {cloudRepairJob.report.componentsRemoved} debris components</p>
-                                  )}
-                                  {cloudRepairJob.report.nonManifoldEdgesFixed > 0 && (
-                                    <p className="text-green-400">Fixed {cloudRepairJob.report.nonManifoldEdgesFixed} non-manifold edges</p>
-                                  )}
-                                  {(cloudRepairJob.report.selfIntersectionsRemoved ?? 0) > 0 && (
-                                    <p className="text-green-400">Removed {cloudRepairJob.report.selfIntersectionsRemoved} self-intersections</p>
-                                  )}
-                                  {cloudRepairJob.report.holesFilled > 0 && (
-                                    <p className="text-green-400">Filled holes</p>
-                                  )}
-                                  {cloudRepairJob.report.reconstructionUsed && (
-                                    <p className="text-green-400">
-                                      Reconstruction: {cloudRepairJob.report.reconstructionMethod ?? "Poisson"}
-                                    </p>
-                                  )}
-                                  {(cloudRepairJob.report.featureEdgesPreserved ?? 0) > 0 && (
-                                    <p className="text-blue-400">Preserved {cloudRepairJob.report.featureEdgesPreserved?.toLocaleString()} feature edges</p>
-                                  )}
-                                  {(cloudRepairJob.report.thinWallsThickened ?? 0) > 0 && (
-                                    <p className="text-blue-400">Thickened {cloudRepairJob.report.thinWallsThickened?.toLocaleString()} thin-wall vertices</p>
-                                  )}
-                                  <p className={cloudRepairJob.report.watertight ? "text-green-400" : "text-yellow-400"}>
-                                    {cloudRepairJob.report.watertight ? "Watertight" : "Not watertight"}
-                                    {cloudRepairJob.report.manifold != null && (cloudRepairJob.report.manifold ? " · Manifold" : " · Non-manifold")}
-                                  </p>
-                                  <p>Completed in {cloudRepairJob.report.elapsedSeconds}s</p>
-                                </div>
-                              )}
-
-                              {/* Download buttons */}
-                              {cloudRepairJob.status === "finished" && cloudRepairJob.outputPaths && (
-                                <div className="flex gap-2 pt-1">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="flex-1 gap-1 text-[10px] h-7"
-                                    onClick={() => handleDownloadRepairResult("repaired.stl")}
-                                  >
-                                    <Download className="h-3 w-3" />
-                                    STL
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="flex-1 gap-1 text-[10px] h-7"
-                                    onClick={() => handleDownloadRepairResult("repaired.obj")}
-                                  >
-                                    <Download className="h-3 w-3" />
-                                    OBJ
-                                  </Button>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {/* WAITING — no analysis yet */}
-                  {!aiAnalysis && (
-                    <div className="px-3 py-3">
-                      <p className="text-[11px] text-muted-foreground text-center">
-                        Run analysis above to see repair options.
+                        Reduce to ~{meshInfo ? Math.round(meshInfo.triangleCount * 0.8).toLocaleString() : "80%"} triangles
                       </p>
                     </div>
+                    <Switch
+                      checked={simplifyEnabled}
+                      onCheckedChange={setSimplifyEnabled}
+                      disabled={reconstructing}
+                    />
+                  </div>
+
+                  {/* Estimated output */}
+                  <div className="rounded-md border border-border p-2 space-y-0.5 text-[11px] text-muted-foreground">
+                    <div className="flex justify-between">
+                      <span>Est. output{simplifyEnabled ? " (after simplify)" : ""}</span>
+                      <span className="font-mono">{estimatedReconstructTris.toLocaleString()} tris</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Detail loss</span>
+                      <span className={reconstructResolutionMM <= 2 ? "text-green-400" : reconstructResolutionMM <= 6 ? "text-yellow-400" : "text-orange-400"}>
+                        {reconstructResolutionMM <= 2 ? "minimal" : reconstructResolutionMM <= 6 ? "minor" : "noticeable"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Reconstruct button */}
+                  <Button
+                    size="sm"
+                    className="w-full gap-2"
+                    style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                    disabled={!meshInfo || reconstructing}
+                    onClick={handleVoxelReconstruct}
+                  >
+                    {reconstructing
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <Boxes className="h-3 w-3" />}
+                    {reconstructing
+                      ? "Reconstructing…"
+                      : `Reconstruct (${reconstructMode === "point_cloud" ? "Point Cloud" : reconstructMode === "shell_voxel" ? "Shell" : "Solid"})`}
+                  </Button>
+
+                  {/* Result */}
+                  {reconstructResult && (
+                    <div className="rounded-md border border-border p-2 space-y-1.5 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                        <span className="font-medium text-green-400">Reconstruction complete</span>
+                      </div>
+                      <div className="pl-5 space-y-0.5 text-muted-foreground">
+                        <p className="text-green-400">Mesh is watertight (0 open edges)</p>
+                        <p className="text-green-400">0 non-manifold edges</p>
+                        <p>Mode: {reconstructMode === "point_cloud" ? "Point Cloud" : reconstructMode === "shell_voxel" ? "Shell" : "Solid"}</p>
+                        <p>{reconstructMode === "point_cloud" ? "Grid" : "Voxel"} size: {reconstructResult.resolution} mm</p>
+                        <p>Output: {reconstructResult.outputTriangles.toLocaleString()} triangles</p>
+                        {smoothingIterations > 0 && <p className="text-green-400">Smoothed ({smoothingIterations} Taubin passes)</p>}
+                        {simplifyEnabled && <p className="text-green-400">Simplified (quadric edge collapse)</p>}
+                      </div>
+                    </div>
                   )}
-                </>
+                </div>
               )}
-            </>
+
+              <Separator />
+
+              {/* ── Feature Preservation (Phase 3) ─────────────────────── */}
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Feature Preservation</p>
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <Label className="text-[11px]">Sharp edge threshold</Label>
+                    <span className="font-mono text-accent">{featureAngleThreshold}°</span>
+                  </div>
+                  <Slider
+                    min={10} max={60} step={5}
+                    value={[featureAngleThreshold]}
+                    onValueChange={([v]) => setFeatureAngleThreshold(v)}
+                    disabled={reconstructing || generatingVariant}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Edges sharper than this are preserved during reconstruction. Lower = more edges kept.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-[11px]">Surface mode</Label>
+                  <div className="flex rounded-md border border-border overflow-hidden text-[10px] font-semibold">
+                    {(["auto", "organic", "mechanical"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => setSurfaceMode(mode)}
+                        disabled={reconstructing || generatingVariant}
+                        className={cn(
+                          "flex-1 py-1.5 transition-colors capitalize",
+                          surfaceMode === mode
+                            ? "bg-accent text-accent-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    {surfaceMode === "organic"
+                      ? "Higher smoothing, softer edges. Best for sculpts and scans."
+                      : surfaceMode === "mechanical"
+                      ? "Minimal smoothing, sharp edges preserved. Best for CAD parts."
+                      : "AI selects based on mesh classification."}
+                  </p>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* ── Symmetry Recovery (Phase 3) ────────────────────────── */}
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Symmetry Recovery</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Mirror the mesh across an axis to reconstruct missing geometry from an intact side.
+                </p>
+                <div className="flex items-center gap-2">
+                  <div className="flex rounded-md border border-border overflow-hidden text-[10px] font-semibold flex-1">
+                    {(["x", "y", "z"] as const).map((axis) => (
+                      <button
+                        key={axis}
+                        onClick={() => setSymmetryAxis(axis)}
+                        className={cn(
+                          "flex-1 py-1.5 transition-colors",
+                          symmetryAxis === axis
+                            ? "bg-accent text-accent-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                          AXIS_COLORS[axis],
+                        )}
+                      >
+                        {axis.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
+                    disabled={!meshInfo || busy || generatingVariant}
+                    onClick={handleSymmetryMirror}
+                  >
+                    <FlipVertical className="h-3 w-3" />
+                    Mirror
+                  </Button>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* ── Variant Generation (Phase 3) ───────────────────────── */}
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Generate Variants</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Create repair variants with different settings for A/B comparison. Each variant is saved to Repair History.
+                </p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[10px] h-8"
+                    disabled={!meshInfo || busy || generatingVariant}
+                    onClick={() => generateVariant("Fine Detail", Math.max(minSafeRes, reconstructResolutionMM * 0.6))}
+                  >
+                    {generatingVariant ? <Loader2 className="h-3 w-3 animate-spin" /> : <Boxes className="h-3 w-3" />}
+                    Fine Detail
+                  </Button>
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[10px] h-8"
+                    disabled={!meshInfo || busy || generatingVariant}
+                    onClick={() => generateVariant("Fast Preview", Math.min(20, reconstructResolutionMM * 1.8))}
+                  >
+                    {generatingVariant ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+                    Fast Preview
+                  </Button>
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[10px] h-8"
+                    disabled={!meshInfo || busy || generatingVariant}
+                    onClick={() => generateVariant("Alt. Mode", undefined, reconstructMode === "solid_voxel" ? "shell_voxel" : reconstructMode === "shell_voxel" ? "point_cloud" : "solid_voxel")}
+                  >
+                    <Layers className="h-3 w-3" />
+                    Alt. Mode
+                  </Button>
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[10px] h-8"
+                    disabled={!meshInfo || busy || generatingVariant}
+                    onClick={() => generateVariant("Smooth", reconstructResolutionMM, reconstructMode)}
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    Smooth
+                  </Button>
+                </div>
+                {generatingVariant && (
+                  <div className="flex items-center gap-2 text-[10px] text-accent">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <span>{reconstructMessage || "Generating variant…"}</span>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* Cloud Repair */}
+              <SectionHeader icon={Cloud} label="Cloud Repair" open={openSections.cloudRepair} onToggle={() => toggleSection("cloudRepair")} />
+              {openSections.cloudRepair && (
+                <div className="px-1 pb-2 space-y-3">
+                  <p className="text-[10px] text-muted-foreground">
+                    Offload heavy mesh repair to the cloud. Uses PyMeshLab, Open3D Poisson reconstruction, and isotropic remeshing.
+                  </p>
+
+                  <Button
+                    size="sm"
+                    className="w-full gap-2"
+                    style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                    disabled={cloudRepairSubmitting || cloudRepairPolling}
+                    onClick={handleCloudRepair}
+                  >
+                    {cloudRepairSubmitting ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : cloudRepairPolling ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Cloud className="h-3 w-3" />
+                    )}
+                    {cloudRepairSubmitting
+                      ? "Uploading…"
+                      : cloudRepairPolling
+                      ? "Processing…"
+                      : "Send to Cloud Repair"}
+                  </Button>
+
+                  {/* Job status */}
+                  {cloudRepairJob && (
+                    <div className="rounded-md border border-border p-2 space-y-1.5 text-[11px]">
+                      <div className="flex items-center gap-1.5">
+                        {cloudRepairJob.status === "finished" ? (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                        ) : cloudRepairJob.status === "failed" ? (
+                          <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
+                        ) : (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                        )}
+                        <span className={cn(
+                          "font-medium",
+                          cloudRepairJob.status === "finished" && "text-green-400",
+                          cloudRepairJob.status === "failed" && "text-red-400",
+                          (cloudRepairJob.status === "queued" || cloudRepairJob.status === "running") && "text-accent",
+                        )}>
+                          {cloudRepairJob.status === "finished"
+                            ? "Repair complete"
+                            : cloudRepairJob.status === "failed"
+                            ? "Repair failed"
+                            : cloudRepairJob.status === "running"
+                            ? "Repairing…"
+                            : "Queued"}
+                        </span>
+                      </div>
+
+                      {cloudRepairJob.stepMessage && (
+                        <p className="text-muted-foreground text-[10px]">{cloudRepairJob.stepMessage}</p>
+                      )}
+
+                      {cloudRepairJob.status === "failed" && (
+                        <p className="text-[10px] text-red-400">{cloudRepairJob.error || "Unknown error — check Cloud Run logs or re-submit."}</p>
+                      )}
+
+                      {/* Repair report */}
+                      {cloudRepairJob.status === "finished" && cloudRepairJob.report && (
+                        <div className="pl-4 space-y-0.5 text-muted-foreground text-[10px]">
+                          {cloudRepairJob.report.qualityScore != null && (
+                            <div className="flex items-center gap-2 pb-0.5">
+                              <span>Quality</span>
+                              <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                                <div
+                                  className={cn(
+                                    "h-full rounded-full transition-all",
+                                    cloudRepairJob.report.qualityScore >= 80 ? "bg-green-400"
+                                    : cloudRepairJob.report.qualityScore >= 50 ? "bg-yellow-400"
+                                    : "bg-red-400",
+                                  )}
+                                  style={{ width: `${cloudRepairJob.report.qualityScore}%` }}
+                                />
+                              </div>
+                              <span className="font-mono">{cloudRepairJob.report.qualityScore}%</span>
+                            </div>
+                          )}
+                          {cloudRepairJob.report.damageClassification && (
+                            <p>Damage: <span className="text-accent">{cloudRepairJob.report.damageClassification}</span> → mode: <span className="text-accent">{cloudRepairJob.report.mode}</span></p>
+                          )}
+                          <p>Input: {cloudRepairJob.report.inputFaces?.toLocaleString()} → Output: {cloudRepairJob.report.outputFaces?.toLocaleString()} faces</p>
+                          {(cloudRepairJob.report.verticesWelded ?? 0) > 0 && (
+                            <p className="text-green-400">Welded {cloudRepairJob.report.verticesWelded?.toLocaleString()} duplicate vertices</p>
+                          )}
+                          {cloudRepairJob.report.duplicateFacesRemoved > 0 && (
+                            <p className="text-green-400">Removed {cloudRepairJob.report.duplicateFacesRemoved} duplicate faces</p>
+                          )}
+                          {cloudRepairJob.report.componentsRemoved > 0 && (
+                            <p className="text-green-400">Removed {cloudRepairJob.report.componentsRemoved} debris components</p>
+                          )}
+                          {cloudRepairJob.report.nonManifoldEdgesFixed > 0 && (
+                            <p className="text-green-400">Fixed {cloudRepairJob.report.nonManifoldEdgesFixed} non-manifold edges</p>
+                          )}
+                          {(cloudRepairJob.report.selfIntersectionsRemoved ?? 0) > 0 && (
+                            <p className="text-green-400">Removed {cloudRepairJob.report.selfIntersectionsRemoved} self-intersections</p>
+                          )}
+                          {cloudRepairJob.report.holesFilled > 0 && (
+                            <p className="text-green-400">Filled holes</p>
+                          )}
+                          {cloudRepairJob.report.reconstructionUsed && (
+                            <p className="text-green-400">
+                              Reconstruction: {cloudRepairJob.report.reconstructionMethod ?? "Poisson"}
+                            </p>
+                          )}
+                          {(cloudRepairJob.report.featureEdgesPreserved ?? 0) > 0 && (
+                            <p className="text-blue-400">Preserved {cloudRepairJob.report.featureEdgesPreserved?.toLocaleString()} feature edges</p>
+                          )}
+                          {(cloudRepairJob.report.thinWallsThickened ?? 0) > 0 && (
+                            <p className="text-blue-400">Thickened {cloudRepairJob.report.thinWallsThickened?.toLocaleString()} thin-wall vertices</p>
+                          )}
+                          <p className={cloudRepairJob.report.watertight ? "text-green-400" : "text-yellow-400"}>
+                            {cloudRepairJob.report.watertight ? "Watertight" : "Not watertight"}
+                            {cloudRepairJob.report.manifold != null && (cloudRepairJob.report.manifold ? " · Manifold" : " · Non-manifold")}
+                          </p>
+                          <p>Completed in {cloudRepairJob.report.elapsedSeconds}s</p>
+                        </div>
+                      )}
+
+                      {/* Download buttons */}
+                      {cloudRepairJob.status === "finished" && cloudRepairJob.outputPaths && (
+                        <div className="flex gap-2 pt-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1 gap-1 text-[10px] h-7"
+                            onClick={() => handleDownloadRepairResult("repaired.stl")}
+                          >
+                            <Download className="h-3 w-3" />
+                            STL
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1 gap-1 text-[10px] h-7"
+                            onClick={() => handleDownloadRepairResult("repaired.obj")}
+                          >
+                            <Download className="h-3 w-3" />
+                            OBJ
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
-          {/* ── PREPARE TAB ───────────────────────────────────────────────── */}
-          {tab === "prepare" && (
-            <>
+          {/* ── PREPARE TAB ────────────────────────────────────────────────── */}
+          {workbenchTab === "prepare" && (
+            <div className="px-3 py-2 space-y-3">
               {!meshInfo && (
-                <p className="px-3 py-4 text-xs text-muted-foreground text-center">
+                <p className="text-xs text-muted-foreground text-center py-4">
                   Load a file first to use prepare tools.
                 </p>
               )}
 
+              {/* Orientation */}
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orientation</p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8 col-span-2"
+                    disabled={!meshInfo || busy}
+                    onClick={handleLayFlat}
+                  >
+                    <Layers className="h-3 w-3" />
+                    Lay Flat
+                  </Button>
+                  {(["x", "y", "z"] as const).map((axis) => (
+                    <Button
+                      key={axis}
+                      size="sm" variant="outline"
+                      className={cn("gap-1 text-[11px] h-8", AXIS_COLORS[axis])}
+                      disabled={!meshInfo || busy}
+                      onClick={() => handleRotate90(axis)}
+                    >
+                      <RotateCw className="h-3 w-3" />
+                      Rot 90° {axis.toUpperCase()}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Scale */}
               <SectionHeader icon={Maximize2} label="Scale" open={openSections.scale} onToggle={() => toggleSection("scale")} />
               {openSections.scale && (
-                <div className="px-3 pb-3 space-y-3">
+                <div className="px-1 pb-2 space-y-3">
                   <div className="flex items-center justify-between">
                     <Label className="text-xs">Uniform scale</Label>
                     <Switch checked={uniformScale} onCheckedChange={setUniformScale} className="scale-75" />
@@ -1868,7 +3162,7 @@ export function KarasliceApp() {
                     <div key={a} className="space-y-1">
                       <div className="flex justify-between text-[10px] text-muted-foreground">
                         <span className={AXIS_COLORS[a.toLowerCase()]}>{a} scale</span>
-                        <span className="font-mono">{transforms[`scale${a}`].toFixed(2)}×</span>
+                        <span className="font-mono">{transforms[`scale${a}`].toFixed(2)}x</span>
                       </div>
                       <Slider
                         min={0.1} max={10} step={0.01}
@@ -1880,11 +3174,13 @@ export function KarasliceApp() {
                   ))}
                 </div>
               )}
-              <Separator className="my-1" />
 
+              <Separator />
+
+              {/* Rotate */}
               <SectionHeader icon={RotateCcw} label="Rotate" open={openSections.rotate} onToggle={() => toggleSection("rotate")} />
               {openSections.rotate && (
-                <div className="px-3 pb-3 space-y-3">
+                <div className="px-1 pb-2 space-y-3">
                   {(["X", "Y", "Z"] as const).map((a) => (
                     <div key={a} className="space-y-1">
                       <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -1901,9 +3197,8 @@ export function KarasliceApp() {
                   ))}
                 </div>
               )}
-              <Separator className="my-1" />
 
-              <div className="px-3 pb-3">
+              <div className="px-1 pb-2">
                 <Button
                   size="sm" variant="outline" className="w-full gap-1.5"
                   onClick={() => setTransforms(DEFAULT_TRANSFORMS)}
@@ -1913,16 +3208,13 @@ export function KarasliceApp() {
                   Reset Transforms
                 </Button>
               </div>
-            </>
-          )}
 
-          {/* ── PRESPLIT TAB ──────────────────────────────────────────────── */}
-          {tab === "presplit" && (
-            <>
+              <Separator />
+
+              {/* Printer Profile */}
               <SectionHeader icon={FileBox} label="Printer Profile" open={openSections.printer} onToggle={() => toggleSection("printer")} />
               {openSections.printer && (
-                <div className="px-3 pb-3 space-y-2">
-                  {/* Preset / Custom toggle */}
+                <div className="px-1 pb-2 space-y-2">
                   <div className="flex items-center gap-1 rounded-md border border-border p-1">
                     <button
                       onClick={() => setUseCustomPrinter(false)}
@@ -2030,8 +3322,10 @@ export function KarasliceApp() {
                   </Button>
                 </div>
               )}
-              <Separator className="my-1" />
 
+              <Separator />
+
+              {/* Cut Planes */}
               <SectionHeader
                 icon={Scissors}
                 label={`Cut Planes (${enabledPlaneCount}/${cutPlanes.length})`}
@@ -2039,7 +3333,7 @@ export function KarasliceApp() {
                 onToggle={() => toggleSection("cutPlanes")}
               />
               {openSections.cutPlanes && (
-                <div className="px-3 pb-3 space-y-2">
+                <div className="px-1 pb-2 space-y-2">
                   <div className="flex gap-1">
                     {(["x", "y", "z"] as const).map((axis) => (
                       <button
@@ -2106,11 +3400,13 @@ export function KarasliceApp() {
                   ))}
                 </div>
               )}
-              <Separator className="my-1" />
 
+              <Separator />
+
+              {/* Tenon */}
               <SectionHeader icon={Link2} label="Tenon / Joinery" open={openSections.tenon} onToggle={() => toggleSection("tenon")} />
               {openSections.tenon && (
-                <div className="px-3 pb-3 space-y-3">
+                <div className="px-1 pb-2 space-y-3">
                   <div className="space-y-1">
                     <Label className="text-xs text-muted-foreground">Tenon Type</Label>
                     <Select value={tenonType} onValueChange={(v) => setTenonType(v as typeof tenonType)}>
@@ -2146,150 +3442,64 @@ export function KarasliceApp() {
                   )}
                 </div>
               )}
-            </>
-          )}
 
-          {/* ── SPLIT TAB ─────────────────────────────────────────────────── */}
-          {tab === "split" && (
-            <div className="px-3 py-3 space-y-3">
-              {!meshInfo && (
-                <div className="rounded-md border border-border p-2 text-xs text-muted-foreground">
-                  Load a file before splitting.
-                </div>
-              )}
-              {meshInfo && enabledPlaneCount === 0 && (
-                <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 p-2 text-xs text-yellow-400 flex items-center gap-1.5">
-                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
-                  Add at least one enabled cut plane in Pre-Split.
-                </div>
-              )}
-              {analysisResult && !analysisResult.isWatertight && (
-                <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 p-2 text-xs text-yellow-400 flex items-center gap-1.5">
-                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
-                  Mesh has open edges — split may produce artifacts.
-                </div>
-              )}
+              <Separator />
 
-              <Button
-                size="sm"
-                className="w-full gap-2"
-                style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                disabled={!meshInfo || splitting || enabledPlaneCount === 0}
-                onClick={handleRunSplit}
-              >
-                {splitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cpu className="h-3.5 w-3.5" />}
-                {splitting
-                  ? "Splitting…"
-                  : `Run Split (${enabledPlaneCount} cut${enabledPlaneCount !== 1 ? "s" : ""})`}
-              </Button>
+              {/* Split */}
+              <div className="px-1 pb-2 space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Split</p>
+                {meshInfo && enabledPlaneCount === 0 && (
+                  <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 p-2 text-xs text-yellow-400 flex items-center gap-1.5">
+                    <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                    Add at least one enabled cut plane.
+                  </div>
+                )}
+                {analysisResult && !analysisResult.isWatertight && (
+                  <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 p-2 text-xs text-yellow-400 flex items-center gap-1.5">
+                    <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                    Mesh has open edges — split may produce artifacts.
+                  </div>
+                )}
+                <Button
+                  size="sm"
+                  className="w-full gap-2"
+                  style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                  disabled={!meshInfo || splitting || enabledPlaneCount === 0}
+                  onClick={handleRunSplit}
+                >
+                  {splitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cpu className="h-3.5 w-3.5" />}
+                  {splitting
+                    ? "Splitting…"
+                    : `Run Split (${enabledPlaneCount} cut${enabledPlaneCount !== 1 ? "s" : ""})`}
+                </Button>
 
-              {(splitting || splitMessage) && (
-                <div className="space-y-1.5">
-                  <Progress value={splitProgress} className="h-1.5" />
-                  <p className="text-[10px] text-muted-foreground text-center">{splitMessage}</p>
-                </div>
-              )}
+                {(splitting || splitMessage) && (
+                  <div className="space-y-1.5">
+                    <Progress value={splitProgress} className="h-1.5" />
+                    <p className="text-[10px] text-muted-foreground text-center">{splitMessage}</p>
+                  </div>
+                )}
 
-              {splitParts.length > 0 && !splitting && (
-                <>
+                {splitParts.length > 0 && !splitting && (
                   <div className="rounded-md border border-green-500/30 bg-green-500/10 p-2 text-xs text-green-400 flex items-center gap-1.5">
                     <CheckCircle2 className="h-3.5 w-3.5" />
                     {splitParts.length} parts generated
                   </div>
-
-                  <Button
-                    size="sm" variant="outline" className="w-full gap-2"
-                    disabled={repairingParts}
-                    onClick={handleRepairParts}
-                  >
-                    {repairingParts ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
-                    {repairingParts ? repairPartsMessage || "Repairing…" : "Repair All Parts"}
-                  </Button>
-
-                  <Separator />
-
-                  {/* View controls */}
-                  <div className="space-y-2">
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[10px] text-muted-foreground">
-                        <span>Explode view</span>
-                        <span className="font-mono">{Math.round(explodeAmount * 100)}%</span>
-                      </div>
-                      <Slider
-                        min={0} max={1} step={0.01}
-                        value={[explodeAmount]}
-                        onValueChange={([v]) => setExplodeAmount(v)}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs flex items-center gap-1.5">
-                        <Scissors className="h-3 w-3" /> Slice lines
-                      </Label>
-                      <Switch checked={showSliceLines} onCheckedChange={setShowSliceLines} className="scale-75" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs flex items-center gap-1.5">
-                        <Eye className="h-3 w-3" /> Ghost mode
-                      </Label>
-                      <Switch checked={ghostMode} onCheckedChange={setGhostMode} className="scale-75" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs flex items-center gap-1.5">
-                        <ZapOff className="h-3 w-3" /> Wireframe
-                      </Label>
-                      <Switch checked={wireframe} onCheckedChange={setWireframe} className="scale-75" />
-                    </div>
-                  </div>
-
-                  <Separator />
-
-                  <SectionHeader
-                    icon={Package}
-                    label={`Parts (${splitParts.length})`}
-                    open={openSections.splitResult}
-                    onToggle={() => toggleSection("splitResult")}
-                  />
-                  {openSections.splitResult && (
-                    <div className="px-3 pb-2 space-y-1.5">
-                      {splitParts.map((part, i) => (
-                        <button
-                          key={i}
-                          onClick={() => setSelectedPartIndex(i === selectedPartIndex ? undefined : i)}
-                          className={cn(
-                            "w-full rounded-md border p-2 text-left text-xs transition-colors",
-                            selectedPartIndex === i
-                              ? "border-accent bg-accent/10 text-accent"
-                              : "border-border hover:bg-muted"
-                          )}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium">{part.label}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground">
-                              {part.triangleCount.toLocaleString()} tri
-                            </span>
-                          </div>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">
-                            {fmtDim(part.bbox.x, u)} × {fmtDim(part.bbox.y, u)} × {fmtDim(part.bbox.z, u)} {UNIT_LABELS[u]}
-                          </p>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
+                )}
+              </div>
             </div>
           )}
 
-          {/* ── EXPORT TAB ────────────────────────────────────────────────── */}
-          {tab === "export" && (
-            <div className="px-3 py-3 space-y-3">
+          {/* ── EXPORT TAB ─────────────────────────────────────────────────── */}
+          {workbenchTab === "export" && (
+            <div className="px-3 py-2 space-y-3">
               {splitParts.length === 0 ? (
                 <div className="rounded-md border border-border p-4 text-xs space-y-3 text-center text-muted-foreground">
                   <Package className="h-8 w-8 mx-auto opacity-20" />
                   <p>Run a split to generate exportable parts.</p>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setTab("split")}>
+                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setWorkbenchTab("prepare")}>
                     <Cpu className="h-3 w-3" />
-                    Go to Split
+                    Go to Prepare
                   </Button>
                 </div>
               ) : (
@@ -2359,11 +3569,19 @@ export function KarasliceApp() {
                     <div className="text-[10px] space-y-0.5">
                       {splitParts.map((part, i) => {
                         const density = MATERIAL_DENSITIES.find((m) => m.id === materialDensityId)?.density ?? 1.24;
-                        const weightG = ((part.volumeMM3 / 1000) * density).toFixed(1);
+                        const volCm3 = part.volumeMM3 / 1000;
+                        const weightG = volCm3 * density;
+                        const hasVolume = part.volumeMM3 > 0.01;
                         return (
                           <div key={i} className="flex justify-between text-muted-foreground">
                             <span>{part.label}</span>
-                            <span className="font-mono">{weightG} g</span>
+                            <span className="font-mono">
+                              {hasVolume
+                                ? weightG >= 1000
+                                  ? (weightG / 1000).toFixed(2) + " kg"
+                                  : weightG.toFixed(1) + " g"
+                                : "\u2014"}
+                            </span>
                           </div>
                         );
                       })}
@@ -2371,10 +3589,13 @@ export function KarasliceApp() {
                         <div className="flex justify-between pt-1 border-t border-border font-medium text-foreground">
                           <span>Total</span>
                           <span className="font-mono">
-                            {splitParts.reduce((sum, p) => {
+                            {(() => {
                               const density = MATERIAL_DENSITIES.find((m) => m.id === materialDensityId)?.density ?? 1.24;
-                              return sum + (p.volumeMM3 / 1000) * density;
-                            }, 0).toFixed(1)} g
+                              const totalG = splitParts.reduce((sum, p) => sum + (p.volumeMM3 / 1000) * density, 0);
+                              return totalG >= 1000
+                                ? (totalG / 1000).toFixed(2) + " kg"
+                                : totalG.toFixed(1) + " g";
+                            })()}
                           </span>
                         </div>
                       )}
@@ -2418,134 +3639,7 @@ export function KarasliceApp() {
             </div>
           )}
         </div>
-
-        {/* Sidebar notification */}
-        {sidebarNotice && (
-          <div
-            className={cn(
-              "mx-2 mb-1 rounded-md px-3 py-2 text-xs font-medium transition-all animate-in fade-in slide-in-from-bottom-2 duration-200",
-              sidebarNotice.variant === "destructive"
-                ? "bg-destructive/15 text-destructive border border-destructive/30"
-                : "bg-accent/15 text-accent-foreground border border-accent/30"
-            )}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <span className="leading-snug">{sidebarNotice.message}</span>
-              <button onClick={() => setSidebarNotice(null)} className="shrink-0 mt-0.5 opacity-60 hover:opacity-100">
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Footer */}
-        <div className="border-t border-border px-3 py-2 text-[10px] text-muted-foreground/50 flex items-center justify-between">
-          <span>Karaslice · All processing is local</span>
-          <button
-            onClick={() => setShowShortcuts((v) => !v)}
-            className="hover:text-muted-foreground transition-colors"
-            title="Keyboard shortcuts"
-          >
-            <Keyboard className="h-3 w-3" />
-          </button>
-        </div>
       </aside>
-
-      {/* ── Viewport ─────────────────────────────────────────────────────────── */}
-      <main className="relative flex-1 overflow-hidden">
-        <Viewport
-          ref={viewportRef}
-          onMeshLoaded={handleMeshLoaded}
-          onLoadStart={() => setFileLoading(true)}
-          onFileSelected={(file) => { pendingUploadFile.current = file; loadedFileRef.current = file; }}
-          cutPlanes={cutPlanes}
-          printerVolume={effectivePrinter
-            ? { x: effectivePrinter.x, y: effectivePrinter.y, z: effectivePrinter.z }
-            : null}
-          transforms={transforms}
-          splitParts={splitPartsVisual}
-          explodeAmount={explodeAmount}
-          showSliceLines={showSliceLines}
-          ghostMode={ghostMode}
-          wireframe={wireframe}
-          selectedPartIndex={selectedPartIndex}
-          onPartSelect={setSelectedPartIndex}
-        />
-
-        {/* Stats overlay */}
-        {meshInfo && (
-          <div className="absolute top-3 right-3 rounded-md border border-border bg-card px-3 py-2 text-xs font-mono space-y-0.5 pointer-events-none shadow-md">
-            <p className="text-muted-foreground truncate max-w-[200px]">{meshInfo.fileName}</p>
-            <p><span className="text-accent">{meshInfo.triangleCount.toLocaleString()}</span> triangles</p>
-            <p>
-              <span className="text-accent">{fmtDim(meshInfo.boundingBox.x, u)}</span> ×{" "}
-              <span className="text-accent">{fmtDim(meshInfo.boundingBox.y, u)}</span> ×{" "}
-              <span className="text-accent">{fmtDim(meshInfo.boundingBox.z, u)}</span> {UNIT_LABELS[u]}
-            </p>
-            {enabledPlaneCount > 0 && (
-              <p><span className="text-accent">{enabledPlaneCount}</span> cut plane{enabledPlaneCount !== 1 ? "s" : ""}</p>
-            )}
-            {splitParts.length > 0 && (
-              <p><span className="text-accent">{splitParts.length}</span> parts</p>
-            )}
-          </div>
-        )}
-
-        {/* Mobile sidebar toggle */}
-        <button
-          className="absolute top-3 left-3 z-10 flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card shadow-md text-muted-foreground hover:text-foreground transition-colors md:hidden"
-          onClick={() => setSidebarOpen((v) => !v)}
-          aria-label={sidebarOpen ? "Close menu" : "Open menu"}
-        >
-          {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
-        </button>
-
-        {/* View mode badges */}
-        {(ghostMode || wireframe || explodeAmount > 0) && (
-          <div className="absolute top-3 left-14 md:left-3 flex gap-1.5">
-            {ghostMode && (
-              <Badge variant="secondary" className="text-[10px] gap-1">
-                <Eye className="h-2.5 w-2.5" /> Ghost
-              </Badge>
-            )}
-            {wireframe && (
-              <Badge variant="secondary" className="text-[10px] gap-1">
-                <ZapOff className="h-2.5 w-2.5" /> Wireframe
-              </Badge>
-            )}
-            {explodeAmount > 0 && (
-              <Badge variant="secondary" className="text-[10px] gap-1">
-                <Zap className="h-2.5 w-2.5" /> Explode {Math.round(explodeAmount * 100)}%
-              </Badge>
-            )}
-          </div>
-        )}
-
-        {/* Keyboard shortcuts overlay */}
-        {showShortcuts && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-sm z-10">
-            <div className="rounded-xl border border-border bg-card/95 p-5 min-w-[240px] shadow-2xl">
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-sm font-semibold">Keyboard Shortcuts</p>
-                <button
-                  onClick={() => setShowShortcuts(false)}
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="space-y-2.5">
-                {KEYBOARD_SHORTCUTS.map(([key, desc]) => (
-                  <div key={key} className="flex items-center justify-between gap-8 text-xs">
-                    <kbd className="rounded bg-muted px-2 py-0.5 font-mono text-[10px]">{key}</kbd>
-                    <span className="text-muted-foreground">{desc}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-      </main>
     </div>
   );
 }

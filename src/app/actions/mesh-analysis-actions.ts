@@ -930,6 +930,249 @@ Respond with JSON ONLY (no markdown):
   }
 }
 
+// ─── Post-repair AI review ───────────────────────────────────────────────────
+
+export interface PostRepairReviewInput {
+  operationType: "topology_repair" | "cloud_repair" | "voxel_reconstruct";
+  fileName: string;
+  screenshotBase64?: string;
+  before: {
+    triangles: number;
+    vertices: number;
+    openEdges: number;
+    nonManifoldEdges: number;
+    boundingBox: { x: number; y: number; z: number };
+    surfaceAreaMM2: number;
+    volumeMM3: number;
+  };
+  after: {
+    triangles: number;
+    vertices: number;
+    openEdges: number;
+    nonManifoldEdges: number;
+    isWatertight: boolean;
+    surfaceAreaMM2: number;
+    volumeMM3: number;
+  };
+  repairStats?: Record<string, unknown>;
+  cloudReport?: Record<string, unknown>;
+}
+
+export interface PostRepairReviewResult {
+  passed: boolean;
+  issues: string[];
+  recommendation: "accept" | "retry_with_params" | "escalate_to_cloud" | "manual_review";
+  reasoning: string;
+  suggestedParams?: {
+    voxel?: VoxelRepairParams | null;
+    pointCloud?: PointCloudRepairParams | null;
+    postProcess?: PostProcessParams | null;
+  };
+  suggestedPipeline?: RepairStrategy;
+}
+
+/**
+ * AI-powered post-repair quality review. Called automatically when a repair
+ * operation completes but quality checks detect issues (non-watertight,
+ * triangle explosion, etc.). Sends both metrics and a viewport screenshot
+ * so the AI can visually + numerically assess the result.
+ */
+export async function postRepairReview(
+  input: PostRepairReviewInput,
+): Promise<PostRepairReviewResult> {
+  const triRatio = input.after.triangles / Math.max(input.before.triangles, 1);
+  const volRatio = input.before.volumeMM3 > 0
+    ? input.after.volumeMM3 / input.before.volumeMM3
+    : null;
+
+  // Detect obvious issues without AI
+  const autoIssues: string[] = [];
+  if (triRatio > 5) autoIssues.push(`Triangle explosion: ${input.before.triangles.toLocaleString()} → ${input.after.triangles.toLocaleString()} (${triRatio.toFixed(1)}x)`);
+  if (triRatio < 0.1 && input.after.triangles > 0) autoIssues.push(`Severe triangle loss: ${(triRatio * 100).toFixed(1)}% remaining`);
+  if (input.after.openEdges > 0 && !input.after.isWatertight) autoIssues.push(`Still not watertight: ${input.after.openEdges} open edges`);
+  if (input.after.nonManifoldEdges > 0) autoIssues.push(`Non-manifold edges remain: ${input.after.nonManifoldEdges}`);
+  if (volRatio !== null && (volRatio < 0.5 || volRatio > 2.0)) autoIssues.push(`Volume changed significantly: ${(volRatio * 100).toFixed(0)}% of original`);
+
+  // If no issues detected, pass without calling AI
+  if (autoIssues.length === 0 && input.after.isWatertight) {
+    return { passed: true, issues: [], recommendation: "accept", reasoning: "All quality checks passed." };
+  }
+
+  // Build AI prompt
+  const prompt = `POST-REPAIR QUALITY REVIEW
+
+Operation: ${input.operationType}
+File: ${input.fileName}
+
+BEFORE:
+- Triangles: ${input.before.triangles.toLocaleString()}
+- Vertices: ${input.before.vertices.toLocaleString()}
+- Open edges: ${input.before.openEdges}
+- Non-manifold: ${input.before.nonManifoldEdges}
+- Bbox: ${input.before.boundingBox.x.toFixed(1)} × ${input.before.boundingBox.y.toFixed(1)} × ${input.before.boundingBox.z.toFixed(1)} mm
+- Surface area: ${input.before.surfaceAreaMM2.toFixed(1)} mm²
+- Volume: ${input.before.volumeMM3.toFixed(1)} mm³
+
+AFTER:
+- Triangles: ${input.after.triangles.toLocaleString()}
+- Vertices: ${input.after.vertices.toLocaleString()}
+- Open edges: ${input.after.openEdges}
+- Non-manifold: ${input.after.nonManifoldEdges}
+- Watertight: ${input.after.isWatertight}
+- Surface area: ${input.after.surfaceAreaMM2.toFixed(1)} mm²
+- Volume: ${input.after.volumeMM3.toFixed(1)} mm³
+- Triangle ratio: ${triRatio.toFixed(2)}x${volRatio !== null ? `\n- Volume ratio: ${volRatio.toFixed(2)}x` : ""}
+
+DETECTED ISSUES:
+${autoIssues.length > 0 ? autoIssues.map((i) => `- ${i}`).join("\n") : "- None (but mesh is not watertight)"}
+
+${input.repairStats ? `REPAIR STATS:\n${JSON.stringify(input.repairStats, null, 2)}` : ""}
+${input.cloudReport ? `CLOUD REPORT:\n${JSON.stringify(input.cloudReport, null, 2)}` : ""}
+
+A screenshot of the current viewport state is attached (if available). Examine the visual result for artifacts, missing geometry, or obvious defects.
+
+Respond with JSON:
+{
+  "passed": boolean,
+  "issues": ["list of specific issues found"],
+  "recommendation": "accept" | "retry_with_params" | "escalate_to_cloud" | "manual_review",
+  "reasoning": "2-3 sentence explanation",
+  "suggestedPipeline": "topology_repair" | "solid_voxel" | "shell_voxel" | "point_cloud" | null,
+  "suggestedVoxelParams": { "resolution": number, "dilationVoxels": number, "smoothingIterations": number, "simplifyTarget": number } | null,
+  "suggestedPointCloudParams": { "resolution": number, "radiusMultiplier": number, "sdfSharpness": number, "gapBridgingFactor": number, "smoothingIterations": number, "simplifyTarget": number } | null
+}`;
+
+  const systemPrompt = `You are a 3D printing mesh quality reviewer. You receive before/after metrics and optionally a viewport screenshot of a repaired mesh. Your job is to assess whether the repair is acceptable for 3D printing.
+
+CRITICAL RULES:
+- Triangle explosion (>3x original count) is usually unacceptable — recommend simplification or parameter adjustment
+- Triangle loss (<20% remaining) means the repair destroyed geometry — escalate
+- Volume changes >50% indicate the repair altered the shape significantly
+- Non-watertight results from topology repair should escalate to cloud repair
+- Non-watertight results from cloud repair need manual review
+- If the visual result (screenshot) shows obvious holes, self-intersections, or missing sections, flag it
+- "accept" means the result is good enough for 3D printing
+- "retry_with_params" means re-run with adjusted parameters (provide them)
+- "escalate_to_cloud" means local repair failed, try cloud pipeline
+- "manual_review" means the mesh needs human intervention`;
+
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+
+  try {
+    let responseText: string;
+
+    if (geminiKey) {
+      // Prefer Gemini for vision
+      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+      if (input.screenshotBase64) {
+        parts.push({ inlineData: { mimeType: "image/png", data: input.screenshotBase64 } });
+      }
+      parts.push({ text: prompt });
+
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: "user", parts }],
+            generationConfig: { responseMimeType: "application/json", maxOutputTokens: 2048 },
+          }),
+        },
+      );
+      if (!resp.ok) throw new Error(`Gemini ${resp.status}`);
+      const data = await resp.json();
+      responseText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    } else if (anthropicKey) {
+      type ContentBlock =
+        | { type: "text"; text: string }
+        | { type: "image"; source: { type: "base64"; media_type: "image/png"; data: string } };
+      const content: ContentBlock[] = [];
+      if (input.screenshotBase64) {
+        content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: input.screenshotBase64 } });
+      }
+      content.push({ type: "text", text: prompt });
+
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": anthropicKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 2048,
+          system: systemPrompt,
+          messages: [{ role: "user", content }],
+        }),
+      });
+      if (!resp.ok) throw new Error(`Anthropic ${resp.status}`);
+      const data = await resp.json() as { content: Array<{ type: string; text: string }> };
+      responseText = data.content.find((b) => b.type === "text")?.text ?? "";
+    } else {
+      // No API key — return heuristic result based on auto-detected issues
+      return {
+        passed: autoIssues.length === 0,
+        issues: autoIssues,
+        recommendation: input.after.isWatertight ? "accept"
+          : input.operationType === "topology_repair" ? "escalate_to_cloud"
+          : "manual_review",
+        reasoning: autoIssues.length > 0
+          ? `Heuristic review (no API key): ${autoIssues.join("; ")}`
+          : "Heuristic review passed.",
+      };
+    }
+
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON in AI response");
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    // Sanitize suggested params if present
+    const fakeInput: AIMeshAnalysisInput = {
+      triangles: input.before.triangles,
+      vertices: input.before.vertices,
+      openEdges: input.before.openEdges,
+      nonManifoldEdges: input.before.nonManifoldEdges,
+      boundingBox: input.before.boundingBox,
+      surfaceAreaMM2: input.before.surfaceAreaMM2,
+      volumeMM3: input.before.volumeMM3,
+      avgWallThicknessMM: null,
+      fileName: input.fileName,
+    };
+
+    let suggestedParams: PostRepairReviewResult["suggestedParams"] | undefined;
+    if (parsed.suggestedVoxelParams || parsed.suggestedPointCloudParams) {
+      suggestedParams = {
+        voxel: parsed.suggestedVoxelParams ? sanitizeVoxelParams(parsed.suggestedVoxelParams, fakeInput) : null,
+        pointCloud: parsed.suggestedPointCloudParams ? sanitizePointCloudParams(parsed.suggestedPointCloudParams, fakeInput) : null,
+        postProcess: null,
+      };
+    }
+
+    return {
+      passed: !!parsed.passed,
+      issues: Array.isArray(parsed.issues) ? parsed.issues : autoIssues,
+      recommendation: parsed.recommendation ?? "manual_review",
+      reasoning: parsed.reasoning ?? "AI review completed.",
+      suggestedParams,
+      suggestedPipeline: parsed.suggestedPipeline ?? undefined,
+    };
+  } catch (err) {
+    console.error("[postRepairReview] AI call failed:", err instanceof Error ? err.message : err);
+    return {
+      passed: autoIssues.length === 0,
+      issues: autoIssues,
+      recommendation: input.after.isWatertight ? "accept"
+        : input.operationType === "topology_repair" ? "escalate_to_cloud"
+        : "manual_review",
+      reasoning: `AI review unavailable — heuristic: ${autoIssues.join("; ") || "no issues detected"}`,
+    };
+  }
+}
+
 /**
  * Deterministic parameter adjustment based on which validation checks failed.
  * Used as fallback when AI diagnosis is unavailable.

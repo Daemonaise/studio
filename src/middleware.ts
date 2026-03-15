@@ -1,5 +1,5 @@
 export { auth as middleware } from "@/auth";
 
 export const config = {
-  matcher: ["/portal/:path*", "/karaslice", "/karaslice/:path*"],
+  matcher: ["/portal/:path*", "/karaslice/app", "/karaslice/app/:path*"],
 };

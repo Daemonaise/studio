@@ -35,27 +35,27 @@ const tools = [
   {
     icon: Cpu,
     title: 'AI Mesh Analysis',
-    desc: 'Gemini-powered damage classification, geometry diagnostics, and auto-prescribed repair parameters — identifies boundary loops, non-manifold edges, and corruption clusters.',
+    desc: 'Gemini-powered damage classification with per-category quality scores. Identifies boundary loops, non-manifold edges, and corruption clusters — then prescribes exact repair parameters.',
   },
   {
     icon: Wrench,
     title: 'Topology Repair',
-    desc: 'Client-side repair pipeline: exact vertex dedup, degenerate removal, BFS winding fix, outward normal correction, and ear-clip hole filling — all in-browser.',
+    desc: 'Client-side repair pipeline: exact vertex dedup, degenerate removal, BFS winding fix, outward normal correction, and ear-clip hole filling — all in-browser with variant comparison.',
   },
   {
     icon: Cloud,
-    title: 'Cloud Repair',
-    desc: '15-stage server-side pipeline with feature edge preservation, thin wall detection and auto-thickening, Screened Poisson reconstruction, and 4-method boolean fallback.',
+    title: 'Cloud Repair Pipeline',
+    desc: '15-stage server-side pipeline with feature edge preservation, thin wall detection, Screened Poisson reconstruction, and live pipeline log console. Results auto-load into the viewport.',
   },
   {
     icon: Scissors,
-    title: 'Mesh Splitting',
-    desc: 'Split oversized parts along configurable cut planes using manifold-3d booleans. Auto-calculates cuts from printer bed dimensions.',
+    title: 'Reconstruction Studio',
+    desc: 'Three reconstruction modes (solid, shell, point cloud) with feature-preserving settings, symmetry recovery, and one-click variant generation for A/B comparison.',
   },
   {
     icon: Box,
-    title: '3D Viewport',
-    desc: 'PBR Three.js viewport with ACES tone mapping, real-time unit conversion (mm/cm/in), weight estimation across 8 material densities, and per-part volume calculation.',
+    title: 'Defect Overlays & Viewport',
+    desc: 'PBR Three.js viewport with real-time defect edge visualization (open = red, non-manifold = orange), ghost mode, wireframe, and unit conversion across mm/cm/in.',
   },
   {
     icon: Shield,
@@ -206,11 +206,11 @@ export default function HomePage() {
             </div>
             <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
               Karaslice{' '}
-              <span className="text-accent">Mesh Tools</span>
+              <span className="text-accent">Repair Workbench</span>
             </h2>
             <p className="text-foreground/60 max-w-lg mx-auto">
-              AI-powered mesh analysis, repair, and splitting — basic repairs run in-browser,
-              heavy reconstruction offloads to the cloud. No installs required.
+              AI-powered mesh analysis, defect overlays, cloud repair pipeline, feature-preserving
+              reconstruction with variant comparison, and symmetry recovery — free, in your browser.
             </p>
           </div>
 

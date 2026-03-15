@@ -1363,18 +1363,54 @@ export async function repairSplitPart(
   return { geometry: g, stats };
 }
 
-/** Signed-volume divergence theorem on an indexed BufferGeometry. */
+/**
+ * Signed-volume divergence theorem on a BufferGeometry (indexed or non-indexed).
+ * Centers vertices at the mesh centroid before summing — this minimizes error
+ * from open boundary edges (the spurious tetrahedra from unclosed loops shrink
+ * to near-zero when the origin sits at the geometric center).
+ */
 export function computeGeometryVolume(geo: THREE.BufferGeometry): number {
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const idx = geo.index;
-  if (!idx) return 0;
-  let vol = 0;
-  for (let t = 0; t < idx.count; t += 3) {
-    const ai = idx.getX(t), bi = idx.getX(t + 1), ci = idx.getX(t + 2);
-    const ax = pos.getX(ai), ay = pos.getY(ai), az = pos.getZ(ai);
-    const bx = pos.getX(bi), by = pos.getY(bi), bz = pos.getZ(bi);
-    const cx = pos.getX(ci), cy = pos.getY(ci), cz = pos.getZ(ci);
-    vol += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6;
+  const count = pos.count;
+  if (count < 3) return 0;
+
+  // Compute centroid to use as the reference origin
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < count; i++) {
+    cx += pos.getX(i);
+    cy += pos.getY(i);
+    cz += pos.getZ(i);
   }
+  cx /= count; cy /= count; cz /= count;
+
+  let vol = 0;
+
+  if (idx) {
+    for (let t = 0; t < idx.count; t += 3) {
+      const ai = idx.getX(t), bi = idx.getX(t + 1), ci = idx.getX(t + 2);
+      const ax = pos.getX(ai) - cx, ay = pos.getY(ai) - cy, az = pos.getZ(ai) - cz;
+      const bx = pos.getX(bi) - cx, by = pos.getY(bi) - cy, bz = pos.getZ(bi) - cz;
+      const ex = pos.getX(ci) - cx, ey = pos.getY(ci) - cy, ez = pos.getZ(ci) - cz;
+      vol += (ax * (by * ez - bz * ey) + ay * (bz * ex - bx * ez) + az * (bx * ey - by * ex)) / 6;
+    }
+  } else {
+    for (let t = 0; t < count; t += 3) {
+      const ax = pos.getX(t) - cx,     ay = pos.getY(t) - cy,     az = pos.getZ(t) - cz;
+      const bx = pos.getX(t + 1) - cx, by = pos.getY(t + 1) - cy, bz = pos.getZ(t + 1) - cz;
+      const ex = pos.getX(t + 2) - cx, ey = pos.getY(t + 2) - cy, ez = pos.getZ(t + 2) - cz;
+      vol += (ax * (by * ez - bz * ey) + ay * (bz * ex - bx * ez) + az * (bx * ey - by * ex)) / 6;
+    }
+  }
+
+  // Clamp to bounding box volume — if computed volume exceeds bbox, something is wrong
+  geo.computeBoundingBox();
+  if (geo.boundingBox) {
+    const size = new THREE.Vector3();
+    geo.boundingBox.getSize(size);
+    const bboxVol = size.x * size.y * size.z;
+    return Math.min(Math.abs(vol), bboxVol);
+  }
+
   return Math.abs(vol);
 }

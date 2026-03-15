@@ -195,23 +195,31 @@ export function analyzeGeometry(geo: THREE.BufferGeometry): MeshAnalysisResult {
   const cross = new THREE.Vector3();
   const crossBC = new THREE.Vector3();
 
+  // Compute centroid for origin-centering — reduces divergence-theorem error on open meshes
+  let centX = 0, centY = 0, centZ = 0;
+  for (let i = 0; i < vertCount; i++) {
+    const i3 = i * 3;
+    centX += posArr[i3]; centY += posArr[i3 + 1]; centZ += posArr[i3 + 2];
+  }
+  centX /= vertCount; centY /= vertCount; centZ /= vertCount;
+
   for (let t = 0; t < triCount; t++) {
     const t3 = t * 3;
     const ai = idxArr[t3], bi = idxArr[t3 + 1], ci = idxArr[t3 + 2];
 
     // Read positions directly from typed array — avoids .getX() method overhead.
     const a3 = ai * 3, b3 = bi * 3, c3 = ci * 3;
-    vA.set(posArr[a3], posArr[a3 + 1], posArr[a3 + 2]);
-    vB.set(posArr[b3], posArr[b3 + 1], posArr[b3 + 2]);
-    vC.set(posArr[c3], posArr[c3 + 1], posArr[c3 + 2]);
+    vA.set(posArr[a3] - centX, posArr[a3 + 1] - centY, posArr[a3 + 2] - centZ);
+    vB.set(posArr[b3] - centX, posArr[b3 + 1] - centY, posArr[b3 + 2] - centZ);
+    vC.set(posArr[c3] - centX, posArr[c3 + 1] - centY, posArr[c3 + 2] - centZ);
 
-    // Surface area
+    // Surface area (position-independent, centroid offset doesn't matter)
     e1.subVectors(vB, vA);
     e2.subVectors(vC, vA);
     cross.crossVectors(e1, e2);
     surfaceArea += 0.5 * cross.length();
 
-    // Signed volume (divergence theorem)
+    // Signed volume (divergence theorem) — centered at centroid
     crossBC.crossVectors(vB, vC);
     volume += vA.dot(crossBC) / 6;
 
@@ -414,6 +422,13 @@ export function analyzeGeometry(geo: THREE.BufferGeometry): MeshAnalysisResult {
     normalConsistency: parseFloat(normalConsistency.toFixed(3)),
   };
 
+  // Bounding box volume as upper bound — divergence theorem can overshoot on open meshes
+  indexed.computeBoundingBox();
+  const bboxSize = new THREE.Vector3();
+  indexed.boundingBox!.getSize(bboxSize);
+  const bboxVol = bboxSize.x * bboxSize.y * bboxSize.z;
+  const clampedVolume = Math.min(Math.abs(volume), bboxVol);
+
   return {
     triangleCount: triCount,
     vertexCount: vertCount,
@@ -421,7 +436,7 @@ export function analyzeGeometry(geo: THREE.BufferGeometry): MeshAnalysisResult {
     openEdgeCount: openEdges,
     nonManifoldEdgeCount: nonManifoldEdges,
     surfaceAreaMM2: parseFloat(surfaceArea.toFixed(2)),
-    volumeMM3: parseFloat(Math.abs(volume).toFixed(2)),
+    volumeMM3: parseFloat(clampedVolume.toFixed(2)),
     issues,
     diagnostics,
   };

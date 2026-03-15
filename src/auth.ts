@@ -59,13 +59,13 @@ const config: NextAuthConfig = {
   callbacks: {
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = !!auth?.user;
-      const isProtected = nextUrl.pathname.startsWith("/portal") || nextUrl.pathname.startsWith("/karaslice");
+      const isProtected = nextUrl.pathname.startsWith("/portal") || nextUrl.pathname.startsWith("/karaslice/app");
       if (isProtected && !isLoggedIn) {
         return Response.redirect(new URL("/login", nextUrl));
       }
       return true;
     },
-    jwt({ token, user, profile, account }) {
+    jwt({ token, user, profile, account, trigger }) {
       // On first sign-in, capture the name from the user/profile
       if (user) {
         // Apple sends name only on first auth — persist it in the token
@@ -81,6 +81,10 @@ const config: NextAuthConfig = {
           }
         }
       }
+      // Pick up name from cookie when user updates their profile
+      if (trigger === "update" || trigger === "signIn") {
+        // Cookie-based name override is read server-side in the session callback
+      }
       return token;
     },
     session({ session, token }) {
@@ -89,6 +93,12 @@ const config: NextAuthConfig = {
         session.user.name = token.name as string;
       }
       return session;
+    },
+    redirect({ url, baseUrl }) {
+      // After sign-in, redirect to Karaslice app if they came from /karaslice
+      if (url.startsWith(baseUrl)) return url;
+      if (url.startsWith("/")) return `${baseUrl}${url}`;
+      return baseUrl;
     },
   },
 };

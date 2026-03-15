@@ -33,6 +33,13 @@ export interface SplitPartVisual {
   label: string;
 }
 
+export interface DefectOverlayData {
+  /** Pairs of xyz coords for open/boundary edges (6 floats per edge). */
+  openEdges?: Float32Array;
+  /** Pairs of xyz coords for non-manifold edges (6 floats per edge). */
+  nonManifoldEdges?: Float32Array;
+}
+
 export interface ViewportHandle {
   /** Returns the geometry with current transforms baked in, ready for manifold. */
   getBakedGeometry(): {
@@ -45,6 +52,10 @@ export interface ViewportHandle {
   loadRepairedGeometry(geo: THREE.BufferGeometry, fileName: string): void;
   /** Capture a base64-encoded PNG screenshot of the current viewport (no data-URL prefix). */
   captureScreenshot(): string | null;
+  /** Show defect edge overlays (open edges = red, non-manifold = orange). */
+  showDefectOverlays(data: DefectOverlayData): void;
+  /** Remove all defect overlays from the scene. */
+  clearDefectOverlays(): void;
 }
 
 interface ViewportProps {
@@ -107,6 +118,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   const invalidateRef   = useRef<() => void>(() => {});
   const planeHelpersRef = useRef<THREE.Object3D[]>([]);
   const gridRef         = useRef<THREE.GridHelper | null>(null);
+  const defectOverlaysRef = useRef<THREE.Object3D[]>([]);
 
   const [hasMesh, setHasMesh] = useState(false);
 
@@ -317,6 +329,16 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     geo.computeBoundingBox(); // final bounds after lift
     if (!geo.attributes.normal) geo.computeVertexNormals();
 
+    // Clear any defect overlays from previous mesh
+    defectOverlaysRef.current.forEach((obj) => {
+      sceneRef.current!.remove(obj);
+      if (obj instanceof THREE.LineSegments) {
+        obj.geometry.dispose();
+        (obj.material as THREE.Material).dispose();
+      }
+    });
+    defectOverlaysRef.current = [];
+
     if (meshRef.current) {
       sceneRef.current.remove(meshRef.current);
       meshRef.current.geometry.dispose();
@@ -452,6 +474,54 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       renderer.render(scene, camera);
       const dataUrl = renderer.domElement.toDataURL("image/png");
       return dataUrl.split(",")[1] ?? null;
+    },
+    showDefectOverlays(data) {
+      if (!sceneRef.current) return;
+      // Clear existing overlays first
+      defectOverlaysRef.current.forEach((obj) => {
+        sceneRef.current!.remove(obj);
+        if (obj instanceof THREE.LineSegments) {
+          obj.geometry.dispose();
+          (obj.material as THREE.Material).dispose();
+        }
+      });
+      defectOverlaysRef.current = [];
+
+      // Open edges — red
+      if (data.openEdges && data.openEdges.length > 0) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(data.openEdges, 3));
+        const mat = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 2, depthTest: true, transparent: true, opacity: 0.9 });
+        const lines = new THREE.LineSegments(geo, mat);
+        lines.renderOrder = 999;
+        sceneRef.current.add(lines);
+        defectOverlaysRef.current.push(lines);
+      }
+
+      // Non-manifold edges — orange
+      if (data.nonManifoldEdges && data.nonManifoldEdges.length > 0) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(data.nonManifoldEdges, 3));
+        const mat = new THREE.LineBasicMaterial({ color: 0xff8800, linewidth: 2, depthTest: true, transparent: true, opacity: 0.9 });
+        const lines = new THREE.LineSegments(geo, mat);
+        lines.renderOrder = 999;
+        sceneRef.current.add(lines);
+        defectOverlaysRef.current.push(lines);
+      }
+
+      invalidateRef.current();
+    },
+    clearDefectOverlays() {
+      if (!sceneRef.current) return;
+      defectOverlaysRef.current.forEach((obj) => {
+        sceneRef.current!.remove(obj);
+        if (obj instanceof THREE.LineSegments) {
+          obj.geometry.dispose();
+          (obj.material as THREE.Material).dispose();
+        }
+      });
+      defectOverlaysRef.current = [];
+      invalidateRef.current();
     },
   }), [loadGeometry]);
 
@@ -702,7 +772,6 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   return (
     <div
       className="relative w-full h-full"
-      data-karaslice-viewport
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
     >
