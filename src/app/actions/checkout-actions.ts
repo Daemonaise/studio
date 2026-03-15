@@ -55,6 +55,18 @@ function trim500(val: string): string {
   return val.slice(0, 500);
 }
 
+/** Parse a metadata string as a positive finite float, falling back to `fallback`. */
+function parsePosFloat(val: string | undefined | null, fallback: number): number {
+  const n = parseFloat(val ?? '');
+  return isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Parse a metadata string as a positive finite integer, falling back to `fallback`. */
+function parsePosInt(val: string | undefined | null, fallback: number): number {
+  const n = parseInt(val ?? '', 10);
+  return !isNaN(n) && n > 0 ? n : fallback;
+}
+
 export async function createCheckoutSession(
   quote: CheckoutQuoteData,
   shipping: ShippingInfo
@@ -178,7 +190,7 @@ export async function verifyAndFulfillOrder(
         const result = await createShippoShipment(
           process.env.SHIPPO_API_KEY,
           shipping,
-          { orderNumber, estimatedHours: parseFloat(meta.estimatedHours || '1') }
+          { orderNumber, estimatedHours: parsePosFloat(meta.estimatedHours, 1) }
         );
         trackingNumber = result.trackingNumber;
         trackingUrl    = result.trackingUrl;
@@ -190,14 +202,17 @@ export async function verifyAndFulfillOrder(
       }
     }
 
+    const leadTimeMin = parsePosInt(meta.leadTimeMin, 3);
+    const leadTimeMax = Math.max(parsePosInt(meta.leadTimeMax, 7), leadTimeMin);
+
     return {
       success:       true,
       paymentAmount: (session.amount_total ?? 0) / 100,
       shipping,
       material:    meta.material,
       jobScale:    meta.jobScale,
-      leadTimeMin: parseInt(meta.leadTimeMin || '3', 10),
-      leadTimeMax: parseInt(meta.leadTimeMax || '7', 10),
+      leadTimeMin,
+      leadTimeMax,
       trackingNumber,
       trackingUrl,
       carrier,
