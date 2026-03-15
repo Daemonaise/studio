@@ -10,7 +10,7 @@ import {
   Maximize2, Link2, Eye, ZapOff, Zap, Keyboard, X,
   Target, Scale, Send, Menu, Wrench, ArrowLeft, Ruler, Boxes, Sparkles, Cloud, CloudOff,
   Layers, Trash2, FlipVertical, Merge, Search,
-  PanelBottomClose, PanelBottomOpen, ScanLine,
+  PanelBottomClose, PanelBottomOpen,
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -45,8 +45,7 @@ const Viewport = dynamic(
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = "file" | "prepare" | "presplit" | "split" | "export";
-type WorkbenchTab = "inspect" | "repair" | "prepare" | "export";
+type Tab = "file" | "repair" | "prepare" | "export";
 
 interface PrinterProfile {
   id: string; name: string; brand: string;
@@ -251,9 +250,6 @@ export function KarasliceApp() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // ── Workbench (right panel) ───────────────────────────────────────────────
-  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>("inspect");
-  const [workbenchOpen, setWorkbenchOpen] = useState(false); // mobile toggle
   const [bottomDrawerOpen, setBottomDrawerOpen] = useState(false);
 
   // ── Compare mode ──────────────────────────────────────────────────────────
@@ -1595,15 +1591,7 @@ export function KarasliceApp() {
     : selectedPrinter;
 
   const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
-    { id: "file",     label: "File",      icon: FileBox },
-    { id: "prepare",  label: "Prepare",   icon: Maximize2 },
-    { id: "presplit", label: "Pre-Split", icon: Scissors },
-    { id: "split",    label: "Split",     icon: Cpu },
-    { id: "export",   label: "Export",    icon: Package },
-  ];
-
-  const wbTabs: { id: WorkbenchTab; label: string; icon: React.ElementType }[] = [
-    { id: "inspect", label: "Inspect", icon: ScanLine },
+    { id: "file",    label: "File",    icon: FileBox },
     { id: "repair",  label: "Repair",  icon: Wrench },
     { id: "prepare", label: "Prepare", icon: Scissors },
     { id: "export",  label: "Export",  icon: Package },
@@ -1643,18 +1631,11 @@ export function KarasliceApp() {
           onClick={() => setSidebarOpen(false)}
         />
       )}
-      {workbenchOpen && (
-        <div
-          className="fixed inset-0 z-20 bg-black/50 md:hidden"
-          onClick={() => setWorkbenchOpen(false)}
-        />
-      )}
-
       {/* ══════════════════════════════════════════════════════════════════════════
           LEFT RAIL — Scene panel (w-60)
           ══════════════════════════════════════════════════════════════════════════ */}
       <aside className={cn(
-        "flex w-60 max-w-[80vw] flex-shrink-0 flex-col border-r border-border bg-card transition-transform duration-200",
+        "flex w-72 max-w-[85vw] flex-shrink-0 flex-col border-r border-border bg-card transition-transform duration-200",
         "md:relative md:translate-x-0 md:z-auto",
         "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-30",
         sidebarOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full",
@@ -1683,519 +1664,15 @@ export function KarasliceApp() {
           </button>
         </div>
 
-        {/* Panel content */}
-        <div className="flex-1 overflow-y-auto py-1 text-sm">
-
-          {/* Upload */}
-          <div className="px-3 py-2">
-            <Button
-              size="sm"
-              className="w-full gap-2"
-              style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-              disabled={fileLoading}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              {fileLoading
-                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                : <Upload className="h-3.5 w-3.5" />}
-              {fileLoading ? "Processing…" : meshInfo ? "Load New File" : "Upload STL / OBJ / 3MF"}
-            </Button>
-          </div>
-          <Separator className="my-1" />
-
-          {/* File Info */}
-          <SectionHeader icon={Info} label="File Info" open={openSections.fileInfo} onToggle={() => toggleSection("fileInfo")} />
-          {openSections.fileInfo && (
-            <div className="px-3 pb-2 space-y-1.5">
-              {meshInfo ? (
-                <>
-                  <Row label="Name"      value={meshInfo.fileName} mono />
-                  <Row label="Format"    value={meshInfo.format.toUpperCase()} />
-                  <Row label="Size"      value={`${meshInfo.fileSizeMB} MB`} />
-                  <Row label="Triangles" value={meshInfo.triangleCount.toLocaleString()} />
-                  <Row label="Dim X"     value={`${fmtDim(meshInfo.boundingBox.x, u)} ${UNIT_LABELS[u]}`} />
-                  <Row label="Dim Y"     value={`${fmtDim(meshInfo.boundingBox.y, u)} ${UNIT_LABELS[u]}`} />
-                  <Row label="Dim Z"     value={`${fmtDim(meshInfo.boundingBox.z, u)} ${UNIT_LABELS[u]}`} />
-                </>
-              ) : (
-                <p className="text-xs text-muted-foreground py-2 text-center">No file loaded</p>
-              )}
-            </div>
-          )}
-          <Separator className="my-1" />
-
-          {/* Unit selector */}
-          <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-            <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <Ruler className="h-3 w-3" /> Units
-            </span>
-            <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
-              {(["mm", "cm", "in"] as const).map((unit) => (
-                <button
-                  key={unit}
-                  onClick={() => setDisplayUnit(unit)}
-                  className={cn(
-                    "rounded px-2 py-0.5 text-[10px] font-semibold transition-colors",
-                    displayUnit === unit
-                      ? "bg-accent text-accent-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  {unit}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Parts / Shell list */}
-          {splitParts.length > 0 && (
-            <>
-              <SectionHeader
-                icon={Package}
-                label={`Parts (${splitParts.length})`}
-                open={openSections.splitResult}
-                onToggle={() => toggleSection("splitResult")}
-              />
-              {openSections.splitResult && (
-                <div className="px-3 pb-2 space-y-1">
-                  {splitParts.map((part, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setSelectedPartIndex(i === selectedPartIndex ? undefined : i)}
-                      className={cn(
-                        "w-full rounded-md border p-1.5 text-left text-[11px] transition-colors",
-                        selectedPartIndex === i
-                          ? "border-accent bg-accent/10 text-accent"
-                          : "border-border hover:bg-muted"
-                      )}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium truncate">{part.label}</span>
-                        <span className="font-mono text-[9px] text-muted-foreground ml-1">
-                          {part.triangleCount.toLocaleString()} tri
-                        </span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <Separator className="my-1" />
-            </>
-          )}
-
-          {/* View controls */}
-          <div className="px-3 py-2 space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">View</p>
-            <div className="flex items-center justify-between">
-              <Label className="text-[11px] flex items-center gap-1.5">
-                <ZapOff className="h-3 w-3" /> Wireframe
-              </Label>
-              <Switch checked={wireframe} onCheckedChange={setWireframe} className="scale-75" />
-            </div>
-            <div className="flex items-center justify-between">
-              <Label className="text-[11px] flex items-center gap-1.5">
-                <Eye className="h-3 w-3" /> Ghost
-              </Label>
-              <Switch checked={ghostMode} onCheckedChange={setGhostMode} className="scale-75" />
-            </div>
-            {splitParts.length > 0 && (
-              <div className="space-y-1">
-                <div className="flex justify-between text-[10px] text-muted-foreground">
-                  <span>Explode</span>
-                  <span className="font-mono">{Math.round(explodeAmount * 100)}%</span>
-                </div>
-                <Slider
-                  min={0} max={1} step={0.01}
-                  value={[explodeAmount]}
-                  onValueChange={([v]) => setExplodeAmount(v)}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Sidebar notification */}
-        {sidebarNotice && (
-          <div
-            className={cn(
-              "mx-2 mb-1 rounded-md px-3 py-2 text-xs font-medium transition-all animate-in fade-in slide-in-from-bottom-2 duration-200",
-              sidebarNotice.variant === "destructive"
-                ? "bg-destructive/15 text-destructive border border-destructive/30"
-                : "bg-accent/15 text-accent-foreground border border-accent/30"
-            )}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <span className="leading-snug">{sidebarNotice.message}</span>
-              <button onClick={() => setSidebarNotice(null)} className="shrink-0 mt-0.5 opacity-60 hover:opacity-100">
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Footer */}
-        <div className="border-t border-border px-3 py-2 text-[10px] text-muted-foreground/50 flex items-center justify-between">
-          <span>Karaslice · Local</span>
-          <button
-            onClick={() => setShowShortcuts((v) => !v)}
-            className="hover:text-muted-foreground transition-colors"
-            title="Keyboard shortcuts"
-          >
-            <Keyboard className="h-3 w-3" />
-          </button>
-        </div>
-      </aside>
-
-      {/* ══════════════════════════════════════════════════════════════════════════
-          CENTER — Viewport + Bottom Drawer
-          ══════════════════════════════════════════════════════════════════════════ */}
-      <main className="relative flex flex-1 flex-col overflow-hidden">
-        {/* Viewport */}
-        <div className="relative flex-1 overflow-hidden">
-          <Viewport
-            ref={viewportRef}
-            onMeshLoaded={handleMeshLoaded}
-            onLoadStart={() => setFileLoading(true)}
-            onFileSelected={(file) => { pendingUploadFile.current = file; loadedFileRef.current = file; }}
-            cutPlanes={cutPlanes}
-            printerVolume={effectivePrinter
-              ? { x: effectivePrinter.x, y: effectivePrinter.y, z: effectivePrinter.z }
-              : null}
-            transforms={transforms}
-            splitParts={splitPartsVisual}
-            explodeAmount={explodeAmount}
-            showSliceLines={showSliceLines}
-            ghostMode={ghostMode}
-            wireframe={wireframe}
-            selectedPartIndex={selectedPartIndex}
-            onPartSelect={setSelectedPartIndex}
-          />
-
-          {/* Stats overlay */}
-          {meshInfo && (
-            <div className="absolute top-3 right-3 rounded-md border border-border bg-card px-3 py-2 text-xs font-mono space-y-0.5 pointer-events-none shadow-md">
-              <p className="text-muted-foreground truncate max-w-[200px]">{meshInfo.fileName}</p>
-              <p><span className="text-accent">{meshInfo.triangleCount.toLocaleString()}</span> triangles</p>
-              <p>
-                <span className="text-accent">{fmtDim(meshInfo.boundingBox.x, u)}</span> ×{" "}
-                <span className="text-accent">{fmtDim(meshInfo.boundingBox.y, u)}</span> ×{" "}
-                <span className="text-accent">{fmtDim(meshInfo.boundingBox.z, u)}</span> {UNIT_LABELS[u]}
-              </p>
-              {enabledPlaneCount > 0 && (
-                <p><span className="text-accent">{enabledPlaneCount}</span> cut plane{enabledPlaneCount !== 1 ? "s" : ""}</p>
-              )}
-              {splitParts.length > 0 && (
-                <p><span className="text-accent">{splitParts.length}</span> parts</p>
-              )}
-            </div>
-          )}
-
-          {/* Mobile toggles */}
-          <button
-            className="absolute top-3 left-3 z-10 flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card shadow-md text-muted-foreground hover:text-foreground transition-colors md:hidden"
-            onClick={() => setSidebarOpen((v) => !v)}
-            aria-label={sidebarOpen ? "Close menu" : "Open menu"}
-          >
-            {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
-          </button>
-          <button
-            className="absolute top-3 right-3 z-10 flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 shadow-md text-muted-foreground hover:text-foreground transition-colors md:hidden text-xs"
-            onClick={() => setWorkbenchOpen((v) => !v)}
-            aria-label="Toggle workbench"
-          >
-            <Wrench className="h-3.5 w-3.5" />
-            <span>Tools</span>
-          </button>
-
-          {/* View mode badges */}
-          {(ghostMode || wireframe || explodeAmount > 0) && (
-            <div className="absolute top-3 left-14 md:left-3 flex gap-1.5">
-              {ghostMode && (
-                <Badge variant="secondary" className="text-[10px] gap-1">
-                  <Eye className="h-2.5 w-2.5" /> Ghost
-                </Badge>
-              )}
-              {wireframe && (
-                <Badge variant="secondary" className="text-[10px] gap-1">
-                  <ZapOff className="h-2.5 w-2.5" /> Wireframe
-                </Badge>
-              )}
-              {explodeAmount > 0 && (
-                <Badge variant="secondary" className="text-[10px] gap-1">
-                  <Zap className="h-2.5 w-2.5" /> Explode {Math.round(explodeAmount * 100)}%
-                </Badge>
-              )}
-            </div>
-          )}
-
-          {/* Keyboard shortcuts overlay */}
-          {showShortcuts && (
-            <div className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-sm z-10">
-              <div className="rounded-xl border border-border bg-card/95 p-5 min-w-[240px] shadow-2xl">
-                <div className="flex items-center justify-between mb-4">
-                  <p className="text-sm font-semibold">Keyboard Shortcuts</p>
-                  <button
-                    onClick={() => setShowShortcuts(false)}
-                    className="text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-                <div className="space-y-2.5">
-                  {KEYBOARD_SHORTCUTS.map(([key, desc]) => (
-                    <div key={key} className="flex items-center justify-between gap-8 text-xs">
-                      <kbd className="rounded bg-muted px-2 py-0.5 font-mono text-[10px]">{key}</kbd>
-                      <span className="text-muted-foreground">{desc}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ── Bottom Drawer toggle ───────────────────────────────────────────── */}
-        <button
-          onClick={() => setBottomDrawerOpen((v) => !v)}
-          className="flex items-center justify-center gap-1.5 border-t border-border bg-card/80 px-3 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-        >
-          {bottomDrawerOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
-          {busy ? "Operation running…" : pipelineLog.length > 0 ? "Pipeline Log" : drawerHasContent ? "Results" : "Activity"}
-        </button>
-
-        {/* ── Bottom Drawer content ──────────────────────────────────────────── */}
-        {bottomDrawerOpen && (
-          <div className="max-h-44 overflow-y-auto border-t border-border bg-card px-4 py-2 space-y-2 text-xs">
-            {/* Active operations */}
-            {analyzing && (
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-accent">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  <span className="font-medium">{analyzeStep || "Analyzing…"}</span>
-                </div>
-                <Progress value={
-                  analyzeStep.includes("wall") ? 40
-                  : analyzeStep.includes("AI") ? 70
-                  : 15
-                } className="h-1" />
-              </div>
-            )}
-            {repairing && (
-              <div className="flex items-center gap-2 text-accent">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                <span>{repairMessage || "Repairing…"}</span>
-              </div>
-            )}
-            {reconstructing && (
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-accent">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>{reconstructMessage || "Reconstructing…"}</span>
-                </div>
-                {reconstructMessage && (
-                  <Progress value={
-                    reconstructMessage.includes("Validating") ? 90
-                    : reconstructMessage.includes("consulting AI") || reconstructMessage.includes("Consulting") ? 95
-                    : reconstructMessage.includes("Retry") ? 5
-                    : reconstructMessage.includes("Simplif") ? 70
-                    : reconstructMessage.includes("Smooth") ? 85
-                    : reconstructMessage.includes("Extract") || reconstructMessage.includes("Marching") ? 50
-                    : reconstructMessage.includes("Flood") ? 30
-                    : reconstructMessage.includes("Voxeliz") || reconstructMessage.includes("Rasteriz") ? 15
-                    : reconstructMessage.includes("SDF") || reconstructMessage.includes("distance") ? 40
-                    : reconstructMessage.includes("point cloud") || reconstructMessage.includes("spatial") ? 15
-                    : reconstructMessage.includes("Re-sorting") ? 75
-                    : reconstructMessage.includes("Finaliz") ? 95
-                    : 10
-                  } className="h-1" />
-                )}
-                {retryAttempt > 0 && (
-                  <p className="text-[10px] text-amber-500 font-semibold">Attempt {retryAttempt + 1}/{MAX_RECONSTRUCT_RETRIES + 1}</p>
-                )}
-              </div>
-            )}
-            {splitting && (
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-accent">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>{splitMessage || "Splitting…"}</span>
-                </div>
-                <Progress value={splitProgress} className="h-1" />
-              </div>
-            )}
-            {(cloudRepairSubmitting || cloudRepairPolling) && (
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-accent">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>{cloudRepairSubmitting ? "Uploading to cloud…" : "Cloud repair processing…"}</span>
-                </div>
-                {cloudRepairJob?.status === "running" && (
-                  <Progress value={
-                    cloudRepairJob.step === "parse" ? 3
-                    : cloudRepairJob.step === "analyze" ? 6
-                    : cloudRepairJob.step === "weld" ? 10
-                    : cloudRepairJob.step === "sanitize" ? 15
-                    : cloudRepairJob.step === "components" ? 22
-                    : cloudRepairJob.step === "nonmanifold" ? 30
-                    : cloudRepairJob.step === "normals" ? 35
-                    : cloudRepairJob.step === "holes" ? 40
-                    : cloudRepairJob.step === "selfintersect" ? 48
-                    : cloudRepairJob.step === "reconstruct" ? 58
-                    : cloudRepairJob.step === "post_cleanup" ? 68
-                    : cloudRepairJob.step === "remesh" ? 75
-                    : cloudRepairJob.step === "thinwall" ? 82
-                    : cloudRepairJob.step === "simplify" ? 88
-                    : cloudRepairJob.step === "validate" ? 93
-                    : cloudRepairJob.step === "export" ? 97
-                    : 3
-                  } className="h-1" />
-                )}
-                {cloudRepairJob?.stepMessage && (
-                  <p className="text-[10px] text-muted-foreground">{cloudRepairJob.stepMessage}</p>
-                )}
-              </div>
-            )}
-
-            {/* Repair result summary */}
-            {!repairing && repairResult && (
-              <div className="flex items-center gap-1.5">
-                {repairResult.isWatertight
-                  ? <CheckCircle2 className="h-3 w-3 text-green-400" />
-                  : <AlertTriangle className="h-3 w-3 text-yellow-400" />}
-                <span className="text-muted-foreground">
-                  Repair: {repairResult.isWatertight ? "watertight" : "partial"} ·
-                  {repairResult.holesFilled > 0 && ` ${repairResult.holesFilled} holes filled ·`}
-                  {repairResult.degeneratesRemoved > 0 && ` ${repairResult.degeneratesRemoved} degens removed`}
-                </span>
-              </div>
-            )}
-
-            {/* Reconstruct result summary */}
-            {!reconstructing && reconstructResult && (
-              <div className="flex items-center gap-1.5">
-                <CheckCircle2 className="h-3 w-3 text-green-400" />
-                <span className="text-muted-foreground">
-                  Reconstruction: {reconstructResult.outputTriangles.toLocaleString()} tris · {reconstructResult.resolution} mm
-                </span>
-              </div>
-            )}
-
-            {/* Cloud repair job status */}
-            {!cloudRepairPolling && !cloudRepairSubmitting && cloudRepairJob && (
-              <div className="flex items-center gap-1.5">
-                {cloudRepairJob.status === "finished"
-                  ? <CheckCircle2 className="h-3 w-3 text-green-400" />
-                  : cloudRepairJob.status === "failed"
-                  ? <AlertTriangle className="h-3 w-3 text-red-400" />
-                  : <Loader2 className="h-3 w-3 animate-spin text-accent" />}
-                <span className={cn(
-                  "text-muted-foreground",
-                  cloudRepairJob.status === "finished" && "text-green-400",
-                  cloudRepairJob.status === "failed" && "text-red-400",
-                )}>
-                  Cloud: {cloudRepairJob.status === "finished" ? "complete" : cloudRepairJob.status}
-                  {cloudRepairJob.report && ` · ${cloudRepairJob.report.outputFaces?.toLocaleString()} faces`}
-                </span>
-              </div>
-            )}
-
-            {/* Post-repair AI review */}
-            {postReviewing && (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                <span>AI reviewing repair quality…</span>
-              </div>
-            )}
-            {postReview && !postReview.passed && (
-              <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-2 space-y-1">
-                <div className="flex items-center gap-1.5">
-                  <Sparkles className="h-3 w-3 text-yellow-400" />
-                  <span className="font-medium text-yellow-400">AI Quality Review</span>
-                  <Badge variant="outline" className="ml-auto text-[9px] h-4">
-                    {postReview.recommendation.replace(/_/g, " ")}
-                  </Badge>
-                </div>
-                <p className="text-[10px] text-muted-foreground">{postReview.reasoning}</p>
-              </div>
-            )}
-            {postReview?.passed && (
-              <div className="flex items-center gap-1.5 text-green-400">
-                <CheckCircle2 className="h-3 w-3" />
-                <span>AI review passed</span>
-              </div>
-            )}
-
-            {/* Pipeline log (Phase 2) */}
-            {pipelineLog.length > 0 && (
-              <div className="space-y-0.5 border-t border-border pt-2 mt-1">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pipeline Log</p>
-                  <button onClick={clearPipelineLog} className="text-[9px] text-muted-foreground hover:text-foreground transition-colors">Clear</button>
-                </div>
-                {pipelineLog.map((entry, i) => (
-                  <div key={i} className="flex items-start gap-1.5 text-[10px]">
-                    <span className="text-muted-foreground font-mono shrink-0 w-14">
-                      {new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                    </span>
-                    {entry.status === "running" ? (
-                      <Loader2 className="h-3 w-3 animate-spin text-accent shrink-0 mt-0.5" />
-                    ) : entry.status === "done" ? (
-                      <CheckCircle2 className="h-3 w-3 text-green-400 shrink-0 mt-0.5" />
-                    ) : (
-                      <AlertTriangle className="h-3 w-3 text-red-400 shrink-0 mt-0.5" />
-                    )}
-                    <span className={cn(
-                      entry.status === "done" && "text-green-400/80",
-                      entry.status === "error" && "text-red-400",
-                      entry.status === "running" && "text-accent",
-                    )}>
-                      <span className="font-semibold">{entry.step}</span>
-                      {" — "}{entry.message}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {!busy && !drawerHasContent && pipelineLog.length === 0 && (
-              <p className="text-muted-foreground text-center py-2">No active operations.</p>
-            )}
-          </div>
-        )}
-      </main>
-
-      {/* ══════════════════════════════════════════════════════════════════════════
-          RIGHT WORKBENCH — Tabbed repair tools (w-80)
-          ══════════════════════════════════════════════════════════════════════════ */}
-      <aside className={cn(
-        "flex w-80 max-w-[90vw] flex-shrink-0 flex-col border-l border-border bg-card transition-transform duration-200",
-        "md:relative md:translate-x-0 md:z-auto",
-        "max-md:fixed max-md:inset-y-0 max-md:right-0 max-md:z-30",
-        workbenchOpen ? "max-md:translate-x-0" : "max-md:translate-x-full",
-      )}>
-
-        {/* Workbench header */}
-        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-          <Wrench className="h-4 w-4 text-accent" />
-          <span className="font-semibold tracking-tight text-sm">Repair Workbench</span>
-          <button
-            className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground transition-colors md:hidden"
-            onClick={() => setWorkbenchOpen(false)}
-            aria-label="Close workbench"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* Workbench tab bar */}
+        {/* Tab bar */}
         <div className="flex border-b border-border">
-          {wbTabs.map(({ id, label, icon: Icon }) => (
+          {tabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
-              onClick={() => setWorkbenchTab(id)}
+              onClick={() => setTab(id)}
               className={cn(
                 "flex flex-1 flex-col items-center gap-1 py-2 text-[10px] font-medium transition-colors",
-                workbenchTab === id
+                tab === id
                   ? "border-b-2 border-accent text-accent"
                   : "text-muted-foreground hover:text-foreground border-b-2 border-transparent"
               )}
@@ -2206,319 +1683,450 @@ export function KarasliceApp() {
           ))}
         </div>
 
-        {/* Workbench panel content */}
+        {/* Tab content */}
         <div className="flex-1 overflow-y-auto py-1 text-sm">
 
-          {/* ── INSPECT TAB ────────────────────────────────────────────────── */}
-          {workbenchTab === "inspect" && (
-            <div className="px-3 py-2 space-y-3">
-              {/* Analyze button */}
-              {!aiAnalysis ? (
-                <div className="space-y-2">
-                  {!analyzing && (
-                    <p className="text-[10px] text-muted-foreground">
-                      Analyzes mesh geometry, classifies the type, and recommends the best repair path.
-                    </p>
-                  )}
-                  <Button
-                    size="sm" className="w-full gap-2"
-                    style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                    disabled={!meshInfo || analyzing}
-                    onClick={handleAnalyze}
-                  >
-                    {analyzing
-                      ? <Loader2 className="h-3 w-3 animate-spin" />
-                      : <Sparkles className="h-3 w-3" />}
-                    {analyzing ? (analyzeStep || "Analyzing…") : "Analyze Mesh"}
-                  </Button>
-                  {analyzing && (
-                    <div className="space-y-1.5">
-                      <Progress value={
-                        analyzeStep.includes("wall") ? 40
-                        : analyzeStep.includes("AI") ? 70
-                        : 15
-                      } className="h-1" />
-                      <p className="text-[10px] text-muted-foreground text-center">{analyzeStep}</p>
-                    </div>
+          {/* ── FILE TAB ──────────────────────────────────────────────────── */}
+          {tab === "file" && (
+            <div className="space-y-0">
+              {/* Upload */}
+              <div className="px-3 py-2">
+                <Button
+                  size="sm"
+                  className="w-full gap-2"
+                  style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                  disabled={fileLoading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {fileLoading
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Upload className="h-3.5 w-3.5" />}
+                  {fileLoading ? "Processing…" : meshInfo ? "Load New File" : "Upload STL / OBJ / 3MF"}
+                </Button>
+              </div>
+              <Separator className="my-1" />
+
+              {/* File Info */}
+              <SectionHeader icon={Info} label="File Info" open={openSections.fileInfo} onToggle={() => toggleSection("fileInfo")} />
+              {openSections.fileInfo && (
+                <div className="px-3 pb-2 space-y-1.5">
+                  {meshInfo ? (
+                    <>
+                      <Row label="Name"      value={meshInfo.fileName} mono />
+                      <Row label="Format"    value={meshInfo.format.toUpperCase()} />
+                      <Row label="Size"      value={`${meshInfo.fileSizeMB} MB`} />
+                      <Row label="Triangles" value={meshInfo.triangleCount.toLocaleString()} />
+                      <Row label="Dim X"     value={`${fmtDim(meshInfo.boundingBox.x, u)} ${UNIT_LABELS[u]}`} />
+                      <Row label="Dim Y"     value={`${fmtDim(meshInfo.boundingBox.y, u)} ${UNIT_LABELS[u]}`} />
+                      <Row label="Dim Z"     value={`${fmtDim(meshInfo.boundingBox.z, u)} ${UNIT_LABELS[u]}`} />
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground py-2 text-center">No file loaded</p>
                   )}
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {/* Analysis results */}
-                  <div className="rounded-md border border-border p-2 space-y-2 text-xs">
-                    {/* Health status */}
-                    <div className="flex items-center gap-1.5">
-                      {analysisResult?.isWatertight
-                        ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                        : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
-                      <span className="font-medium">
-                        {analysisResult?.isWatertight ? "Mesh is watertight" : "Issues detected"}
-                      </span>
-                    </div>
+              )}
+              <Separator className="my-1" />
 
-                    {/* Stats */}
-                    {analysisResult && (
-                      <div className="pl-5 space-y-0.5 text-muted-foreground text-[11px]">
-                        <p>Vertices: {analysisResult.vertexCount.toLocaleString()}</p>
-                        <p>Surface: {u === "in"
-                          ? (analysisResult.surfaceAreaMM2 / 645.16).toFixed(2) + " in\u00B2"
-                          : u === "cm"
-                          ? (analysisResult.surfaceAreaMM2 / 100).toFixed(1) + " cm\u00B2"
-                          : analysisResult.surfaceAreaMM2.toFixed(0) + " mm\u00B2"
-                        }</p>
-                        <p>Volume: {u === "in"
-                          ? (analysisResult.volumeMM3 / 16387.064).toFixed(2) + " in\u00B3"
-                          : u === "cm"
-                          ? (analysisResult.volumeMM3 / 1000).toFixed(1) + " cm\u00B3"
-                          : analysisResult.volumeMM3.toFixed(0) + " mm\u00B3"
-                        }</p>
-                        {analysisResult.openEdgeCount > 0 && (
-                          <p className="text-yellow-400">{analysisResult.openEdgeCount.toLocaleString()} open edges</p>
-                        )}
-                        {analysisResult.nonManifoldEdgeCount > 0 && (
-                          <p className="text-red-400">{analysisResult.nonManifoldEdgeCount.toLocaleString()} non-manifold edges</p>
-                        )}
-                      </div>
-                    )}
+              {/* Unit selector */}
+              <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+                <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <Ruler className="h-3 w-3" /> Units
+                </span>
+                <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+                  {(["mm", "cm", "in"] as const).map((unit) => (
+                    <button
+                      key={unit}
+                      onClick={() => setDisplayUnit(unit)}
+                      className={cn(
+                        "rounded px-2 py-0.5 text-[10px] font-semibold transition-colors",
+                        displayUnit === unit
+                          ? "bg-accent text-accent-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {unit}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-                    {/* AI classification badges */}
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      <span className={cn(
-                        "rounded px-1.5 py-0.5 text-[10px] font-semibold",
-                        aiAnalysis.meshType === "thin_shell"    && "bg-accent/20 text-accent",
-                        aiAnalysis.meshType === "solid_body"    && "bg-blue-900/40 text-blue-300",
-                        aiAnalysis.meshType === "multi_body"    && "bg-purple-900/40 text-purple-300",
-                        aiAnalysis.meshType === "surface_patch" && "bg-orange-900/40 text-orange-300",
-                      )}>
-                        {aiAnalysis.meshType.replace("_", " ")}
-                      </span>
-                      <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-muted text-muted-foreground">
-                        {aiAnalysis.repairStrategy.replace(/_/g, " ")}
-                      </span>
-                      <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        {Math.round(aiAnalysis.confidence * 100)}%
-                      </span>
-                    </div>
-
-                    {/* Reasoning + model */}
-                    {aiAnalysis.modelId && (
-                      <p className="text-[10px] text-accent font-medium">
-                        {aiAnalysis.modelId.description}
-                      </p>
-                    )}
-                    <p className="text-[10px] text-muted-foreground leading-snug">
-                      {aiAnalysis.reasoning}
-                    </p>
-                    {aiAnalysis.warnings.length > 0 && (
-                      <div className="space-y-0.5">
-                        {aiAnalysis.warnings.slice(0, 2).map((w, i) => (
-                          <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
-                            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
-                          </p>
-                        ))}
-                      </div>
-                    )}
-                    {aiAnalysis.heuristic && !aiAnalysis.error && (
+              {/* Analysis / Inspect content */}
+              <div className="px-3 py-2 space-y-3">
+                {/* Analyze button */}
+                {!aiAnalysis ? (
+                  <div className="space-y-2">
+                    {!analyzing && (
                       <p className="text-[10px] text-muted-foreground">
-                        Heuristic analysis — add ANTHROPIC_API_KEY for AI classification.
+                        Analyzes mesh geometry, classifies the type, and recommends the best repair path.
                       </p>
                     )}
-                    {aiAnalysis.error && (
-                      <p className="text-[10px] text-yellow-500">{aiAnalysis.error}</p>
+                    <Button
+                      size="sm" className="w-full gap-2"
+                      style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                      disabled={!meshInfo || analyzing}
+                      onClick={handleAnalyze}
+                    >
+                      {analyzing
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : <Sparkles className="h-3 w-3" />}
+                      {analyzing ? (analyzeStep || "Analyzing…") : "Analyze Mesh"}
+                    </Button>
+                    {analyzing && (
+                      <div className="space-y-1.5">
+                        <Progress value={
+                          analyzeStep.includes("wall") ? 40
+                          : analyzeStep.includes("AI") ? 70
+                          : 15
+                        } className="h-1" />
+                        <p className="text-[10px] text-muted-foreground text-center">{analyzeStep}</p>
+                      </div>
                     )}
                   </div>
+                ) : (
+                  <div className="space-y-2">
+                    {/* Analysis results */}
+                    <div className="rounded-md border border-border p-2 space-y-2 text-xs">
+                      {/* Health status */}
+                      <div className="flex items-center gap-1.5">
+                        {analysisResult?.isWatertight
+                          ? <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                          : <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />}
+                        <span className="font-medium">
+                          {analysisResult?.isWatertight ? "Mesh is watertight" : "Issues detected"}
+                        </span>
+                      </div>
 
-                  {/* ── Quality Breakdown (Phase 3) ───────────────────── */}
-                  {analysisResult && (() => {
-                    const qb = computeQualityBreakdown();
-                    if (!qb) return null;
-                    const categories = [
-                      { label: "Topology", score: qb.topology, color: qb.topology >= 80 ? "bg-green-400" : qb.topology >= 50 ? "bg-yellow-400" : "bg-red-400" },
-                      { label: "Watertight", score: qb.watertight, color: qb.watertight >= 80 ? "bg-green-400" : qb.watertight >= 50 ? "bg-yellow-400" : "bg-red-400" },
-                      { label: "Normals", score: qb.normals, color: qb.normals >= 80 ? "bg-green-400" : qb.normals >= 50 ? "bg-yellow-400" : "bg-red-400" },
-                      { label: "Geometry", score: qb.geometry, color: qb.geometry >= 80 ? "bg-green-400" : qb.geometry >= 50 ? "bg-yellow-400" : "bg-red-400" },
-                    ];
-                    return (
-                      <div className="rounded-md border border-border p-2 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Quality Score</p>
-                          <span className={cn(
-                            "text-sm font-bold font-mono",
-                            qb.overall >= 80 ? "text-green-400" : qb.overall >= 50 ? "text-yellow-400" : "text-red-400",
-                          )}>{qb.overall}%</span>
+                      {/* Stats */}
+                      {analysisResult && (
+                        <div className="pl-5 space-y-0.5 text-muted-foreground text-[11px]">
+                          <p>Vertices: {analysisResult.vertexCount.toLocaleString()}</p>
+                          <p>Surface: {u === "in"
+                            ? (analysisResult.surfaceAreaMM2 / 645.16).toFixed(2) + " in\u00B2"
+                            : u === "cm"
+                            ? (analysisResult.surfaceAreaMM2 / 100).toFixed(1) + " cm\u00B2"
+                            : analysisResult.surfaceAreaMM2.toFixed(0) + " mm\u00B2"
+                          }</p>
+                          <p>Volume: {u === "in"
+                            ? (analysisResult.volumeMM3 / 16387.064).toFixed(2) + " in\u00B3"
+                            : u === "cm"
+                            ? (analysisResult.volumeMM3 / 1000).toFixed(1) + " cm\u00B3"
+                            : analysisResult.volumeMM3.toFixed(0) + " mm\u00B3"
+                          }</p>
+                          {analysisResult.openEdgeCount > 0 && (
+                            <p className="text-yellow-400">{analysisResult.openEdgeCount.toLocaleString()} open edges</p>
+                          )}
+                          {analysisResult.nonManifoldEdgeCount > 0 && (
+                            <p className="text-red-400">{analysisResult.nonManifoldEdgeCount.toLocaleString()} non-manifold edges</p>
+                          )}
                         </div>
-                        <div className="space-y-1.5">
-                          {categories.map(({ label, score, color }) => (
-                            <div key={label} className="space-y-0.5">
-                              <div className="flex justify-between text-[10px]">
-                                <span className="text-muted-foreground">{label}</span>
-                                <span className="font-mono">{score}%</span>
-                              </div>
-                              <div className="h-1 bg-muted rounded-full overflow-hidden">
-                                <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${score}%` }} />
-                              </div>
-                            </div>
+                      )}
+
+                      {/* AI classification badges */}
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        <span className={cn(
+                          "rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                          aiAnalysis.meshType === "thin_shell"    && "bg-accent/20 text-accent",
+                          aiAnalysis.meshType === "solid_body"    && "bg-blue-900/40 text-blue-300",
+                          aiAnalysis.meshType === "multi_body"    && "bg-purple-900/40 text-purple-300",
+                          aiAnalysis.meshType === "surface_patch" && "bg-orange-900/40 text-orange-300",
+                        )}>
+                          {aiAnalysis.meshType.replace("_", " ")}
+                        </span>
+                        <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-muted text-muted-foreground">
+                          {aiAnalysis.repairStrategy.replace(/_/g, " ")}
+                        </span>
+                        <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {Math.round(aiAnalysis.confidence * 100)}%
+                        </span>
+                      </div>
+
+                      {/* Reasoning + model */}
+                      {aiAnalysis.modelId && (
+                        <p className="text-[10px] text-accent font-medium">
+                          {aiAnalysis.modelId.description}
+                        </p>
+                      )}
+                      <p className="text-[10px] text-muted-foreground leading-snug">
+                        {aiAnalysis.reasoning}
+                      </p>
+                      {aiAnalysis.warnings.length > 0 && (
+                        <div className="space-y-0.5">
+                          {aiAnalysis.warnings.slice(0, 2).map((w, i) => (
+                            <p key={i} className="text-[10px] text-yellow-400 flex gap-1">
+                              <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />{w}
+                            </p>
                           ))}
                         </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Re-analyze */}
-                  <Button
-                    size="sm" variant="ghost" className="w-full gap-2 text-[11px] text-muted-foreground"
-                    disabled={analyzing || reconstructing || repairing}
-                    onClick={handleAnalyze}
-                  >
-                    <Sparkles className="h-3 w-3" />
-                    Re-analyze
-                  </Button>
-                </div>
-              )}
-
-              {/* ── Defect Overlays (Phase 2) ────────────────────────────── */}
-              {meshInfo && (
-                <>
-                  <Separator />
-                  <div className="space-y-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Defect Overlays</p>
-                    <Button
-                      size="sm" className="w-full gap-2" variant={overlaysVisible ? "default" : "outline"}
-                      disabled={busy}
-                      onClick={overlaysVisible ? toggleOverlayVisibility : computeAndShowOverlays}
-                    >
-                      <Eye className="h-3 w-3" />
-                      {overlaysVisible ? "Hide Overlays" : "Show Defect Edges"}
-                    </Button>
-                    {overlaysVisible && (
-                      <div className="space-y-1.5 pl-1">
-                        <label className="flex items-center gap-2 text-[11px] cursor-pointer">
-                          <input type="checkbox" checked={showOpenEdges} onChange={(e) => setShowOpenEdges(e.target.checked)} className="accent-red-400 h-3 w-3" />
-                          <span className="text-red-400">Open edges</span>
-                          {defectOverlayData?.openEdges && <span className="text-muted-foreground ml-auto">{(defectOverlayData.openEdges.length / 6).toLocaleString()}</span>}
-                        </label>
-                        <label className="flex items-center gap-2 text-[11px] cursor-pointer">
-                          <input type="checkbox" checked={showNonManifoldEdges} onChange={(e) => setShowNonManifoldEdges(e.target.checked)} className="accent-orange-400 h-3 w-3" />
-                          <span className="text-orange-400">Non-manifold edges</span>
-                          {defectOverlayData?.nonManifoldEdges && <span className="text-muted-foreground ml-auto">{(defectOverlayData.nonManifoldEdges.length / 6).toLocaleString()}</span>}
-                        </label>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {/* ── Guided Repair Recommendation (Phase 2) ───────────────── */}
-              {aiAnalysis && analysisResult && !analysisResult.isWatertight && (
-                <>
-                  <Separator />
-                  <div className="rounded-md border border-accent/30 bg-accent/5 p-2.5 space-y-2">
-                    <p className="text-[11px] font-semibold text-accent flex items-center gap-1.5">
-                      <Sparkles className="h-3 w-3" />
-                      Recommended Repair Path
-                    </p>
-                    {isSevere ? (
-                      <>
+                      )}
+                      {aiAnalysis.heuristic && !aiAnalysis.error && (
                         <p className="text-[10px] text-muted-foreground">
-                          Significant damage detected. Cloud Repair is recommended for best results — it uses server-side topology reconstruction, non-manifold resolution, and feature-preserving remeshing.
+                          Heuristic analysis — add ANTHROPIC_API_KEY for AI classification.
                         </p>
-                        <Button
-                          size="sm" className="w-full gap-2"
-                          style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                          disabled={cloudRepairSubmitting || cloudRepairPolling}
-                          onClick={() => { setWorkbenchTab("repair"); handleCloudRepair(); }}
-                        >
-                          <Cloud className="h-3 w-3" />
-                          Start Cloud Repair
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-[10px] text-muted-foreground">
-                          Minor issues detected ({analysisResult.openEdgeCount} open edges, {analysisResult.nonManifoldEdgeCount} non-manifold). Try basic topology repair first.
-                        </p>
-                        <Button
-                          size="sm" className="w-full gap-2"
-                          style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
-                          disabled={repairing || reconstructing}
-                          onClick={() => { setWorkbenchTab("repair"); handleRepairWithCompare(); }}
-                        >
-                          <Wrench className="h-3 w-3" />
-                          Start Basic Repair
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {/* ── Repair Candidates / Variant Compare (Phase 3) ─────── */}
-              {repairCandidates.length > 0 && (
-                <>
-                  <Separator />
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Repair History</p>
-                      <span className="text-[9px] text-muted-foreground">{repairCandidates.length} variant{repairCandidates.length !== 1 ? "s" : ""}</span>
+                      )}
+                      {aiAnalysis.error && (
+                        <p className="text-[10px] text-yellow-500">{aiAnalysis.error}</p>
+                      )}
                     </div>
-                    <div className="space-y-1">
-                      {repairCandidates.map((candidate, idx) => (
+
+                    {/* ── Quality Breakdown (Phase 3) ───────────────────── */}
+                    {analysisResult && (() => {
+                      const qb = computeQualityBreakdown();
+                      if (!qb) return null;
+                      const categories = [
+                        { label: "Topology", score: qb.topology, color: qb.topology >= 80 ? "bg-green-400" : qb.topology >= 50 ? "bg-yellow-400" : "bg-red-400" },
+                        { label: "Watertight", score: qb.watertight, color: qb.watertight >= 80 ? "bg-green-400" : qb.watertight >= 50 ? "bg-yellow-400" : "bg-red-400" },
+                        { label: "Normals", score: qb.normals, color: qb.normals >= 80 ? "bg-green-400" : qb.normals >= 50 ? "bg-yellow-400" : "bg-red-400" },
+                        { label: "Geometry", score: qb.geometry, color: qb.geometry >= 80 ? "bg-green-400" : qb.geometry >= 50 ? "bg-yellow-400" : "bg-red-400" },
+                      ];
+                      return (
+                        <div className="rounded-md border border-border p-2 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Quality Score</p>
+                            <span className={cn(
+                              "text-sm font-bold font-mono",
+                              qb.overall >= 80 ? "text-green-400" : qb.overall >= 50 ? "text-yellow-400" : "text-red-400",
+                            )}>{qb.overall}%</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {categories.map(({ label, score, color }) => (
+                              <div key={label} className="space-y-0.5">
+                                <div className="flex justify-between text-[10px]">
+                                  <span className="text-muted-foreground">{label}</span>
+                                  <span className="font-mono">{score}%</span>
+                                </div>
+                                <div className="h-1 bg-muted rounded-full overflow-hidden">
+                                  <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${score}%` }} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Re-analyze */}
+                    <Button
+                      size="sm" variant="ghost" className="w-full gap-2 text-[11px] text-muted-foreground"
+                      disabled={analyzing || reconstructing || repairing}
+                      onClick={handleAnalyze}
+                    >
+                      <Sparkles className="h-3 w-3" />
+                      Re-analyze
+                    </Button>
+                  </div>
+                )}
+
+                {/* ── Defect Overlays (Phase 2) ────────────────────────────── */}
+                {meshInfo && (
+                  <>
+                    <Separator />
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Defect Overlays</p>
+                      <Button
+                        size="sm" className="w-full gap-2" variant={overlaysVisible ? "default" : "outline"}
+                        disabled={busy}
+                        onClick={overlaysVisible ? toggleOverlayVisibility : computeAndShowOverlays}
+                      >
+                        <Eye className="h-3 w-3" />
+                        {overlaysVisible ? "Hide Overlays" : "Show Defect Edges"}
+                      </Button>
+                      {overlaysVisible && (
+                        <div className="space-y-1.5 pl-1">
+                          <label className="flex items-center gap-2 text-[11px] cursor-pointer">
+                            <input type="checkbox" checked={showOpenEdges} onChange={(e) => setShowOpenEdges(e.target.checked)} className="accent-red-400 h-3 w-3" />
+                            <span className="text-red-400">Open edges</span>
+                            {defectOverlayData?.openEdges && <span className="text-muted-foreground ml-auto">{(defectOverlayData.openEdges.length / 6).toLocaleString()}</span>}
+                          </label>
+                          <label className="flex items-center gap-2 text-[11px] cursor-pointer">
+                            <input type="checkbox" checked={showNonManifoldEdges} onChange={(e) => setShowNonManifoldEdges(e.target.checked)} className="accent-orange-400 h-3 w-3" />
+                            <span className="text-orange-400">Non-manifold edges</span>
+                            {defectOverlayData?.nonManifoldEdges && <span className="text-muted-foreground ml-auto">{(defectOverlayData.nonManifoldEdges.length / 6).toLocaleString()}</span>}
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {/* ── Guided Repair Recommendation (Phase 2) ───────────────── */}
+                {aiAnalysis && analysisResult && !analysisResult.isWatertight && (
+                  <>
+                    <Separator />
+                    <div className="rounded-md border border-accent/30 bg-accent/5 p-2.5 space-y-2">
+                      <p className="text-[11px] font-semibold text-accent flex items-center gap-1.5">
+                        <Sparkles className="h-3 w-3" />
+                        Recommended Repair Path
+                      </p>
+                      {isSevere ? (
+                        <>
+                          <p className="text-[10px] text-muted-foreground">
+                            Significant damage detected. Cloud Repair is recommended for best results — it uses server-side topology reconstruction, non-manifold resolution, and feature-preserving remeshing.
+                          </p>
+                          <Button
+                            size="sm" className="w-full gap-2"
+                            style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                            disabled={cloudRepairSubmitting || cloudRepairPolling}
+                            onClick={() => { setTab("repair"); handleCloudRepair(); }}
+                          >
+                            <Cloud className="h-3 w-3" />
+                            Start Cloud Repair
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-[10px] text-muted-foreground">
+                            Minor issues detected ({analysisResult.openEdgeCount} open edges, {analysisResult.nonManifoldEdgeCount} non-manifold). Try basic topology repair first.
+                          </p>
+                          <Button
+                            size="sm" className="w-full gap-2"
+                            style={{ backgroundColor: "hsl(var(--accent))", color: "hsl(var(--accent-foreground))" }}
+                            disabled={repairing || reconstructing}
+                            onClick={() => { setTab("repair"); handleRepairWithCompare(); }}
+                          >
+                            <Wrench className="h-3 w-3" />
+                            Start Basic Repair
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {/* ── Repair Candidates / Variant Compare (Phase 3) ─────── */}
+                {repairCandidates.length > 0 && (
+                  <>
+                    <Separator />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Repair History</p>
+                        <span className="text-[9px] text-muted-foreground">{repairCandidates.length} variant{repairCandidates.length !== 1 ? "s" : ""}</span>
+                      </div>
+                      <div className="space-y-1">
+                        {repairCandidates.map((candidate, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => switchToCandidate(idx)}
+                            className={cn(
+                              "w-full flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors",
+                              activeCandidateIdx === idx
+                                ? "bg-accent/15 text-accent border border-accent/30"
+                                : "hover:bg-muted text-muted-foreground",
+                            )}
+                          >
+                            <div className="flex items-center gap-2 text-[11px]">
+                              <CheckCircle2 className="h-3 w-3 shrink-0" />
+                              <span className="truncate font-medium">{candidate.label}</span>
+                              <Badge variant="outline" className="ml-auto text-[8px] h-3.5 px-1">{candidate.source}</Badge>
+                            </div>
+                            {candidate.metrics && (
+                              <div className="flex gap-3 pl-5 text-[9px] text-muted-foreground">
+                                {candidate.metrics.triangles != null && <span>{Number(candidate.metrics.triangles).toLocaleString()} tris</span>}
+                                {candidate.metrics.resolution != null && <span>{String(candidate.metrics.resolution)} mm</span>}
+                                {candidate.metrics.qualityScore != null && <span>Q: {String(candidate.metrics.qualityScore)}%</span>}
+                              </div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                      {repairCandidates.length >= 2 && (
+                        <div className="rounded-md border border-border p-2 space-y-1.5 text-[10px]">
+                          <p className="font-semibold text-muted-foreground uppercase tracking-wider">Quick Compare</p>
+                          <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 gap-y-0.5 text-muted-foreground">
+                            <span />
+                            {repairCandidates.slice(-2).map((c, i) => (
+                              <span key={i} className="font-medium text-foreground truncate">{c.label}</span>
+                            ))}
+                            <span>Source</span>
+                            {repairCandidates.slice(-2).map((c, i) => (
+                              <span key={i}>{c.source}</span>
+                            ))}
+                            <span>Triangles</span>
+                            {repairCandidates.slice(-2).map((c, i) => (
+                              <span key={i} className="font-mono">{c.metrics?.triangles != null ? Number(c.metrics.triangles).toLocaleString() : "—"}</span>
+                            ))}
+                            <span>Resolution</span>
+                            {repairCandidates.slice(-2).map((c, i) => (
+                              <span key={i} className="font-mono">{c.metrics?.resolution != null ? `${c.metrics.resolution} mm` : "—"}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Parts / Shell list */}
+              {splitParts.length > 0 && (
+                <>
+                  <Separator className="my-1" />
+                  <SectionHeader
+                    icon={Package}
+                    label={`Parts (${splitParts.length})`}
+                    open={openSections.splitResult}
+                    onToggle={() => toggleSection("splitResult")}
+                  />
+                  {openSections.splitResult && (
+                    <div className="px-3 pb-2 space-y-1">
+                      {splitParts.map((part, i) => (
                         <button
-                          key={idx}
-                          onClick={() => switchToCandidate(idx)}
+                          key={i}
+                          onClick={() => setSelectedPartIndex(i === selectedPartIndex ? undefined : i)}
                           className={cn(
-                            "w-full flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors",
-                            activeCandidateIdx === idx
-                              ? "bg-accent/15 text-accent border border-accent/30"
-                              : "hover:bg-muted text-muted-foreground",
+                            "w-full rounded-md border p-1.5 text-left text-[11px] transition-colors",
+                            selectedPartIndex === i
+                              ? "border-accent bg-accent/10 text-accent"
+                              : "border-border hover:bg-muted"
                           )}
                         >
-                          <div className="flex items-center gap-2 text-[11px]">
-                            <CheckCircle2 className="h-3 w-3 shrink-0" />
-                            <span className="truncate font-medium">{candidate.label}</span>
-                            <Badge variant="outline" className="ml-auto text-[8px] h-3.5 px-1">{candidate.source}</Badge>
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium truncate">{part.label}</span>
+                            <span className="font-mono text-[9px] text-muted-foreground ml-1">
+                              {part.triangleCount.toLocaleString()} tri
+                            </span>
                           </div>
-                          {candidate.metrics && (
-                            <div className="flex gap-3 pl-5 text-[9px] text-muted-foreground">
-                              {candidate.metrics.triangles != null && <span>{Number(candidate.metrics.triangles).toLocaleString()} tris</span>}
-                              {candidate.metrics.resolution != null && <span>{String(candidate.metrics.resolution)} mm</span>}
-                              {candidate.metrics.qualityScore != null && <span>Q: {String(candidate.metrics.qualityScore)}%</span>}
-                            </div>
-                          )}
                         </button>
                       ))}
                     </div>
-                    {repairCandidates.length >= 2 && (
-                      <div className="rounded-md border border-border p-2 space-y-1.5 text-[10px]">
-                        <p className="font-semibold text-muted-foreground uppercase tracking-wider">Quick Compare</p>
-                        <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 gap-y-0.5 text-muted-foreground">
-                          <span />
-                          {repairCandidates.slice(-2).map((c, i) => (
-                            <span key={i} className="font-medium text-foreground truncate">{c.label}</span>
-                          ))}
-                          <span>Source</span>
-                          {repairCandidates.slice(-2).map((c, i) => (
-                            <span key={i}>{c.source}</span>
-                          ))}
-                          <span>Triangles</span>
-                          {repairCandidates.slice(-2).map((c, i) => (
-                            <span key={i} className="font-mono">{c.metrics?.triangles != null ? Number(c.metrics.triangles).toLocaleString() : "—"}</span>
-                          ))}
-                          <span>Resolution</span>
-                          {repairCandidates.slice(-2).map((c, i) => (
-                            <span key={i} className="font-mono">{c.metrics?.resolution != null ? `${c.metrics.resolution} mm` : "—"}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </>
               )}
+
+              {/* View controls */}
+              <Separator className="my-1" />
+              <div className="px-3 py-2 space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">View</p>
+                <div className="flex items-center justify-between">
+                  <Label className="text-[11px] flex items-center gap-1.5">
+                    <ZapOff className="h-3 w-3" /> Wireframe
+                  </Label>
+                  <Switch checked={wireframe} onCheckedChange={setWireframe} className="scale-75" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <Label className="text-[11px] flex items-center gap-1.5">
+                    <Eye className="h-3 w-3" /> Ghost
+                  </Label>
+                  <Switch checked={ghostMode} onCheckedChange={setGhostMode} className="scale-75" />
+                </div>
+                {splitParts.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>Explode</span>
+                      <span className="font-mono">{Math.round(explodeAmount * 100)}%</span>
+                    </div>
+                    <Slider
+                      min={0} max={1} step={0.01}
+                      value={[explodeAmount]}
+                      onValueChange={([v]) => setExplodeAmount(v)}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
           {/* ── REPAIR TAB ─────────────────────────────────────────────────── */}
-          {workbenchTab === "repair" && (
+          {tab === "repair" && (
             <div className="px-3 py-2 space-y-3">
               {/* Quick Tools */}
               <div className="space-y-1.5">
@@ -3113,7 +2721,7 @@ export function KarasliceApp() {
           )}
 
           {/* ── PREPARE TAB ────────────────────────────────────────────────── */}
-          {workbenchTab === "prepare" && (
+          {tab === "prepare" && (
             <div className="px-3 py-2 space-y-3">
               {!meshInfo && (
                 <p className="text-xs text-muted-foreground text-center py-4">
@@ -3126,12 +2734,20 @@ export function KarasliceApp() {
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orientation</p>
                 <div className="grid grid-cols-2 gap-1.5">
                   <Button
-                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8 col-span-2"
+                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
                     disabled={!meshInfo || busy}
                     onClick={handleLayFlat}
                   >
                     <Layers className="h-3 w-3" />
                     Lay Flat
+                  </Button>
+                  <Button
+                    size="sm" variant="outline" className="gap-1.5 text-[11px] h-8"
+                    disabled={!meshInfo || !originalGeoRef.current || busy}
+                    onClick={toggleCompare}
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Revert
                   </Button>
                   {(["x", "y", "z"] as const).map((axis) => (
                     <Button
@@ -3491,13 +3107,13 @@ export function KarasliceApp() {
           )}
 
           {/* ── EXPORT TAB ─────────────────────────────────────────────────── */}
-          {workbenchTab === "export" && (
+          {tab === "export" && (
             <div className="px-3 py-2 space-y-3">
               {splitParts.length === 0 ? (
                 <div className="rounded-md border border-border p-4 text-xs space-y-3 text-center text-muted-foreground">
                   <Package className="h-8 w-8 mx-auto opacity-20" />
                   <p>Run a split to generate exportable parts.</p>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setWorkbenchTab("prepare")}>
+                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setTab("prepare")}>
                     <Cpu className="h-3 w-3" />
                     Go to Prepare
                   </Button>
@@ -3639,7 +3255,348 @@ export function KarasliceApp() {
             </div>
           )}
         </div>
+
+        {/* Sidebar notification */}
+        {sidebarNotice && (
+          <div
+            className={cn(
+              "mx-2 mb-1 rounded-md px-3 py-2 text-xs font-medium transition-all animate-in fade-in slide-in-from-bottom-2 duration-200",
+              sidebarNotice.variant === "destructive"
+                ? "bg-destructive/15 text-destructive border border-destructive/30"
+                : "bg-accent/15 text-accent-foreground border border-accent/30"
+            )}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <span className="leading-snug">{sidebarNotice.message}</span>
+              <button onClick={() => setSidebarNotice(null)} className="shrink-0 mt-0.5 opacity-60 hover:opacity-100">
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="border-t border-border px-3 py-2 text-[10px] text-muted-foreground/50 flex items-center justify-between">
+          <span>Karaslice · Local</span>
+          <button
+            onClick={() => setShowShortcuts((v) => !v)}
+            className="hover:text-muted-foreground transition-colors"
+            title="Keyboard shortcuts"
+          >
+            <Keyboard className="h-3 w-3" />
+          </button>
+        </div>
       </aside>
+
+      {/* ══════════════════════════════════════════════════════════════════════════
+          CENTER — Viewport + Bottom Drawer
+          ══════════════════════════════════════════════════════════════════════════ */}
+      <main className="relative flex flex-1 flex-col overflow-hidden">
+        {/* Viewport */}
+        <div className="relative flex-1 overflow-hidden">
+          <Viewport
+            ref={viewportRef}
+            onMeshLoaded={handleMeshLoaded}
+            onLoadStart={() => setFileLoading(true)}
+            onFileSelected={(file) => { pendingUploadFile.current = file; loadedFileRef.current = file; }}
+            cutPlanes={cutPlanes}
+            printerVolume={effectivePrinter
+              ? { x: effectivePrinter.x, y: effectivePrinter.y, z: effectivePrinter.z }
+              : null}
+            transforms={transforms}
+            splitParts={splitPartsVisual}
+            explodeAmount={explodeAmount}
+            showSliceLines={showSliceLines}
+            ghostMode={ghostMode}
+            wireframe={wireframe}
+            selectedPartIndex={selectedPartIndex}
+            onPartSelect={setSelectedPartIndex}
+          />
+
+          {/* Stats overlay */}
+          {meshInfo && (
+            <div className="absolute top-3 right-3 rounded-md border border-border bg-card px-3 py-2 text-xs font-mono space-y-0.5 pointer-events-none shadow-md">
+              <p className="text-muted-foreground truncate max-w-[200px]">{meshInfo.fileName}</p>
+              <p><span className="text-accent">{meshInfo.triangleCount.toLocaleString()}</span> triangles</p>
+              <p>
+                <span className="text-accent">{fmtDim(meshInfo.boundingBox.x, u)}</span> ×{" "}
+                <span className="text-accent">{fmtDim(meshInfo.boundingBox.y, u)}</span> ×{" "}
+                <span className="text-accent">{fmtDim(meshInfo.boundingBox.z, u)}</span> {UNIT_LABELS[u]}
+              </p>
+              {enabledPlaneCount > 0 && (
+                <p><span className="text-accent">{enabledPlaneCount}</span> cut plane{enabledPlaneCount !== 1 ? "s" : ""}</p>
+              )}
+              {splitParts.length > 0 && (
+                <p><span className="text-accent">{splitParts.length}</span> parts</p>
+              )}
+            </div>
+          )}
+
+          {/* Mobile toggles */}
+          <button
+            className="absolute top-3 left-3 z-10 flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card shadow-md text-muted-foreground hover:text-foreground transition-colors md:hidden"
+            onClick={() => setSidebarOpen((v) => !v)}
+            aria-label={sidebarOpen ? "Close menu" : "Open menu"}
+          >
+            {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+          </button>
+          {/* View mode badges */}
+          {(ghostMode || wireframe || explodeAmount > 0) && (
+            <div className="absolute top-3 left-14 md:left-3 flex gap-1.5">
+              {ghostMode && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Eye className="h-2.5 w-2.5" /> Ghost
+                </Badge>
+              )}
+              {wireframe && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <ZapOff className="h-2.5 w-2.5" /> Wireframe
+                </Badge>
+              )}
+              {explodeAmount > 0 && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Zap className="h-2.5 w-2.5" /> Explode {Math.round(explodeAmount * 100)}%
+                </Badge>
+              )}
+            </div>
+          )}
+
+          {/* Keyboard shortcuts overlay */}
+          {showShortcuts && (
+            <div className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-sm z-10">
+              <div className="rounded-xl border border-border bg-card/95 p-5 min-w-[240px] shadow-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <p className="text-sm font-semibold">Keyboard Shortcuts</p>
+                  <button
+                    onClick={() => setShowShortcuts(false)}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="space-y-2.5">
+                  {KEYBOARD_SHORTCUTS.map(([key, desc]) => (
+                    <div key={key} className="flex items-center justify-between gap-8 text-xs">
+                      <kbd className="rounded bg-muted px-2 py-0.5 font-mono text-[10px]">{key}</kbd>
+                      <span className="text-muted-foreground">{desc}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Bottom Drawer toggle ───────────────────────────────────────────── */}
+        <button
+          onClick={() => setBottomDrawerOpen((v) => !v)}
+          className="flex items-center justify-center gap-1.5 border-t border-border bg-card/80 px-3 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {bottomDrawerOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+          {busy ? "Operation running…" : pipelineLog.length > 0 ? "Pipeline Log" : drawerHasContent ? "Results" : "Activity"}
+        </button>
+
+        {/* ── Bottom Drawer content ──────────────────────────────────────────── */}
+        {bottomDrawerOpen && (
+          <div className="max-h-44 overflow-y-auto border-t border-border bg-card px-4 py-2 space-y-2 text-xs">
+            {/* Active operations */}
+            {analyzing && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-accent">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span className="font-medium">{analyzeStep || "Analyzing…"}</span>
+                </div>
+                <Progress value={
+                  analyzeStep.includes("wall") ? 40
+                  : analyzeStep.includes("AI") ? 70
+                  : 15
+                } className="h-1" />
+              </div>
+            )}
+            {repairing && (
+              <div className="flex items-center gap-2 text-accent">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>{repairMessage || "Repairing…"}</span>
+              </div>
+            )}
+            {reconstructing && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-accent">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>{reconstructMessage || "Reconstructing…"}</span>
+                </div>
+                {reconstructMessage && (
+                  <Progress value={
+                    reconstructMessage.includes("Validating") ? 90
+                    : reconstructMessage.includes("consulting AI") || reconstructMessage.includes("Consulting") ? 95
+                    : reconstructMessage.includes("Retry") ? 5
+                    : reconstructMessage.includes("Simplif") ? 70
+                    : reconstructMessage.includes("Smooth") ? 85
+                    : reconstructMessage.includes("Extract") || reconstructMessage.includes("Marching") ? 50
+                    : reconstructMessage.includes("Flood") ? 30
+                    : reconstructMessage.includes("Voxeliz") || reconstructMessage.includes("Rasteriz") ? 15
+                    : reconstructMessage.includes("SDF") || reconstructMessage.includes("distance") ? 40
+                    : reconstructMessage.includes("point cloud") || reconstructMessage.includes("spatial") ? 15
+                    : reconstructMessage.includes("Re-sorting") ? 75
+                    : reconstructMessage.includes("Finaliz") ? 95
+                    : 10
+                  } className="h-1" />
+                )}
+                {retryAttempt > 0 && (
+                  <p className="text-[10px] text-amber-500 font-semibold">Attempt {retryAttempt + 1}/{MAX_RECONSTRUCT_RETRIES + 1}</p>
+                )}
+              </div>
+            )}
+            {splitting && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-accent">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>{splitMessage || "Splitting…"}</span>
+                </div>
+                <Progress value={splitProgress} className="h-1" />
+              </div>
+            )}
+            {(cloudRepairSubmitting || cloudRepairPolling) && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-accent">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>{cloudRepairSubmitting ? "Uploading to cloud…" : "Cloud repair processing…"}</span>
+                </div>
+                {cloudRepairJob?.status === "running" && (
+                  <Progress value={
+                    cloudRepairJob.step === "parse" ? 3
+                    : cloudRepairJob.step === "analyze" ? 6
+                    : cloudRepairJob.step === "weld" ? 10
+                    : cloudRepairJob.step === "sanitize" ? 15
+                    : cloudRepairJob.step === "components" ? 22
+                    : cloudRepairJob.step === "nonmanifold" ? 30
+                    : cloudRepairJob.step === "normals" ? 35
+                    : cloudRepairJob.step === "holes" ? 40
+                    : cloudRepairJob.step === "selfintersect" ? 48
+                    : cloudRepairJob.step === "reconstruct" ? 58
+                    : cloudRepairJob.step === "post_cleanup" ? 68
+                    : cloudRepairJob.step === "remesh" ? 75
+                    : cloudRepairJob.step === "thinwall" ? 82
+                    : cloudRepairJob.step === "simplify" ? 88
+                    : cloudRepairJob.step === "validate" ? 93
+                    : cloudRepairJob.step === "export" ? 97
+                    : 3
+                  } className="h-1" />
+                )}
+                {cloudRepairJob?.stepMessage && (
+                  <p className="text-[10px] text-muted-foreground">{cloudRepairJob.stepMessage}</p>
+                )}
+              </div>
+            )}
+
+            {/* Repair result summary */}
+            {!repairing && repairResult && (
+              <div className="flex items-center gap-1.5">
+                {repairResult.isWatertight
+                  ? <CheckCircle2 className="h-3 w-3 text-green-400" />
+                  : <AlertTriangle className="h-3 w-3 text-yellow-400" />}
+                <span className="text-muted-foreground">
+                  Repair: {repairResult.isWatertight ? "watertight" : "partial"} ·
+                  {repairResult.holesFilled > 0 && ` ${repairResult.holesFilled} holes filled ·`}
+                  {repairResult.degeneratesRemoved > 0 && ` ${repairResult.degeneratesRemoved} degens removed`}
+                </span>
+              </div>
+            )}
+
+            {/* Reconstruct result summary */}
+            {!reconstructing && reconstructResult && (
+              <div className="flex items-center gap-1.5">
+                <CheckCircle2 className="h-3 w-3 text-green-400" />
+                <span className="text-muted-foreground">
+                  Reconstruction: {reconstructResult.outputTriangles.toLocaleString()} tris · {reconstructResult.resolution} mm
+                </span>
+              </div>
+            )}
+
+            {/* Cloud repair job status */}
+            {!cloudRepairPolling && !cloudRepairSubmitting && cloudRepairJob && (
+              <div className="flex items-center gap-1.5">
+                {cloudRepairJob.status === "finished"
+                  ? <CheckCircle2 className="h-3 w-3 text-green-400" />
+                  : cloudRepairJob.status === "failed"
+                  ? <AlertTriangle className="h-3 w-3 text-red-400" />
+                  : <Loader2 className="h-3 w-3 animate-spin text-accent" />}
+                <span className={cn(
+                  "text-muted-foreground",
+                  cloudRepairJob.status === "finished" && "text-green-400",
+                  cloudRepairJob.status === "failed" && "text-red-400",
+                )}>
+                  Cloud: {cloudRepairJob.status === "finished" ? "complete" : cloudRepairJob.status}
+                  {cloudRepairJob.report && ` · ${cloudRepairJob.report.outputFaces?.toLocaleString()} faces`}
+                </span>
+              </div>
+            )}
+
+            {/* Post-repair AI review */}
+            {postReviewing && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>AI reviewing repair quality…</span>
+              </div>
+            )}
+            {postReview && !postReview.passed && (
+              <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-2 space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <Sparkles className="h-3 w-3 text-yellow-400" />
+                  <span className="font-medium text-yellow-400">AI Quality Review</span>
+                  <Badge variant="outline" className="ml-auto text-[9px] h-4">
+                    {postReview.recommendation.replace(/_/g, " ")}
+                  </Badge>
+                </div>
+                <p className="text-[10px] text-muted-foreground">{postReview.reasoning}</p>
+              </div>
+            )}
+            {postReview?.passed && (
+              <div className="flex items-center gap-1.5 text-green-400">
+                <CheckCircle2 className="h-3 w-3" />
+                <span>AI review passed</span>
+              </div>
+            )}
+
+            {/* Pipeline log (Phase 2) */}
+            {pipelineLog.length > 0 && (
+              <div className="space-y-0.5 border-t border-border pt-2 mt-1">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pipeline Log</p>
+                  <button onClick={clearPipelineLog} className="text-[9px] text-muted-foreground hover:text-foreground transition-colors">Clear</button>
+                </div>
+                {pipelineLog.map((entry, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-[10px]">
+                    <span className="text-muted-foreground font-mono shrink-0 w-14">
+                      {new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                    </span>
+                    {entry.status === "running" ? (
+                      <Loader2 className="h-3 w-3 animate-spin text-accent shrink-0 mt-0.5" />
+                    ) : entry.status === "done" ? (
+                      <CheckCircle2 className="h-3 w-3 text-green-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertTriangle className="h-3 w-3 text-red-400 shrink-0 mt-0.5" />
+                    )}
+                    <span className={cn(
+                      entry.status === "done" && "text-green-400/80",
+                      entry.status === "error" && "text-red-400",
+                      entry.status === "running" && "text-accent",
+                    )}>
+                      <span className="font-semibold">{entry.step}</span>
+                      {" — "}{entry.message}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!busy && !drawerHasContent && pipelineLog.length === 0 && (
+              <p className="text-muted-foreground text-center py-2">No active operations.</p>
+            )}
+          </div>
+        )}
+      </main>
+
     </div>
   );
 }
